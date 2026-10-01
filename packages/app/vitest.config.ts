@@ -24,7 +24,24 @@ export default defineConfig({
           environment: "node",
           include: ["src/**/*.{test,spec}.{ts,tsx}", "native-release-version.test.ts"],
           setupFiles: [path.resolve(__dirname, "vitest.setup.ts")],
-          exclude: [...configDefaults.exclude, "e2e/**", "src/**/*.browser.{test,spec}.{ts,tsx}"],
+          exclude: [
+            ...configDefaults.exclude,
+            "e2e/**",
+            "src/**/*.browser.{test,spec}.{ts,tsx}",
+            "src/**/*.integration.test.ts",
+          ],
+        },
+      },
+      {
+        // Real processes (tmux, sh, sshd) on isolated sockets and temp dirs; run one file at a time.
+        extends: true,
+        test: {
+          name: "integration",
+          environment: "node",
+          include: ["src/**/*.integration.test.ts"],
+          fileParallelism: false,
+          testTimeout: 60_000,
+          hookTimeout: 60_000,
         },
       },
       {
