@@ -38,11 +38,6 @@ const aliasPlugin = {
     build.onResolve({ filter: /^@\// }, async (args) => ({
       path: await resolveTsPath(path.join(appRoot, "src", args.path.slice(2))),
     }));
-    build.onResolve({ filter: /^@server\// }, async (args) => ({
-      path: await resolveTsPath(
-        path.join(repoRoot, "packages/server/src", args.path.slice("@server/".length)),
-      ),
-    }));
   },
 };
 

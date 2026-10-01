@@ -1,5 +1,5 @@
-import type { ToolCallDetail, ToolCallIconName } from "@getpaseo/protocol/agent-types";
-import { isPaseoToolName } from "@getpaseo/protocol/tool-name-normalization";
+import type { ToolCallDetail, ToolCallIconName } from "@/types/protocol/agent-types";
+import { isPaseoToolName } from "@/types/protocol/tool-name-normalization";
 
 export type ToolCallIcon = ToolCallIconName | "paseo";
 

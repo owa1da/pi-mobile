@@ -8,14 +8,10 @@ import React, {
 } from "react";
 import { TextInput } from "react-native";
 import { BottomSheetTextInput } from "@gorhom/bottom-sheet";
-import PasteInput, {
-  type PastedFile,
-  type PasteTextInputInstance,
-} from "@mattermost/react-native-paste-input";
 import { useIsInsideBottomSheet } from "@/components/ui/bottom-sheet-scope";
 import type { EditingTextInputHandle, EditingTextInputProps } from "./types";
 
-type NativeInput = (TextInput | PasteTextInputInstance) & {
+type NativeInput = TextInput & {
   blur(): void;
   focus(): void;
   isFocused?(): boolean;
@@ -32,8 +28,9 @@ export const EditingTextInput = forwardRef<EditingTextInputHandle, EditingTextIn
     const {
       initialValue = "",
       onChangeText,
-      onPasteImages,
-      onPasteError,
+      // Image paste needs a native paste module Pi does not ship; the props are accepted and ignored.
+      onPasteImages: _onPasteImages,
+      onPasteError: _onPasteError,
       variant = isInsideBottomSheet ? "bottom-sheet" : "default",
       value: _,
       defaultValue: __,
@@ -124,32 +121,9 @@ export const EditingTextInput = forwardRef<EditingTextInputHandle, EditingTextIn
       },
       [onChangeText],
     );
-    const handlePaste = useCallback(
-      (error: string | null | undefined, files: PastedFile[]) => {
-        if (error) {
-          onPasteError?.(error);
-        } else if (files.length > 0) {
-          onPasteImages?.(files);
-        }
-      },
-      [onPasteError, onPasteImages],
-    );
 
     const autoFocus = replacement.revision === 0 ? props.autoFocus : replacement.autoFocus;
 
-    if (onPasteImages || onPasteError) {
-      return (
-        <PasteInput
-          {...props}
-          autoFocus={autoFocus}
-          key={replacement.revision}
-          ref={assignInputRef as React.Ref<PasteTextInputInstance>}
-          defaultValue={textRef.current}
-          onChangeText={handleChangeText}
-          onPaste={handlePaste}
-        />
-      );
-    }
     if (variant === "bottom-sheet") {
       return (
         <BottomSheetTextInput

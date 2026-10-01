@@ -1,4 +1,3 @@
-import { ComposerDockBackground } from "@/composer/dock";
 import { useMemo, type ReactNode } from "react";
 import type { LayoutChangeEvent } from "react-native";
 import { View, type StyleProp, type ViewStyle } from "react-native";
@@ -10,8 +9,6 @@ import {
   HEADER_TOP_PADDING_MOBILE,
   useIsCompactFormFactor,
 } from "@/constants/layout";
-import { WindowChromeSafeArea } from "@/utils/desktop-window";
-import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 
 interface ScreenHeaderProps {
   left?: ReactNode;
@@ -45,25 +42,26 @@ export function ScreenHeader({
     () => [styles.inner, { paddingTop: insets.top + topPadding }],
     [insets.top, topPadding],
   );
-  const rowStyle = useMemo(() => [styles.row, borderless && styles.borderless], [borderless]);
+  const rowStyle = useMemo(
+    () => [
+      styles.row,
+      { paddingLeft: baseHorizontalPadding, paddingRight: baseHorizontalPadding },
+      borderless && styles.borderless,
+    ],
+    [baseHorizontalPadding, borderless],
+  );
   const leftCombinedStyle = useMemo(() => [styles.left, leftStyle], [leftStyle]);
   const rightCombinedStyle = useMemo(() => [styles.right, rightStyle], [rightStyle]);
 
   return (
-    <ComposerDockBackground style={styles.header} testID="composer-dock-header">
+    <View style={styles.header} testID="screen-header">
       <View style={innerStyle}>
-        <WindowChromeSafeArea
-          placement="inline"
-          horizontalPadding={baseHorizontalPadding}
-          onLayout={onRowLayout}
-          style={rowStyle}
-        >
-          <TitlebarDragRegion />
+        <View onLayout={onRowLayout} style={rowStyle}>
           <View style={leftCombinedStyle}>{left}</View>
           <View style={rightCombinedStyle}>{right}</View>
-        </WindowChromeSafeArea>
+        </View>
       </View>
-    </ComposerDockBackground>
+    </View>
   );
 }
 

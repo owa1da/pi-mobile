@@ -1,12 +1,4 @@
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { UnistylesRuntime } from "react-native-unistyles";
 import {
   DEFAULT_THEME_PREFERENCE,
@@ -14,36 +6,10 @@ import {
   useAppSettings,
   type AppSettings,
 } from "@/hooks/use-settings";
-import {
-  rememberPluginThemeHost,
-  usePluginThemeCatalog,
-  type PluginThemeOption,
-} from "@/plugins/themes";
-import { PLUGIN_THEME_NAMES, PLUGIN_THEME_PREFERENCE, THEME_TO_UNISTYLES } from "@/styles/theme";
+import { PLUGIN_THEME_PREFERENCE, THEME_TO_UNISTYLES } from "@/styles/theme";
 import { applyAppearance } from "./apply";
 
-interface ContributedThemes {
-  options: PluginThemeOption[];
-  selected: PluginThemeOption | null;
-  select: (option: PluginThemeOption) => void;
-}
-
-interface ApplyThemeInput {
-  preference: AppSettings["theme"];
-  contributedTheme: PluginThemeOption | null;
-}
-
-const ContributedThemesContext = createContext<ContributedThemes | null>(null);
-
-function applyTheme({ preference, contributedTheme }: ApplyThemeInput): void {
-  if (contributedTheme) {
-    const themeName = PLUGIN_THEME_NAMES[contributedTheme.theme.colorScheme];
-    UnistylesRuntime.updateTheme(themeName, () => contributedTheme.theme);
-    UnistylesRuntime.setAdaptiveThemes(false);
-    UnistylesRuntime.setTheme(themeName);
-    return;
-  }
-
+function applyTheme(preference: AppSettings["theme"]): void {
   const builtInPreference =
     preference === PLUGIN_THEME_PREFERENCE ? DEFAULT_THEME_PREFERENCE : preference;
   if (builtInPreference === "auto") {
@@ -55,18 +21,14 @@ function applyTheme({ preference, contributedTheme }: ApplyThemeInput): void {
   UnistylesRuntime.setTheme(THEME_TO_UNISTYLES[builtInPreference]);
 }
 
+/** Applies the persisted theme, fonts, and content width before rendering the app. */
 export function AppearanceProvider({ children }: { children: ReactNode }) {
-  const { settings, updateSettings, isLoading } = useAppSettings();
+  const { settings, isLoading } = useAppSettings();
   const [hasAppliedAppearance, setHasAppliedAppearance] = useState(false);
-  const options = usePluginThemeCatalog();
-  const selected = useMemo(() => {
-    if (settings.theme !== PLUGIN_THEME_PREFERENCE) return null;
-    return options.find((option) => option.id === settings.pluginThemeId) ?? null;
-  }, [options, settings.pluginThemeId, settings.theme]);
 
   useEffect(() => {
     if (isLoading) return;
-    applyTheme({ preference: settings.theme, contributedTheme: selected });
+    applyTheme(settings.theme);
     applyAppearance({
       uiFontFamily: settings.uiFontFamily,
       monoFontFamily: settings.monoFontFamily,
@@ -79,7 +41,6 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     setHasAppliedAppearance(true);
   }, [
     isLoading,
-    selected,
     settings.theme,
     settings.uiFontFamily,
     settings.monoFontFamily,
@@ -90,29 +51,9 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     settings.syntaxTheme,
   ]);
 
-  const select = useCallback(
-    (option: PluginThemeOption) => {
-      rememberPluginThemeHost(option);
-      void updateSettings({
-        theme: PLUGIN_THEME_PREFERENCE,
-        pluginThemeId: option.id,
-      });
-    },
-    [updateSettings],
-  );
-  const value = useMemo(() => ({ options, selected, select }), [options, selected, select]);
-
-  // The first settings load changes appearance keys. Mount screens only after applying it
-  // so startup does not destroy and recreate an already-visible workspace.
+  // Mount screens only after the first settings load is applied, so startup does not
+  // render once with default fonts and then re-render with the user's.
   if (!hasAppliedAppearance) return null;
 
-  return (
-    <ContributedThemesContext.Provider value={value}>{children}</ContributedThemesContext.Provider>
-  );
-}
-
-export function useContributedThemes(): ContributedThemes {
-  const themes = useContext(ContributedThemesContext);
-  if (themes === null) throw new Error("useContributedThemes requires AppearanceProvider");
-  return themes;
+  return children;
 }

@@ -57,9 +57,8 @@ import Animated, {
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
-import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
-import type { AgentAttachment } from "@getpaseo/protocol/messages";
-import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import type { TaskActivity, TodoEntry } from "@/types/stream";
+import type { ToolCallDetail } from "@/types/protocol/agent-types";
 import { buildToolCallPresentation } from "@/tool-calls/presentation";
 import { resolveToolCallIcon } from "@/utils/tool-call-icon";
 import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-list";
@@ -77,7 +76,6 @@ import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import { setAssistantMarkdownBlockHeight } from "@/utils/assistant-message-height-estimate";
 import { isRenderProfileEnabled } from "@/utils/render-profiler";
-import { getAgentAttachmentPillContent } from "@/attachments/attachment-pill-content";
 import { PlanCard } from "./plan-card";
 import { useToolCallSheet } from "./tool-call-sheet";
 import { ToolCallDetailsContent } from "./tool-call-details";
@@ -91,18 +89,7 @@ import {
   useAssistantLinkPress,
 } from "@/assistant-file-links";
 import { getCompactionMarkerLabel } from "./message-compaction-label";
-import { useAssistantImage } from "@/assistant-image/use-assistant-image";
-import {
-  AttachmentFrame,
-  AttachmentLabel,
-  AttachmentThumbnail,
-} from "@/components/attachment-pill";
-import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
-import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { isWeb, isNative } from "@/constants/platform";
-import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
-import { RewindMenu, type RewindMode } from "@/components/rewind/rewind-menu";
-import { useRewindAgentMutation } from "@/components/rewind/use-rewind-agent-mutation";
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import {
@@ -116,15 +103,8 @@ export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
 interface UserMessageProps {
-  serverId?: string;
-  agentId?: string;
-  messageId?: string;
   message: string;
-  images?: UserMessageImageAttachment[];
-  attachments?: AgentAttachment[];
   timestamp: number;
-  capabilities?: AgentCapabilityFlags;
-  client?: DaemonClient | null;
   isFirstInGroup?: boolean;
   isLastInGroup?: boolean;
   isPending?: boolean;
@@ -167,7 +147,6 @@ const ThemedMicVocal = withUnistyles(MicVocal);
 const ThemedFileSymlinkIcon = withUnistyles(FileSymlink);
 const ThemedTriangleAlertIcon = withUnistyles(TriangleAlertIcon);
 const ThemedChevronRightIcon = withUnistyles(ChevronRight);
-const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedNotificationInfo = withUnistyles(Info);
 const ThemedNotificationWarning = withUnistyles(TriangleAlertIcon);
 const ThemedNotificationError = withUnistyles(XCircle);
@@ -404,35 +383,11 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   },
 }));
 
-interface UserMessageImagePillProps {
-  image: UserMessageImageAttachment;
-  onOpen: (image: UserMessageImageAttachment) => void;
-  accessibilityLabel: string;
-}
-
-function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessageImagePillProps) {
-  const handlePress = useCallback(() => {
-    onOpen(image);
-  }, [onOpen, image]);
-  return (
-    <AttachmentFrame onPress={handlePress} accessibilityLabel={accessibilityLabel}>
-      <AttachmentThumbnail metadata={image} />
-    </AttachmentFrame>
-  );
-}
-
 const MESSAGE_TEXT_DATASET = { messageText: "true" };
 
 export const UserMessage = memo(function UserMessage({
-  serverId,
-  agentId,
-  messageId,
   message,
-  images = [],
-  attachments = [],
   timestamp,
-  capabilities,
-  client,
   isFirstInGroup = true,
   isLastInGroup = true,
   isPending = false,
@@ -441,32 +396,17 @@ export const UserMessage = memo(function UserMessage({
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
-  const [lightboxMetadata, setLightboxMetadata] = useState<UserMessageImageAttachment | null>(null);
-  const handleLightboxClose = useCallback(() => setLightboxMetadata(null), []);
-  const lightboxSource = useMemo<ImageLightboxSource | null>(
-    () => (lightboxMetadata ? { type: "attachment", metadata: lightboxMetadata } : null),
-    [lightboxMetadata],
-  );
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const hasText = message.trim().length > 0;
-  const hasImages = images.length > 0;
-  const hasAttachments = attachments.length > 0;
   const showTrailingRow = !isPending && hasText && (isCompact || isNative || isHovered);
   const formattedTimestamp = useMemo(
     () => formatMessageTimestamp(new Date(timestamp)),
     [timestamp],
   );
-  const rewindMutation = useRewindAgentMutation({ serverId, agentId, client, messageId });
 
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const getMessageContent = useCallback(() => message, [message]);
-  const handleRewind = useCallback(
-    (input: { mode: RewindMode; rewoundText: string }) => {
-      return rewindMutation.rewindAgent(input);
-    },
-    [rewindMutation],
-  );
 
   const containerStyle = useMemo(
     () => [
@@ -478,20 +418,6 @@ export const UserMessage = memo(function UserMessage({
       ],
     ],
     [resolvedDisableOuterSpacing, isFirstInGroup, isLastInGroup],
-  );
-  const imagePreviewContainerStyle = useMemo(
-    () => [
-      userMessageStylesheet.imagePreviewContainer,
-      hasText || hasAttachments ? userMessageStylesheet.imagePreviewSpacing : undefined,
-    ],
-    [hasAttachments, hasText],
-  );
-  const attachmentPreviewContainerStyle = useMemo(
-    () => [
-      userMessageStylesheet.attachmentPreviewContainer,
-      hasText ? userMessageStylesheet.imagePreviewSpacing : undefined,
-    ],
-    [hasText],
   );
   const trailingRowStyle = useMemo(
     () => [
@@ -511,36 +437,6 @@ export const UserMessage = memo(function UserMessage({
         onPointerLeave={handlePointerLeave}
       >
         <View style={userMessageStylesheet.bubble}>
-          {hasImages ? (
-            <View style={imagePreviewContainerStyle}>
-              {images.map((image) => (
-                <UserMessageImagePill
-                  key={image.id}
-                  image={image}
-                  onOpen={setLightboxMetadata}
-                  accessibilityLabel={t("composer.attachments.openImage")}
-                />
-              ))}
-            </View>
-          ) : null}
-          {hasAttachments ? (
-            <View style={attachmentPreviewContainerStyle}>
-              {attachments.map((attachment, index) => {
-                const content = getAgentAttachmentPillContent(attachment, t);
-                return (
-                  <AttachmentFrame
-                    key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
-                  >
-                    <AttachmentLabel
-                      icon={content.icon}
-                      title={content.title}
-                      subtitle={content.subtitle}
-                    />
-                  </AttachmentFrame>
-                );
-              })}
-            </View>
-          ) : null}
           {hasText ? (
             <Text selectable style={userMessageStylesheet.text} dataSet={MESSAGE_TEXT_DATASET}>
               {message}
@@ -556,14 +452,6 @@ export const UserMessage = memo(function UserMessage({
             <Text style={userMessageStylesheet.timestampText} testID="user-message-timestamp">
               {formattedTimestamp}
             </Text>
-            {capabilities && messageId ? (
-              <RewindMenu
-                capabilities={capabilities}
-                isPending={rewindMutation.isPending}
-                rewoundText={message}
-                onRewind={handleRewind}
-              />
-            ) : null}
             <TurnCopyButton
               getContent={getMessageContent}
               containerStyle={userMessageStylesheet.copyButton}
@@ -572,7 +460,6 @@ export const UserMessage = memo(function UserMessage({
           </View>
         ) : null}
       </View>
-      <AttachmentLightbox source={lightboxSource} onClose={handleLightboxClose} />
     </View>
   );
 });
@@ -752,9 +639,6 @@ interface AssistantMessageProps {
   occurrenceKey: string;
   message: string;
   timestamp: number;
-  workspaceRoot?: string;
-  serverId?: string;
-  client?: DaemonClient | null;
   spacing?: "default" | "compactTop" | "compactBottom" | "compactBoth";
   phase: MarkdownPhase;
 }
@@ -816,124 +700,74 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
 
 const ASSISTANT_IMAGE_MIN_HEIGHT = 160;
 
+function isRenderableImageUri(source: string): boolean {
+  return MARKDOWN_ALLOWED_IMAGE_HANDLERS.some((prefix) => source.startsWith(prefix));
+}
+
+/** Markdown image from an http(s) or data URI. Host file paths are shown as text (no daemon). */
 function AssistantMarkdownImage({
   source,
-  occurrenceKey,
   alt,
   hasLeadingContent,
-  client,
-  workspaceRoot,
-  serverId,
 }: {
   source: string;
-  occurrenceKey: string;
   alt?: string;
   hasLeadingContent: boolean;
-  client?: DaemonClient | null;
-  workspaceRoot?: string;
-  serverId?: string;
 }) {
-  const { t } = useTranslation();
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const openViewer = useCallback(() => setViewerOpen(true), []);
-  const closeViewer = useCallback(() => setViewerOpen(false), []);
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+  const [failed, setFailed] = useState(false);
   const containerStyle = useMemo<StyleProp<ViewStyle>>(
-    () => ({
-      marginTop: hasLeadingContent ? 16 : 0,
-      marginBottom: 0,
-    }),
+    () => ({ marginTop: hasLeadingContent ? 16 : 0, marginBottom: 0 }),
     [hasLeadingContent],
   );
-  const image = useAssistantImage({
-    source,
-    occurrenceKey,
-    client,
-    workspaceRoot,
-    serverId,
-  });
-  const binding = image.status === "failed" ? null : image.binding;
-  const aspectRatio = image.status === "failed" ? null : image.aspectRatio;
-  const imageUri = binding?.uri ?? "";
-  const imageSource = useMemo(() => ({ uri: imageUri }), [imageUri]);
+  const imageSource = useMemo(() => ({ uri: source }), [source]);
   const frameStyle = useMemo<StyleProp<ViewStyle>>(
     () => [assistantMessageStylesheet.imageFrame, containerStyle],
     [containerStyle],
   );
-  const imageSizeStyle = useMemo<ViewStyle>(() => {
-    if (aspectRatio) {
-      return { aspectRatio };
-    }
-    return { height: ASSISTANT_IMAGE_MIN_HEIGHT };
-  }, [aspectRatio]);
   const surfaceStyle = useMemo<StyleProp<ViewStyle>>(
-    () => [assistantMessageStylesheet.imageSurface, imageSizeStyle],
-    [imageSizeStyle],
+    () => [
+      assistantMessageStylesheet.imageSurface,
+      aspectRatio ? { aspectRatio } : { height: ASSISTANT_IMAGE_MIN_HEIGHT },
+    ],
+    [aspectRatio],
   );
-  const lightboxSource = useMemo<ImageLightboxSource | null>(() => {
-    if (!viewerOpen || !imageUri) return null;
-    return {
-      type: "uri",
-      uri: imageUri,
-      contentSize: aspectRatio ? { width: aspectRatio, height: 1 } : undefined,
-    };
-  }, [aspectRatio, imageUri, viewerOpen]);
-
   const stateFrameStyle = useMemo<StyleProp<ViewStyle>>(
     () => [
       assistantMessageStylesheet.imageFrame,
       containerStyle,
-      { height: ASSISTANT_IMAGE_MIN_HEIGHT },
       assistantMessageStylesheet.imageState,
     ],
     [containerStyle],
   );
+  const handleLoad = useCallback(
+    (event: { nativeEvent: { source?: { width: number; height: number } } }) => {
+      const size = event.nativeEvent.source;
+      if (size && size.width > 0 && size.height > 0) setAspectRatio(size.width / size.height);
+    },
+    [],
+  );
+  const handleError = useCallback(() => setFailed(true), []);
 
-  if (image.status === "failed") {
+  if (failed || !isRenderableImageUri(source)) {
     return (
       <View style={stateFrameStyle}>
-        <Text style={assistantMessageStylesheet.imageErrorText}>{image.message}</Text>
-      </View>
-    );
-  }
-
-  if (!binding) {
-    return (
-      <View style={stateFrameStyle}>
-        <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
+        <Text style={assistantMessageStylesheet.imageErrorText}>{alt || source}</Text>
       </View>
     );
   }
 
   return (
     <View style={frameStyle}>
-      <Pressable
-        accessibilityLabel={t("composer.attachments.openImage")}
-        accessibilityRole="button"
-        disabled={image.status !== "loaded"}
-        onPress={openViewer}
-        style={surfaceStyle}
-      >
-        <View
+      <View style={surfaceStyle} accessibilityRole="image" accessibilityLabel={alt}>
+        <Image
+          source={imageSource}
           style={assistantMessageStylesheet.image}
-          accessibilityRole="image"
-          accessibilityLabel={alt}
-        >
-          <Image
-            ref={binding.onRef}
-            source={imageSource}
-            style={assistantMessageStylesheet.image}
-            resizeMode="contain"
-            onLoad={binding.onLoad}
-            onError={binding.onError}
-          />
-          {image.status === "loading" ? (
-            <View pointerEvents="none" style={assistantMessageStylesheet.imageLoadingOverlay}>
-              <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
-            </View>
-          ) : null}
-        </View>
-      </Pressable>
-      <AttachmentLightbox source={lightboxSource} onClose={closeViewer} />
+          resizeMode="contain"
+          onLoad={handleLoad}
+          onError={handleError}
+        />
+      </View>
     </View>
   );
 }
@@ -1497,9 +1331,6 @@ export const AssistantMessage = memo(function AssistantMessage({
   occurrenceKey,
   message,
   timestamp: _timestamp,
-  workspaceRoot,
-  serverId,
-  client,
   spacing = "default",
   phase,
 }: AssistantMessageProps) {
@@ -1946,17 +1777,13 @@ export const AssistantMessage = memo(function AssistantMessage({
           <AssistantMarkdownImage
             key={node.key}
             source={String(node.attributes?.src ?? "")}
-            occurrenceKey={`${occurrenceKey}:${node.key}`}
             alt={typeof node.attributes?.alt === "string" ? node.attributes.alt : undefined}
             hasLeadingContent={hasLeadingContent}
-            client={client}
-            workspaceRoot={workspaceRoot}
-            serverId={serverId}
           />
         );
       },
     };
-  }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
+  }, [fileLinkActions, markdownParser, phase]);
 
   const blocks = useMemo(() => splitMarkdownBlocks(revealedMessage), [revealedMessage]);
   const keyedBlocks = useMemo(

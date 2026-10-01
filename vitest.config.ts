@@ -30,16 +30,7 @@ export default defineConfig({
       ".json",
     ],
     alias: [
-      {
-        find: /^@getpaseo\/relay\/e2ee$/,
-        replacement: path.resolve(__dirname, "packages/relay/src/e2ee.ts"),
-      },
-      {
-        find: /^@getpaseo\/relay$/,
-        replacement: path.resolve(__dirname, "packages/relay/src/index.ts"),
-      },
       { find: "@", replacement: path.resolve(appDir, "src") },
-      { find: "@server", replacement: path.resolve(__dirname, "packages/server/src") },
       {
         find: "react-native",
         replacement: path.resolve(rootNodeModules, "react-native-web/dist/index.js"),
@@ -57,10 +48,6 @@ export default defineConfig({
     ],
   },
   test: {
-    // Fake-timer suites freeze p-throttle's clock, so a real per-second cap deadlocks them.
-    env: {
-      PASEO_GIT_MAX_PROCESSES_PER_SECOND: "10000",
-    },
     exclude: [...configDefaults.exclude, "**/.claude/**", "**/.dev/**"],
   },
 });

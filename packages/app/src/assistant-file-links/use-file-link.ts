@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useStableEvent } from "@/hooks/use-stable-event";
-import type { OpenFileDisposition } from "@/workspace/file-open";
+import type { OpenFileDisposition } from "./types";
 import { openExternalUrl } from "@/utils/open-external-url";
 import type { InlinePathTarget } from "./parse";
 import {

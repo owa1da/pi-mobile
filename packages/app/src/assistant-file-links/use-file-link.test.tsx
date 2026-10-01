@@ -10,7 +10,7 @@ import type { InlinePathTarget } from "./parse";
 import { AssistantFileLinkResolverProvider } from "./provider";
 import type { DirectorySuggestionResult } from "./resolver";
 import { useFileLink } from "./use-file-link";
-import type { OpenFileDisposition } from "@/workspace/file-open";
+import type { OpenFileDisposition } from "./types";
 
 vi.mock("@/utils/open-external-url", () => ({
   openExternalUrl: vi.fn(async () => {}),

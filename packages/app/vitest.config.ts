@@ -1,5 +1,4 @@
 import { defineConfig, configDefaults } from "vitest/config";
-import { playwright } from "@vitest/browser-playwright";
 import path from "path";
 import fs from "fs";
 
@@ -15,7 +14,7 @@ const resolvePackageEntry = (packageName: string) => {
 export default defineConfig({
   test: {
     environment: "node",
-    exclude: [...configDefaults.exclude, "e2e/**"],
+    exclude: [...configDefaults.exclude],
     projects: [
       {
         extends: true,
@@ -24,12 +23,7 @@ export default defineConfig({
           environment: "node",
           include: ["src/**/*.{test,spec}.{ts,tsx}", "native-release-version.test.ts"],
           setupFiles: [path.resolve(__dirname, "vitest.setup.ts")],
-          exclude: [
-            ...configDefaults.exclude,
-            "e2e/**",
-            "src/**/*.browser.{test,spec}.{ts,tsx}",
-            "src/**/*.integration.test.ts",
-          ],
+          exclude: [...configDefaults.exclude, "src/**/*.integration.test.ts"],
         },
       },
       {
@@ -42,23 +36,6 @@ export default defineConfig({
           fileParallelism: false,
           testTimeout: 60_000,
           hookTimeout: 60_000,
-        },
-      },
-      {
-        extends: true,
-        test: {
-          name: "browser",
-          fileParallelism: false,
-          include: ["src/**/*.browser.{test,spec}.{ts,tsx}"],
-          browser: {
-            enabled: true,
-            provider: playwright(),
-            headless: true,
-            connectTimeout: 180_000,
-            instances: [{ browser: "chromium" }],
-            screenshotDirectory: ".vitest-screenshots",
-          },
-          globalSetup: path.resolve(__dirname, "src/runtime/websocket-test-global-setup.ts"),
         },
       },
     ],
@@ -124,14 +101,6 @@ export default defineConfig({
       ".json",
     ],
     alias: [
-      {
-        find: /^@getpaseo\/relay\/e2ee$/,
-        replacement: path.resolve(__dirname, "../relay/src/e2ee.ts"),
-      },
-      {
-        find: /^@getpaseo\/relay$/,
-        replacement: path.resolve(__dirname, "../relay/src/index.ts"),
-      },
       { find: "@", replacement: path.resolve(__dirname, "src") },
       // Keep keyboard-controller's imports in Vite so native aliases and platform extensions apply.
       {

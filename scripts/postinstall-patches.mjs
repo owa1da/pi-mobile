@@ -2,8 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:f
 import { spawnSync } from "node:child_process";
 import { join, relative } from "node:path";
 
-// In CI we often install a single workspace (e.g. server/relay/website). Only apply patches
-// when the patched dependency is actually present.
+// Only apply patches when the patched dependency is actually present.
 // `cwd` is where patch-package must run from. Packages that npm does not hoist to the
 // workspace root live in their workspace's own node_modules, and patch-package resolves
 // the patch's node_modules/... paths relative to its working directory.
@@ -23,25 +22,12 @@ const patchedPackages = [
     patchPrefix: "react-native-unistyles+",
   },
   {
-    nodeModulesPath: "node_modules/react-native-draggable-flatlist",
-    patchPrefix: "react-native-draggable-flatlist+",
-  },
-  {
     nodeModulesPath: "node_modules/react-native-gesture-handler",
     patchPrefix: "react-native-gesture-handler+",
   },
   {
     nodeModulesPath: "node_modules/react-native-svg",
     patchPrefix: "react-native-svg+",
-  },
-  {
-    nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
-    patchPrefix: "@mattermost+react-native-paste-input+",
-  },
-  {
-    nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
-    patchPrefix: "@opencode-ai+sdk+",
-    cwd: "packages/server",
   },
 ];
 

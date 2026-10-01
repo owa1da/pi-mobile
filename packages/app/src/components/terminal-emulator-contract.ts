@@ -4,16 +4,19 @@ import type {
 } from "../terminal/runtime/terminal-emulator-runtime";
 import type { Ref } from "react";
 import type { ITheme } from "@xterm/xterm";
-import type { TerminalState } from "@getpaseo/protocol/messages";
-import type { TerminalInputModeState } from "@getpaseo/protocol/terminal-input-mode";
+import type { TerminalState } from "@/types/protocol/terminal";
+import type { TerminalInputModeState } from "@/types/protocol/terminal-input-mode";
 import type { TerminalOutputData } from "../terminal/runtime/terminal-emulator-runtime";
 import type {
   TerminalLocalFileLinkSource,
   TerminalLocalFileLinkTarget,
 } from "../terminal/local-links/terminal-local-link-provider";
-import type { TerminalClipboardWriter } from "../terminal/native-renderer/terminal-selection";
 import type { PendingTerminalModifiers } from "../utils/terminal-keys";
 import type { TerminalRendererReadyChange } from "../utils/terminal-renderer-readiness";
+
+export interface TerminalClipboardWriter {
+  writeText: (text: string) => Promise<void>;
+}
 
 export interface TerminalEmulatorHandle {
   find?: TerminalFindHandle;

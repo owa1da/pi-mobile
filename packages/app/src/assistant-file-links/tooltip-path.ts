@@ -2,7 +2,7 @@ import {
   isWorkspaceRootPath,
   resolveWorkspaceFilePaths,
   type WorkspaceFileLocation,
-} from "@/workspace/file-open";
+} from "./workspace-paths";
 
 interface FormatFileLinkTooltipPathInput {
   target: WorkspaceFileLocation;

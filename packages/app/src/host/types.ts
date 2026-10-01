@@ -82,7 +82,13 @@ export type ChatItem =
       isError?: boolean;
       timestamp: number;
     }
-  | { kind: "notice"; id: string; level: "info" | "warning" | "error"; text: string; timestamp: number }
+  | {
+      kind: "notice";
+      id: string;
+      level: "info" | "warning" | "error";
+      text: string;
+      timestamp: number;
+    }
   | { kind: "divider"; id: string; label: string; summary?: string; timestamp: number };
 
 /** Incremental reader state for one session file. */

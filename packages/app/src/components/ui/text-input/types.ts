@@ -1,5 +1,12 @@
 import type { TextInputProps } from "react-native";
-import type { NativePastedFile } from "@/composer/native-pasted-image";
+
+/** A file pasted into a native text input (image paste support). */
+export interface NativePastedFile {
+  fileName: string;
+  fileSize: number;
+  type: string;
+  uri: string;
+}
 
 export interface EditingTextInputHandle {
   focus(): void;

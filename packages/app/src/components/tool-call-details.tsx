@@ -10,11 +10,11 @@ import { ScrollView as GHScrollView } from "react-native-gesture-handler";
 import { StyleSheet } from "react-native-unistyles";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import type { ToolCallDetail } from "@/types/protocol/agent-types";
 import {
   buildPaseoToolDetailSections,
   type PaseoToolDetailSection,
-} from "@getpaseo/protocol/paseo-tool-call-detail";
+} from "@/types/protocol/paseo-tool-call-detail";
 import { buildLineDiff, parseUnifiedDiff, type DiffLine } from "@/utils/tool-call-parsers";
 import { highlightDiffLines } from "@/utils/diff-highlight";
 import { hasMeaningfulToolCallDetail } from "@/utils/tool-call-detail-state";

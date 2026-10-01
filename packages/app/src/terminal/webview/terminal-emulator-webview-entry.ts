@@ -1,8 +1,8 @@
 import type { TerminalFindResult } from "../runtime/terminal-emulator-runtime";
 import type { ITheme } from "@xterm/xterm";
 import xtermCss from "@xterm/xterm/css/xterm.css";
-import type { TerminalState } from "@getpaseo/protocol/messages";
-import type { TerminalInputModeState } from "@getpaseo/protocol/terminal-input-mode";
+import type { TerminalState } from "@/types/protocol/terminal";
+import type { TerminalInputModeState } from "@/types/protocol/terminal-input-mode";
 import type { PendingTerminalModifiers } from "@/utils/terminal-keys";
 import {
   encodeTerminalOutput,

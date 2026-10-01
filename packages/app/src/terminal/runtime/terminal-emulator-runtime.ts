@@ -7,12 +7,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { LigaturesAddon } from "@xterm/addon-ligatures/lib/addon-ligatures.mjs";
 import { Terminal, type ITheme, type IMarker } from "@xterm/xterm";
-import type { TerminalState } from "@getpaseo/protocol/messages";
+import type { TerminalState } from "@/types/protocol/terminal";
 import {
   type TerminalInputModeState,
   TerminalInputModeTracker,
   terminalInputModeStatesEqual,
-} from "@getpaseo/protocol/terminal-input-mode";
+} from "@/types/protocol/terminal-input-mode";
 import {
   type PendingTerminalModifiers,
   isAppleHandheldPlatform,

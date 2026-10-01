@@ -1,128 +1,144 @@
 import { useCallback, useMemo } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { queryClient as appQueryClient } from "@/data/query-client";
-import type { AppLanguage } from "@/i18n/locales";
+import { isSyntaxThemeId, type SyntaxThemeId } from "@getpaseo/highlight";
+import { isNative } from "@/constants/platform";
+import { parseAppLanguage, type AppLanguage } from "@/i18n/locales";
 import {
-  DEFAULT_DESKTOP_SETTINGS,
-  loadDesktopSettings,
-  migrateLegacyDesktopSettings,
-  useDesktopSettings,
-} from "@/desktop/settings/desktop-settings";
-import { isElectronRuntime } from "@/desktop/host";
-import {
-  APP_SETTINGS_KEY,
-  APP_SETTINGS_QUERY_KEY,
-  DEFAULT_APP_SETTINGS,
-  DEFAULT_CLIENT_SETTINGS,
-  DEFAULT_CODE_FONT_SIZE,
-  DEFAULT_CONTENT_FONT_SIZE,
   DEFAULT_CONTENT_MAX_WIDTH,
-  DEFAULT_TERMINAL_SCROLLBACK_LINES,
-  DEFAULT_THEME_PREFERENCE,
-  DEFAULT_UI_BASE_FONT_SIZE,
-  MAX_CODE_FONT_SIZE,
-  MAX_CONTENT_FONT_SIZE,
-  MAX_CONTENT_MAX_WIDTH,
-  MAX_TERMINAL_SCROLLBACK_LINES,
-  MAX_UI_BASE_FONT_SIZE,
-  MIN_CODE_FONT_SIZE,
-  MIN_CONTENT_FONT_SIZE,
-  MIN_CONTENT_MAX_WIDTH,
-  MIN_TERMINAL_SCROLLBACK_LINES,
-  MIN_UI_BASE_FONT_SIZE,
-  loadAppSettingsFromStorage as loadAppSettingsFromStoragePure,
-  loadSettingsFromStorage as loadSettingsFromStoragePure,
-  normalizeAppSettings,
-  parseClampedFontSize,
-  parseContentMaxWidth,
-  parseTerminalScrollbackLines,
-  resolveContentMaxWidth,
-  sanitizeFontFamily,
-  saveAppSettings as saveAppSettingsPure,
-  type AppSettings,
-  type AppSettingsUpdate,
-  type OpenInSidePanePreferences,
-  type PullRequestOpenLocation,
-  type DesktopSettingsBridge,
-  type KeyValueStorage,
-  type ReleaseChannel,
-  type SendBehavior,
-  type ServiceUrlBehavior,
-  type Settings,
-  type SidebarWorkspaceTrailing,
-  type SettingsDeps,
-  type WorkspaceTitleSource,
-} from "./storage";
+  FONT_SIZE,
+  THEME_OPTIONS,
+  type ThemePreference,
+} from "@/styles/theme";
 
-export {
-  APP_SETTINGS_KEY,
-  DEFAULT_APP_SETTINGS,
-  DEFAULT_CLIENT_SETTINGS,
-  DEFAULT_CODE_FONT_SIZE,
-  DEFAULT_CONTENT_FONT_SIZE,
-  DEFAULT_CONTENT_MAX_WIDTH,
-  DEFAULT_TERMINAL_SCROLLBACK_LINES,
-  DEFAULT_THEME_PREFERENCE,
-  DEFAULT_UI_BASE_FONT_SIZE,
-  MAX_CODE_FONT_SIZE,
-  MAX_CONTENT_FONT_SIZE,
-  MAX_CONTENT_MAX_WIDTH,
-  MAX_TERMINAL_SCROLLBACK_LINES,
-  MAX_UI_BASE_FONT_SIZE,
-  MIN_CODE_FONT_SIZE,
-  MIN_CONTENT_FONT_SIZE,
-  MIN_CONTENT_MAX_WIDTH,
-  MIN_TERMINAL_SCROLLBACK_LINES,
-  MIN_UI_BASE_FONT_SIZE,
-  parseClampedFontSize,
-  parseContentMaxWidth,
-  parseTerminalScrollbackLines,
-  resolveContentMaxWidth,
-  sanitizeFontFamily,
-};
-export type {
-  AppSettings,
-  AppSettingsUpdate,
-  AppLanguage,
-  OpenInSidePanePreferences,
-  PullRequestOpenLocation,
-  DesktopSettingsBridge,
-  KeyValueStorage,
-  ReleaseChannel,
-  SendBehavior,
-  ServiceUrlBehavior,
-  Settings,
-  SettingsDeps,
-  SidebarWorkspaceTrailing,
-  WorkspaceTitleSource,
-};
+// Minimal app settings for Pi: appearance + language, persisted to AsyncStorage.
 
-/**
- * Split a `Settings` patch into the part the app owns. The two halves persist to different
- * places (AsyncStorage vs the Electron settings bridge), and the app's half is exactly the
- * key set of `DEFAULT_CLIENT_SETTINGS` — reading the keys off it means a new app setting
- * flows through here without anyone remembering to widen a hand-written list.
- */
-function pickDefinedAppSettings(updates: Partial<Settings>): Partial<AppSettings> {
-  const appUpdates: Partial<AppSettings> = {};
-  for (const key of Object.keys(DEFAULT_CLIENT_SETTINGS) as (keyof AppSettings)[]) {
-    const value = updates[key];
-    if (value !== undefined) {
-      Object.assign(appUpdates, { [key]: value });
-    }
-  }
-  return appUpdates;
+export const APP_SETTINGS_KEY = "@pi-mobile:app-settings";
+export const APP_SETTINGS_QUERY_KEY = ["app-settings"];
+
+export const DEFAULT_THEME_PREFERENCE = "auto" satisfies ThemePreference;
+export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
+export const DEFAULT_UI_BASE_FONT_SIZE = isNative ? 15 : FONT_SIZE.base;
+export const DEFAULT_CONTENT_FONT_SIZE = isNative ? 16 : FONT_SIZE.content;
+export const DEFAULT_CODE_FONT_SIZE = 12;
+export { DEFAULT_CONTENT_MAX_WIDTH };
+
+const FONT_SIZE_BOUNDS = {
+  uiBaseFontSize: { min: 10, max: 21 },
+  contentFontSize: { min: 10, max: 21 },
+  codeFontSize: { min: 9, max: 22 },
+} as const;
+const TERMINAL_SCROLLBACK_BOUNDS = { min: 0, max: 1_000_000 };
+const MAX_FONT_FAMILY_LENGTH = 200;
+
+export type { AppLanguage };
+
+export interface AppSettings {
+  theme: ThemePreference;
+  language: AppLanguage;
+  terminalScrollbackLines: number;
+  uiFontFamily: string; // "" = platform default UI stack
+  monoFontFamily: string; // "" = platform default mono stack
+  uiBaseFontSize: number;
+  contentFontSize: number;
+  codeFontSize: number;
+  /** Max width of chat and markdown content in px; null follows the current default. */
+  contentMaxWidth: number | null;
+  syntaxTheme: SyntaxThemeId;
 }
 
-const productionDeps: SettingsDeps = {
-  storage: AsyncStorage,
-  desktop: {
-    isElectron: isElectronRuntime,
-    loadDesktopSettings,
-    migrateLegacyDesktopSettings,
-  },
+export type AppSettingsUpdate =
+  | Partial<AppSettings>
+  | ((current: AppSettings) => Partial<AppSettings>);
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  theme: DEFAULT_THEME_PREFERENCE,
+  language: "system",
+  terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
+  uiFontFamily: "",
+  monoFontFamily: "",
+  uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
+  contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
+  codeFontSize: DEFAULT_CODE_FONT_SIZE,
+  contentMaxWidth: null,
+  syntaxTheme: "one",
 };
+
+export function resolveContentMaxWidth(settings: Pick<AppSettings, "contentMaxWidth">): number {
+  return settings.contentMaxWidth ?? DEFAULT_CONTENT_MAX_WIDTH;
+}
+
+export function parseClampedNumber(
+  value: unknown,
+  bounds: { min: number; max: number },
+): number | null {
+  const numeric = typeof value === "number" ? value : Number.NaN;
+  if (!Number.isFinite(numeric)) return null;
+  return Math.min(bounds.max, Math.max(bounds.min, Math.round(numeric)));
+}
+
+export function sanitizeFontFamily(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length > MAX_FONT_FAMILY_LENGTH || /[;{}<>]/.test(trimmed)) return null;
+  return trimmed;
+}
+
+const THEME_NAMES = new Set<string>(THEME_OPTIONS.map((option) => option.name));
+
+/** Accept whatever is stored, field by field, falling back to defaults for anything invalid. */
+export function normalizeAppSettings(raw: unknown): AppSettings {
+  const input = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const d = DEFAULT_APP_SETTINGS;
+  const contentMaxWidth = parseClampedNumber(input.contentMaxWidth, { min: 600, max: 4000 });
+  return {
+    theme:
+      typeof input.theme === "string" && THEME_NAMES.has(input.theme)
+        ? (input.theme as ThemePreference)
+        : d.theme,
+    language: parseAppLanguage(input.language) ?? d.language,
+    terminalScrollbackLines:
+      parseClampedNumber(input.terminalScrollbackLines, TERMINAL_SCROLLBACK_BOUNDS) ??
+      d.terminalScrollbackLines,
+    uiFontFamily: sanitizeFontFamily(input.uiFontFamily) ?? d.uiFontFamily,
+    monoFontFamily: sanitizeFontFamily(input.monoFontFamily) ?? d.monoFontFamily,
+    uiBaseFontSize:
+      parseClampedNumber(input.uiBaseFontSize, FONT_SIZE_BOUNDS.uiBaseFontSize) ?? d.uiBaseFontSize,
+    contentFontSize:
+      parseClampedNumber(input.contentFontSize, FONT_SIZE_BOUNDS.contentFontSize) ??
+      d.contentFontSize,
+    codeFontSize:
+      parseClampedNumber(input.codeFontSize, FONT_SIZE_BOUNDS.codeFontSize) ?? d.codeFontSize,
+    contentMaxWidth,
+    syntaxTheme:
+      typeof input.syntaxTheme === "string" && isSyntaxThemeId(input.syntaxTheme)
+        ? input.syntaxTheme
+        : d.syntaxTheme,
+  };
+}
+
+export async function loadAppSettingsFromStorage(): Promise<AppSettings> {
+  try {
+    const stored = await AsyncStorage.getItem(APP_SETTINGS_KEY);
+    return normalizeAppSettings(stored ? JSON.parse(stored) : null);
+  } catch (error) {
+    console.warn("[AppSettings] Failed to load settings; using defaults", error);
+    return DEFAULT_APP_SETTINGS;
+  }
+}
+
+export async function saveAppSettings(input: {
+  queryClient: QueryClient;
+  updates: AppSettingsUpdate;
+}): Promise<void> {
+  const current =
+    input.queryClient.getQueryData<AppSettings>(APP_SETTINGS_QUERY_KEY) ??
+    (await loadAppSettingsFromStorage());
+  const patch = typeof input.updates === "function" ? input.updates(current) : input.updates;
+  const next = normalizeAppSettings({ ...current, ...patch });
+  input.queryClient.setQueryData<AppSettings>(APP_SETTINGS_QUERY_KEY, next);
+  await AsyncStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(next));
+}
 
 export interface UseAppSettingsReturn {
   settings: AppSettings;
@@ -132,142 +148,24 @@ export interface UseAppSettingsReturn {
   resetSettings: () => Promise<void>;
 }
 
-export interface UseSettingsReturn {
-  settings: Settings;
-  isLoading: boolean;
-  error: unknown;
-  updateSettings: (updates: Partial<Settings>) => Promise<void>;
-  resetSettings: () => Promise<void>;
-}
-
-type SettingsSelector<TSelected> = (settings: Settings) => TSelected;
-
 export function useAppSettings(): UseAppSettingsReturn {
   const queryClient = useQueryClient();
   const { data, isPending, error } = useQuery({
     queryKey: APP_SETTINGS_QUERY_KEY,
-    queryFn: () => loadAppSettingsFromStorage(),
+    queryFn: loadAppSettingsFromStorage,
     staleTime: Infinity,
     gcTime: Infinity,
   });
 
   const updateSettings = useCallback(
-    async (updates: AppSettingsUpdate) => {
-      try {
-        await saveAppSettings({ queryClient, updates });
-      } catch (err) {
-        console.error("[AppSettings] Failed to save settings:", err);
-        throw err;
-      }
-    },
+    (updates: AppSettingsUpdate) => saveAppSettings({ queryClient, updates }),
     [queryClient],
   );
-
   const resetSettings = useCallback(async () => {
-    try {
-      const next = { ...DEFAULT_CLIENT_SETTINGS };
-      queryClient.setQueryData<AppSettings>(APP_SETTINGS_QUERY_KEY, next);
-      await AsyncStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(next));
-    } catch (err) {
-      console.error("[AppSettings] Failed to reset settings:", err);
-      throw err;
-    }
+    queryClient.setQueryData<AppSettings>(APP_SETTINGS_QUERY_KEY, DEFAULT_APP_SETTINGS);
+    await AsyncStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(DEFAULT_APP_SETTINGS));
   }, [queryClient]);
-  const settings = useMemo(() => normalizeAppSettings(data), [data]);
+  const settings = useMemo(() => data ?? DEFAULT_APP_SETTINGS, [data]);
 
-  return {
-    settings,
-    isLoading: isPending,
-    error: error ?? null,
-    updateSettings,
-    resetSettings,
-  };
-}
-
-export function useSettings(): UseSettingsReturn;
-export function useSettings<TSelected>(selector: SettingsSelector<TSelected>): TSelected;
-export function useSettings<TSelected>(
-  selector?: SettingsSelector<TSelected>,
-): UseSettingsReturn | TSelected {
-  const appSettings = useAppSettings();
-  const desktopSettings = useDesktopSettings();
-
-  const updateSettings = useCallback(
-    async (updates: Partial<Settings>) => {
-      const appUpdates = pickDefinedAppSettings(updates);
-      const promises: Promise<void>[] = [];
-      if (Object.keys(appUpdates).length > 0) {
-        promises.push(appSettings.updateSettings(appUpdates));
-      }
-
-      if (isElectronRuntime()) {
-        const desktopUpdates: Parameters<typeof desktopSettings.updateSettings>[0] = {};
-        if (updates.manageBuiltInDaemon !== undefined) {
-          desktopUpdates.daemon = {
-            manageBuiltInDaemon: updates.manageBuiltInDaemon,
-          };
-        }
-        if (updates.releaseChannel !== undefined) {
-          desktopUpdates.releaseChannel = updates.releaseChannel;
-        }
-        if (Object.keys(desktopUpdates).length > 0) {
-          promises.push(desktopSettings.updateSettings(desktopUpdates));
-        }
-      }
-
-      await Promise.all(promises);
-    },
-    [appSettings, desktopSettings],
-  );
-
-  const resetSettings = useCallback(async () => {
-    const resets: Promise<void>[] = [appSettings.resetSettings()];
-    if (isElectronRuntime()) {
-      resets.push(desktopSettings.updateSettings(DEFAULT_DESKTOP_SETTINGS));
-    }
-    await Promise.all(resets);
-  }, [appSettings, desktopSettings]);
-
-  const settings = {
-    ...DEFAULT_APP_SETTINGS,
-    ...appSettings.settings,
-    manageBuiltInDaemon: desktopSettings.settings.daemon.manageBuiltInDaemon,
-    releaseChannel: desktopSettings.settings.releaseChannel,
-  };
-
-  if (selector) {
-    return selector(settings);
-  }
-
-  return {
-    settings,
-    isLoading: appSettings.isLoading || desktopSettings.isLoading,
-    error: appSettings.error ?? desktopSettings.error,
-    updateSettings,
-    resetSettings,
-  };
-}
-
-export async function persistAppSettings(updates: Partial<AppSettings>): Promise<void> {
-  await saveAppSettings({ queryClient: appQueryClient, updates });
-}
-
-export async function saveAppSettings(input: {
-  queryClient: QueryClient;
-  updates: AppSettingsUpdate;
-  deps?: SettingsDeps;
-}): Promise<void> {
-  await saveAppSettingsPure({
-    queryClient: input.queryClient,
-    updates: input.updates,
-    deps: input.deps ?? productionDeps,
-  });
-}
-
-export async function loadAppSettingsFromStorage(deps?: SettingsDeps): Promise<AppSettings> {
-  return loadAppSettingsFromStoragePure(deps ?? productionDeps);
-}
-
-export async function loadSettingsFromStorage(deps?: SettingsDeps): Promise<Settings> {
-  return loadSettingsFromStoragePure(deps ?? productionDeps);
+  return { settings, isLoading: isPending, error: error ?? null, updateSettings, resetSettings };
 }

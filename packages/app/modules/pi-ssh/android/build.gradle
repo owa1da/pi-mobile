@@ -1,0 +1,53 @@
+apply plugin: 'com.android.library'
+
+group = 'sh.pimobile.ssh'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useExpoPublishing()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "sh.pimobile.ssh"
+  defaultConfig {
+    consumerProguardFiles 'consumer-rules.pro'
+  }
+}
+
+// JSch fork (mwiede). Versions after 0.2.26 continue as 2.27.x / 2.28.x (same line, renumbered).
+def jschVersion = '2.28.7'
+
+// jsch is a multi-release jar. Its META-INF/versions/*/OSGI-INF/MANIFEST.MF entries collide with
+// other multi-release jars on the app classpath (jspecify, bcprov-jdk18on) in
+// :app:mergeReleaseJavaResource. Android never uses META-INF/versions (D8 dexes the base classes,
+// and JSch reports Java 8 on Android), so we depend on a copy with that tree removed. This keeps the
+// fix inside the module: no packaging excludes are needed in the app's build.gradle.
+configurations {
+  jschRaw { transitive = false }
+}
+
+dependencies {
+  jschRaw "com.github.mwiede:jsch:${jschVersion}"
+}
+
+def stripJsch = tasks.register('stripJschMultiRelease', Zip) {
+  from({ zipTree(configurations.jschRaw.singleFile) }) {
+    exclude 'META-INF/versions/**'
+  }
+  archiveFileName = "jsch-${jschVersion}-android.jar"
+  destinationDirectory = layout.buildDirectory.dir('stripped-libs')
+  preserveFileTimestamps = false
+  reproducibleFileOrder = true
+}
+
+dependencies {
+  implementation files(stripJsch)
+  // Android reports Java version 8 to JSch, so ed25519 signatures, X25519 KEX and ML-KEM go through
+  // JSch's Bouncy Castle (lightweight API) implementations. jdk15to18 (not jdk18on): jdk18on is a
+  // multi-release jar whose META-INF/versions/*/OSGI-INF/MANIFEST.MF collides with jsch's in
+  // :app:mergeReleaseJavaResource. Same classes, single-release layout.
+  implementation 'org.bouncycastle:bcprov-jdk15to18:1.86'
+}
