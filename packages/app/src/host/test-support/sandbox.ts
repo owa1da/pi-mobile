@@ -34,6 +34,9 @@ export interface FakeEvent {
   cancel?: boolean;
   answers?: unknown;
   line?: string;
+  /** A forge-area action (rewind.apply, model.set, …): its args and result code. */
+  args?: Record<string, unknown>;
+  code?: string;
 }
 
 export interface Sandbox {

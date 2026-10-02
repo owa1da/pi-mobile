@@ -2,7 +2,7 @@
 // working and the field is empty (same coordinates, never an extra control). With `commands`, a
 // leading `/` opens forge's `/` menu above the field, filtered as the name is typed.
 
-import { useCallback, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -39,6 +39,10 @@ interface ComposerProps {
   stopTestID?: string;
   /** forge's `/` menu rows (sessions with the remote channel only). */
   commands?: readonly RemoteCommand[];
+  /** A tapped row the app opens natively: return true and the field is cleared, not completed. */
+  onPickNative?: (command: RemoteCommand) => boolean;
+  /** Text put into the field each time a new object arrives (a rewound prompt), then left to the user. */
+  prefill?: { text: string };
 }
 
 export function Composer({
@@ -52,6 +56,8 @@ export function Composer({
   sendTestID,
   stopTestID,
   commands,
+  onPickNative,
+  prefill,
 }: ComposerProps) {
   const { t } = useTranslation();
   const inputRef = useRef<EditingTextInputHandle | null>(null);
@@ -60,7 +66,20 @@ export function Composer({
   const submittingRef = useRef(false);
   const hasText = text.trim().length > 0;
   const showStop = canStop && !hasText && Boolean(onStop);
-  const { matches, pickCommand } = useSlashMenu(commands, busy, text, inputRef, setText);
+  const { matches, pickCommand } = useSlashMenu(
+    commands,
+    busy,
+    text,
+    inputRef,
+    setText,
+    onPickNative,
+  );
+  useEffect(() => {
+    if (!prefill) return;
+    const value = prefill.text;
+    inputRef.current?.replaceText(value, { start: value.length, end: value.length });
+    setText(value);
+  }, [prefill]);
 
   const submit = useCallback(async () => {
     const value = text.trim();
@@ -135,6 +154,7 @@ function useSlashMenu(
   text: string,
   inputRef: RefObject<EditingTextInputHandle | null>,
   setText: (text: string) => void,
+  onPickNative?: (command: RemoteCommand) => boolean,
 ) {
   const query = commands && !busy ? slashQuery(text) : undefined;
   const matches = useMemo(
@@ -143,12 +163,17 @@ function useSlashMenu(
   );
   const pickCommand = useCallback(
     (command: RemoteCommand) => {
+      if (onPickNative?.(command)) {
+        inputRef.current?.reset();
+        setText("");
+        return;
+      }
       const next = completeCommand(command);
       inputRef.current?.replaceText(next, { start: next.length, end: next.length });
       setText(next);
       inputRef.current?.focus();
     },
-    [inputRef, setText],
+    [inputRef, onPickNative, setText],
   );
   return { matches, pickCommand };
 }

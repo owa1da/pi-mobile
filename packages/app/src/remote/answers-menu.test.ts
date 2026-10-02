@@ -12,11 +12,12 @@ import {
   commandName,
   completeCommand,
   filterCommands,
-  isComingSoon,
+  nativeTarget,
   matchCommand,
   refusalOutcome,
   slashQuery,
 } from "./menu";
+import { RemoteError, refusalReason } from "./errors";
 import type { AskQuestion, RemotePrompt } from "./types";
 
 const prompt = (over: Partial<RemotePrompt>): RemotePrompt => ({
@@ -184,11 +185,33 @@ describe("the / menu", () => {
     expect(matchCommand("not a command", commands)).toBeUndefined();
   });
 
-  it("knows the commands whose screens come later", () => {
-    for (const name of ["rewind", "tasks", "model", "thinking", "export", "cost", "mcp", "fork"])
-      expect(isComingSoon(name)).toBe(true);
-    expect(isComingSoon("compact")).toBe(false);
-    expect(isComingSoon("settings")).toBe(false);
+  it("opens the CLI's names in their native screens, with the words after the name", () => {
+    expect(nativeTarget("/rewind")).toEqual({ tool: "rewind", name: "rewind", arg: "" });
+    expect(nativeTarget("/diff")?.tool).toBe("checkpoints");
+    expect(nativeTarget("/restore 3")).toEqual({ tool: "checkpoints", name: "restore", arg: "3" });
+    expect(nativeTarget("/thinking")?.tool).toBe("model");
+    expect(nativeTarget("/rename  Fix login ")).toEqual({
+      tool: "rename",
+      name: "rename",
+      arg: "Fix login",
+    });
+    expect(nativeTarget("/btw what is a token bucket?")?.arg).toBe("what is a token bucket?");
+    for (const name of [
+      "side",
+      "tasks",
+      "usage",
+      "cost",
+      "changelog",
+      "pause",
+      "export",
+      "branch",
+      "clear",
+      "sync",
+    ])
+      expect(nativeTarget(`/${name}`)?.tool).toBeDefined();
+    expect(nativeTarget("/mcp")).toBeUndefined();
+    expect(nativeTarget("/compact")).toBeUndefined();
+    expect(nativeTarget("hello")).toBeUndefined();
   });
 
   it("sends skills as messages, never through command.run", () => {
@@ -196,36 +219,59 @@ describe("the / menu", () => {
     expect(matchCommand("/skill:review the diff", rows)).toBeUndefined();
   });
 
-  it("maps forge's command.run refusals to paste, a calm notice, or an error", () => {
+  it("classifies refusals by data.reason, whatever the message says", () => {
+    expect(refusalOutcome("plan", "anything", "template")).toEqual({ kind: "paste" });
+    expect(refusalOutcome("review", null, "skill")).toEqual({ kind: "paste" });
+    expect(refusalOutcome("settings", "reworded", "tui-only")).toEqual({
+      kind: "notice",
+      key: "pi.remote.computerOnly",
+      params: { name: "settings" },
+      testID: "command-computer-only",
+    });
+    expect(refusalOutcome("answer", null, "tui-only")).toMatchObject({
+      key: "pi.remote.answerHere",
+    });
+    expect(refusalOutcome("compact", "starts a turn", "busy")).toMatchObject({
+      key: "pi.remote.inputBusy",
+    });
+    expect(refusalOutcome("compact", null, "not-main")).toMatchObject({ key: "pi.remote.notMain" });
+    expect(refusalOutcome("compact", null, "gate")).toMatchObject({ key: "pi.remote.notMain" });
+    expect(refusalOutcome("compact", null, "not-answerable")).toEqual({ kind: "error" });
+  });
+
+  it("falls back to the message text only for forge builds without a reason", () => {
     expect(refusalOutcome("plan", "/plan starts a turn: send it as a message")).toEqual({
       kind: "paste",
     });
-    expect(refusalOutcome("tasks", "/tasks opens a terminal view: use the tasks screen")).toEqual({
-      kind: "notice",
-      key: "pi.remote.comingSoon",
-      params: { name: "tasks" },
-      testID: "command-coming-soon",
-    });
-    expect(refusalOutcome("answer", "/answer opens a terminal view: use ask.answer")).toMatchObject(
-      {
-        kind: "notice",
-        key: "pi.remote.answerHere",
-      },
-    );
     expect(
       refusalOutcome(
         "settings",
         "/settings opens a terminal view: pi's settings are terminal-only",
       ),
-    ).toMatchObject({
-      kind: "notice",
-      key: "pi.remote.computerOnly",
-      params: { name: "settings" },
-    });
+    ).toMatchObject({ key: "pi.remote.computerOnly", params: { name: "settings" } });
+    expect(refusalOutcome("answer", "/answer opens a terminal view: use ask.answer")).toMatchObject(
+      { key: "pi.remote.answerHere" },
+    );
     expect(refusalOutcome("compact", "a dialog or a panel has the terminal's input")).toMatchObject(
       { kind: "notice", key: "pi.remote.inputBusy" },
     );
     expect(refusalOutcome("compact", "/compact is not in the / menu")).toEqual({ kind: "error" });
     expect(refusalOutcome("compact", null)).toEqual({ kind: "error" });
+  });
+
+  it("reads data.reason off a refused result only", () => {
+    const refused = new RemoteError("refused", "x", {
+      v: 1,
+      nonce: "n",
+      ok: false,
+      code: "refused",
+      message: "x",
+      data: { reason: "busy" },
+      at: 0,
+    });
+    expect(refused.reason).toBe("busy");
+    expect(refusalReason({ reason: "made-up" })).toBeUndefined();
+    expect(refusalReason(null)).toBeUndefined();
+    expect(new RemoteError("error", "x").reason).toBeUndefined();
   });
 });

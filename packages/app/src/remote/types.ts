@@ -158,6 +158,8 @@ export type RemoteAction =
   | "pin.toggle"
   | "models.list"
   | "usage.refresh"
+  /** Not in the v1 list: forge's /cost rows when a build has it (else the footer's cost). */
+  | "cost.read"
   | "wake.set"
   | "wake.cancel"
   | "export.run"
@@ -210,6 +212,16 @@ export type ResultCode =
   | "refused"
   | "unknown-action"
   | "error";
+
+/** Why forge refused an action (contract v1.1: `data.reason` on a refused result). */
+export type RefusalReason =
+  | "tui-only"
+  | "busy"
+  | "template"
+  | "skill"
+  | "gate"
+  | "not-answerable"
+  | "not-main";
 
 export interface RemoteResult {
   v: number;

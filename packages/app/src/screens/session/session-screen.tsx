@@ -1,7 +1,7 @@
 // Session: title, then pi's state and model, then the chat (the transcript rendered with the kept
 // Paseo components) and the composer.
 
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
@@ -42,8 +42,21 @@ import { useChatFeed } from "./use-chat-feed";
 import { AnswerDock, openIdsOf } from "./answer-dock";
 import { friendlyRemote, useAnswers, useNotice } from "./use-answers";
 import { useRemoteChannel } from "./use-remote-channel";
-import { matchCommand, refusalOutcome } from "@/remote/menu";
+import {
+  matchCommand,
+  NATIVE_COMMANDS,
+  nativeTarget,
+  refusalOutcome,
+  SHEET_TOOLS,
+  type NativeTool,
+} from "@/remote/menu";
 import { isRemoteError } from "@/remote/errors";
+import type { RemoteCommand, RemoteFooter } from "@/remote/types";
+import { footerParts } from "@/remote/views";
+import { takeHandBack } from "@/screens/forge/draft-store";
+import { openForge, type ForgeTool } from "@/screens/forge/parts";
+import { SessionSheets, type OpenSheet, type SheetTool } from "@/screens/forge/sheets";
+import type { RemoteChannel } from "./use-remote-channel";
 
 const POLL_MS = 2000;
 const FILL = { flex: 1 };
@@ -119,6 +132,7 @@ export function SessionScreen() {
   const seen = useRef(false);
   if (row) seen.current = true;
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
+  const following = useFollowPid(hostId, params.sessionId, entry);
 
   useEffect(() => {
     if (hostsLoaded) void connectionStore.getState().ensureConnected(hostId);
@@ -133,19 +147,19 @@ export function SessionScreen() {
   let body;
   if (row) {
     body = (
-      <>
-        <SessionSubBar row={row} connection={connection} sending={sendPending} />
-        <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
-        <ChatPane
-          hostId={hostId}
-          row={row}
-          entry={entry}
-          active={focused && appActive}
-          onPendingChange={setSendPending}
-        />
-      </>
+      <SessionBody
+        hostId={hostId}
+        row={row}
+        entry={entry}
+        connection={connection}
+        focused={focused}
+        active={focused && appActive}
+        sendPending={sendPending}
+        onPendingChange={setSendPending}
+        onReplaced={following.follow}
+      />
     );
-  } else if (entry?.snapshot && !leaving) {
+  } else if (entry?.snapshot && !leaving && !following.active) {
     body = (
       <EmptyState
         title={seen.current ? t("pi.session.goneTitle") : t("pi.session.notFoundTitle")}
@@ -187,14 +201,105 @@ export function SessionScreen() {
   );
 }
 
+/**
+ * /clear and /branch start a new session inside the same pi process: once the listing shows that
+ * pid under another session id, the screen moves to it (replace, so Back still goes to the list).
+ */
+function useFollowPid(hostId: string, sessionId: string, entry: SessionsEntry | undefined) {
+  const [pid, setPid] = useState<number | null>(null);
+  useEffect(() => {
+    if (pid === null) return undefined;
+    const next = entry?.snapshot?.rows.find(
+      (r) => r.pid === pid && r.live && r.sessionId !== sessionId,
+    );
+    if (next) {
+      setPid(null);
+      router.replace({
+        pathname: "/h/[hostId]/s/[sessionId]",
+        params: { hostId, sessionId: next.sessionId },
+      });
+      return undefined;
+    }
+    const timer = setTimeout(() => setPid(null), 15_000);
+    return () => clearTimeout(timer);
+  }, [entry, hostId, pid, sessionId]);
+  const follow = useCallback(
+    (next: number) => {
+      if (next > 0) {
+        setPid(next);
+        void refreshSessions(hostId);
+      }
+    },
+    [hostId],
+  );
+  return { active: pid !== null, follow };
+}
+
+interface SessionBodyProps {
+  hostId: string;
+  row: SessionRow;
+  entry: SessionsEntry | undefined;
+  connection: HostConnectionState;
+  focused: boolean;
+  active: boolean;
+  sendPending: boolean;
+  onPendingChange: (pending: boolean) => void;
+  onReplaced: (pid: number) => void;
+}
+
+/** The session with its remote channel: the sub-bar (with forge's footer), the chat and the sheets. */
+function SessionBody(props: SessionBodyProps) {
+  const { hostId, row, entry, connection, focused, active } = props;
+  const channel = useRemoteChannel(hostId, row, entry, active);
+  const [sheet, setSheet] = useState<OpenSheet | null>(null);
+  const openNative = useCallback(
+    (tool: NativeTool, arg: string) => {
+      if (SHEET_TOOLS.has(tool)) setSheet({ kind: tool as SheetTool, arg });
+      else openForge(hostId, row.sessionId, tool as ForgeTool, arg ? { arg } : {});
+    },
+    [hostId, row.sessionId],
+  );
+  const closeSheet = useCallback(() => setSheet(null), []);
+  return (
+    <>
+      <SessionSubBar
+        row={row}
+        connection={connection}
+        sending={props.sendPending}
+        footer={channel.available ? channel.state?.footer : undefined}
+      />
+      <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
+      <ChatPane
+        hostId={hostId}
+        row={row}
+        entry={entry}
+        active={active}
+        onPendingChange={props.onPendingChange}
+        channel={channel}
+        openNative={openNative}
+      />
+      <SessionSheets
+        row={row}
+        channel={channel}
+        sheet={sheet}
+        onClose={closeSheet}
+        onReplaced={props.onReplaced}
+      />
+    </>
+  );
+}
+
 function SessionSubBar({
   row,
   connection,
   sending,
+  footer,
 }: {
   row: SessionRow;
   connection: HostConnectionState;
   sending: boolean;
+  /** forge's status-line items (model · effort · ctx · cost), when it publishes them. */
+  footer?: RemoteFooter | null;
 }) {
   const { t } = useTranslation();
   const model = shortModel(row.model);
@@ -203,7 +308,8 @@ function SessionSubBar({
   const status = subBarStatus(connection.status, row.state, sending);
   const quiet = status.kind === "quiet";
   const word = quiet ? null : t(status.key);
-  const meta = [word, model].filter(Boolean).join(" · ");
+  const status_ = footerParts(footer, model);
+  const meta = [word, ...(status_.length > 0 ? status_ : [model])].filter(Boolean).join(" · ");
   let glyph = rowGlyph(row);
   if (status.kind === "pending") glyph = "working";
   else if (status.kind !== "state") glyph = "gone";
@@ -229,6 +335,9 @@ interface ChatPaneProps {
   entry: SessionsEntry | undefined;
   active: boolean;
   onPendingChange: (pending: boolean) => void;
+  channel: RemoteChannel;
+  /** A `/` name the app opens natively (a screen or a sheet). */
+  openNative: (tool: NativeTool, arg: string) => void;
 }
 
 function ChatPane(props: ChatPaneProps) {
@@ -247,11 +356,17 @@ function composerPlaceholderKey(row: SessionRow): string {
   return row.state === "working" ? "pi.session.placeholderWorking" : "pi.session.placeholder";
 }
 
-function ChatPaneBody({ hostId, row, entry, active, onPendingChange }: ChatPaneProps) {
+function ChatPaneBody({
+  hostId,
+  row,
+  active,
+  onPendingChange,
+  channel,
+  openNative,
+}: ChatPaneProps) {
   const { t } = useTranslation();
   const toast = useToast();
   const feed = useChatFeed(hostId, row, active);
-  const channel = useRemoteChannel(hostId, row, entry, active);
   const { notice, show: showNotice, dismiss: dismissNotice } = useNotice();
   const openIds = useMemo(() => openIdsOf(channel), [channel]);
   const answers = useAnswers(channel, openIds, t, showNotice);
@@ -282,7 +397,7 @@ function ChatPaneBody({ hostId, row, entry, active, onPendingChange }: ChatPaneP
         return true;
       } catch (error) {
         if (isRemoteError(error, "refused")) {
-          const outcome = refusalOutcome(name, error.detail);
+          const outcome = refusalOutcome(name, error.detail, error.reason);
           if (outcome.kind === "paste") return "paste";
           if (outcome.kind === "notice") {
             showNotice({ text: t(outcome.key, outcome.params), testID: outcome.testID });
@@ -301,6 +416,12 @@ function ChatPaneBody({ hostId, row, entry, active, onPendingChange }: ChatPaneP
 
   const send = useCallback(
     async (text: string): Promise<boolean> => {
+      // The CLI's names for forge's views open their native screens (never pasted into pi's TUI).
+      const target = row.live ? nativeTarget(text) : undefined;
+      if (target) {
+        openNative(target.tool, target.arg);
+        return true;
+      }
       const command = channel.available ? matchCommand(text, channel.state?.commands) : undefined;
       if (command) {
         const ran = await runCommand(text, command.name);
@@ -346,7 +467,16 @@ function ChatPaneBody({ hostId, row, entry, active, onPendingChange }: ChatPaneP
         setSending(false);
       }
     },
-    [channel.available, channel.state?.commands, feed, hostId, onPendingChange, row, runCommand],
+    [
+      channel.available,
+      channel.state?.commands,
+      feed,
+      hostId,
+      onPendingChange,
+      openNative,
+      row,
+      runCommand,
+    ],
   );
 
   const stop = useCallback(() => {
@@ -365,6 +495,24 @@ function ChatPaneBody({ hostId, row, entry, active, onPendingChange }: ChatPaneP
   }, [feed, hostId, row, t, toast]);
 
   const dismissError = useCallback(() => setSendError(null), []);
+  const pickNative = useCallback(
+    (command: RemoteCommand) => {
+      const tool = NATIVE_COMMANDS[command.name];
+      if (!tool || !row.live) return false;
+      openNative(tool, "");
+      return true;
+    },
+    [openNative, row.live],
+  );
+  // A prompt handed back by /rewind lands in the composer when the chat is shown again.
+  const [prefill, setPrefill] = useState<{ text: string } | undefined>(undefined);
+  const sessionId = row.sessionId;
+  useFocusEffect(
+    useCallback(() => {
+      const handed = takeHandBack(sessionId);
+      if (handed) setPrefill({ text: handed.text });
+    }, [sessionId]),
+  );
   const askingGlyph = useMemo(() => <SessionGlyph kind="needs" />, []);
   const errorMessage = sendError
     ? [t(sendError.key), sendError.detail].filter(Boolean).join(" ")
@@ -409,6 +557,8 @@ function ChatPaneBody({ hostId, row, entry, active, onPendingChange }: ChatPaneP
       <AnswerDock channel={channel} answers={answers}>
         <Composer
           commands={channel.available ? channel.state?.commands : undefined}
+          onPickNative={pickNative}
+          prefill={prefill}
           placeholder={t(composerPlaceholderKey(row))}
           onSubmit={send}
           busy={sending}

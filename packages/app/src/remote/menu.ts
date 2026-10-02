@@ -1,34 +1,67 @@
 // The composer's `/` menu: forge's own rows (state.commands), filtered as the name is typed.
 
-import type { RemoteCommand } from "./types";
+import type { RefusalReason, RemoteCommand } from "./types";
 
-/**
- * Commands whose native screens come in a later wave (the user's native-screen scope). They are
- * listed and sent through command.run; when forge refuses one because it would open a TUI-only
- * view, the app says "Coming soon" instead of forge's message.
- */
-export const NATIVE_LATER: ReadonlySet<string> = new Set([
-  "rewind",
-  "restore",
-  "diff",
-  "side",
-  "btw",
-  "tasks",
-  "model",
-  "thinking",
-  "usage",
-  "cost",
+/** Where a `/` name opens in the app: a full screen, or a sheet over the session. */
+export type NativeTool =
+  | "rewind"
+  | "checkpoints"
+  | "side"
+  | "btw"
+  | "tasks"
+  | "model"
+  | "usage"
+  | "cost"
+  | "changelog"
+  | "pause"
+  | "export"
+  | "rename"
+  | "branch"
+  | "clear"
+  | "sync";
+
+export const SHEET_TOOLS: ReadonlySet<NativeTool> = new Set<NativeTool>([
   "pause",
   "export",
   "rename",
   "branch",
-  "fork",
-  "tree",
   "clear",
   "sync",
-  "mcp",
-  "changelog",
 ]);
+
+/**
+ * The CLI's names that open a native screen instead of command.run (the user's native-screen
+ * scope). `/mcp` is not here: it runs through command.run and answers its dialogs in the app.
+ */
+export const NATIVE_COMMANDS: Readonly<Record<string, NativeTool>> = {
+  rewind: "rewind",
+  diff: "checkpoints",
+  restore: "checkpoints",
+  side: "side",
+  btw: "btw",
+  tasks: "tasks",
+  model: "model",
+  thinking: "model",
+  usage: "usage",
+  cost: "cost",
+  changelog: "changelog",
+  pause: "pause",
+  export: "export",
+  rename: "rename",
+  branch: "branch",
+  clear: "clear",
+  sync: "sync",
+};
+
+/** `/name words…` → its native screen and the words after the name, when it has one. */
+export function nativeTarget(
+  line: string,
+): { tool: NativeTool; name: string; arg: string } | undefined {
+  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(line.trim());
+  if (!match) return undefined;
+  const tool = NATIVE_COMMANDS[match[1]];
+  return tool ? { tool, name: match[1], arg: (match[2] ?? "").trim() } : undefined;
+}
 
 /** `/answer`: the app already shows pi's open questions above the composer. */
 export const ANSWER_COMMAND = "answer";
@@ -82,11 +115,6 @@ export function matchCommand(
   return commands.find((command) => command.name === name);
 }
 
-/** forge refused `name` because its screen is TUI-only for now: say "Coming soon". */
-export function isComingSoon(name: string): boolean {
-  return NATIVE_LATER.has(name);
-}
-
 /** What the composer does when forge refuses a `/` line. */
 export type Refusal =
   /** A prompt template or skill: it starts a turn, so send the line as a message instead. */
@@ -96,32 +124,63 @@ export type Refusal =
   /** Show the refusal as a send error. */
   | { kind: "error" };
 
+const answerHere: Refusal = {
+  kind: "notice",
+  key: "pi.remote.answerHere",
+  params: {},
+  testID: "command-answer",
+};
+const inputBusy: Refusal = {
+  kind: "notice",
+  key: "pi.remote.inputBusy",
+  params: {},
+  testID: "command-busy",
+};
+const computerOnly = (name: string): Refusal => ({
+  kind: "notice",
+  key: "pi.remote.computerOnly",
+  params: { name },
+  testID: "command-computer-only",
+});
+const notMain: Refusal = {
+  kind: "notice",
+  key: "pi.remote.notMain",
+  params: {},
+  testID: "command-not-main",
+};
+
 /**
- * forge's command.run refusals (docs/remote.md "Commands") by their message: "starts a turn"
- * (template/skill), "opens a terminal view" (TUI_ONLY), "has the terminal's input" (a dialog or a
- * panel holds main's input). Anything else is an error.
+ * forge's command.run refusal → what the composer does. Classified by `data.reason` (contract
+ * v1.1); the message text is read only when an older forge sent no reason.
  */
-export function refusalOutcome(name: string, message: string | null): Refusal {
-  const text = message ?? "";
-  if (/starts a turn/i.test(text)) return { kind: "paste" };
-  if (/opens a terminal view/i.test(text) || (!text && isComingSoon(name))) {
-    if (name === ANSWER_COMMAND)
-      return { kind: "notice", key: "pi.remote.answerHere", params: {}, testID: "command-answer" };
-    if (isComingSoon(name))
-      return {
-        kind: "notice",
-        key: "pi.remote.comingSoon",
-        params: { name },
-        testID: "command-coming-soon",
-      };
-    return {
-      kind: "notice",
-      key: "pi.remote.computerOnly",
-      params: { name },
-      testID: "command-computer-only",
-    };
+export function refusalOutcome(
+  name: string,
+  message: string | null,
+  reason?: RefusalReason,
+): Refusal {
+  switch (reason) {
+    case "template":
+    case "skill":
+      return { kind: "paste" };
+    case "tui-only":
+      return name === ANSWER_COMMAND ? answerHere : computerOnly(name);
+    case "busy":
+      return inputBusy;
+    case "not-main":
+    case "gate":
+      return notMain;
+    case "not-answerable":
+      return { kind: "error" };
+    default:
+      return legacyRefusal(name, message ?? "");
   }
-  if (/(dialog|panel).*input/i.test(text))
-    return { kind: "notice", key: "pi.remote.inputBusy", params: {}, testID: "command-busy" };
+}
+
+/** forge builds before v1.1: their refusal wording ("starts a turn", "opens a terminal view", …). */
+function legacyRefusal(name: string, text: string): Refusal {
+  if (/starts a turn/i.test(text)) return { kind: "paste" };
+  if (/opens a terminal view/i.test(text))
+    return name === ANSWER_COMMAND ? answerHere : computerOnly(name);
+  if (/(dialog|panel).*input/i.test(text)) return inputBusy;
   return { kind: "error" };
 }

@@ -630,6 +630,53 @@ export function control(pid, ops) {
   fs.renameSync(`${file}.tmp`, file);
 }
 
+/**
+ * A fake pi window for the native forge screens: started with a prompt, then sent `more` prompts
+ * (each answered before the next), so it has checkpoints to rewind and diff. `env` reaches only
+ * this window (e.g. FAKE_PI_AREAS=core for an older forge build). Returns {name, pane, pid}.
+ */
+export async function forgeWindow(name, prompts, env = {}) {
+  const [first, ...more] = prompts;
+  const cwd = path.join(WORK, "api");
+  fs.mkdirSync(cwd, { recursive: true });
+  const w = newWindow(name, cwd, ["pi", "--model", "fake/fake-1", "--", first], env);
+  const messages = () => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(PROCS, `${w.pid}.json`), "utf8")).messages;
+    } catch {
+      return 0;
+    }
+  };
+  await waitFor(() => messages() >= 2 && procState(w.pid) === "idle", 15_000, `${name} reply`);
+  for (const [i, text] of more.entries()) {
+    tmux("send-keys", "-t", w.pane, "-l", text);
+    tmux("send-keys", "-t", w.pane, "Enter");
+    await waitFor(
+      () => messages() >= 4 + i * 2 && procState(w.pid) === "idle",
+      15_000,
+      `${name} reply ${i + 2}`,
+    );
+  }
+  return w;
+}
+
+/** Ends a forge window without a trace on the dashboard: no ended record, no live record. */
+export async function killWindow(w) {
+  try {
+    tmux("kill-pane", "-t", w.pane);
+  } catch {
+    // already gone
+  }
+  try {
+    process.kill(w.pid, "SIGTERM");
+  } catch {
+    // already gone
+  }
+  await sleep(500);
+  fs.rmSync(path.join(PROCS, `${w.pid}.json`), { force: true });
+  fs.rmSync(path.join(AGENT, "forge", "remote", String(w.pid)), { recursive: true, force: true });
+}
+
 /** The fake pi's published remote state (state.json), or undefined. */
 export function remoteState(pid) {
   try {

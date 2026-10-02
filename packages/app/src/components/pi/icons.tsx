@@ -7,6 +7,8 @@ import {
   ChevronRight,
   Copy,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   ShieldAlert,
   Square,
@@ -22,6 +24,8 @@ export const ThemedChevronDown = withUnistyles(ChevronDown);
 export const ThemedChevronRight = withUnistyles(ChevronRight);
 export const ThemedCopy = withUnistyles(Copy);
 export const ThemedPencil = withUnistyles(Pencil);
+export const ThemedPin = withUnistyles(Pin);
+export const ThemedPinOff = withUnistyles(PinOff);
 export const ThemedPlus = withUnistyles(Plus);
 export const ThemedShieldAlert = withUnistyles(ShieldAlert);
 export const ThemedSquare = withUnistyles(Square);

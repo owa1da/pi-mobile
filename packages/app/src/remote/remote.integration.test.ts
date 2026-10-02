@@ -236,9 +236,11 @@ describe("remote channel against the fake pi's forge side", () => {
       action: "command.run",
       line: "/compact keep the plan",
     });
-    expect(await codeOf(client.send(row, "command.run", { line: "/tasks" }))).toBe("refused");
+    const tui = await client.send(row, "command.run", { line: "/tasks" }).catch((e: unknown) => e);
+    expect(tui).toBeInstanceOf(RemoteError);
+    expect((tui as RemoteError).reason).toBe("tui-only");
     expect(await codeOf(client.send(row, "command.run", { line: "/nope" }))).toBe("invalid");
-    expect(await codeOf(client.send(row, "usage.refresh", {}))).toBe("unknown-action");
+    expect(await codeOf(client.send(row, "no.such" as never, {} as never))).toBe("unknown-action");
   });
 
   it("says no-channel for a process without a remote dir", async () => {

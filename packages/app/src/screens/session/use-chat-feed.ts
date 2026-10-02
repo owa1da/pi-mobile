@@ -13,7 +13,10 @@ const BOOST_MS = 300;
 const BOOST_FOR_MS = 6000;
 const ERROR_MS = 3000;
 
-export function useChatFeed(hostId: string, row: SessionRow | undefined, active: boolean) {
+/** The transcript to follow: the session's own file, or another one (the side, an agent). */
+export type FeedSource = Pick<SessionRow, "sessionFile" | "state">;
+
+export function useChatFeed(hostId: string, row: FeedSource | undefined, active: boolean) {
   const sessionFile = row?.sessionFile;
   const [version, setVersion] = useState(0);
   const boostUntil = useRef(0);

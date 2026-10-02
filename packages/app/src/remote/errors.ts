@@ -1,7 +1,24 @@
 // Typed failures of a remote action, each with a short message the UI can show as is. Result codes
 // come from forge's result file; the rest are the app's own (no channel, no result in time).
 
-import type { RemoteResult, ResultCode } from "./types";
+import type { RefusalReason, RemoteResult, ResultCode } from "./types";
+
+const REASONS: ReadonlySet<string> = new Set<RefusalReason>([
+  "tui-only",
+  "busy",
+  "template",
+  "skill",
+  "gate",
+  "not-answerable",
+  "not-main",
+]);
+
+/** A refused result's `data.reason` (contract v1.1); undefined for older forge builds. */
+export function refusalReason(data: unknown): RefusalReason | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const reason = (data as { reason?: unknown }).reason;
+  return typeof reason === "string" && REASONS.has(reason) ? (reason as RefusalReason) : undefined;
+}
 
 export type RemoteErrorCode =
   | Exclude<ResultCode, "ok">
@@ -56,6 +73,11 @@ export class RemoteError extends Error {
 
   get i18nKey(): string {
     return REMOTE_ERROR_KEYS[this.code];
+  }
+
+  /** forge's machine-readable refusal reason, when it sent one. */
+  get reason(): RefusalReason | undefined {
+    return this.code === "refused" ? refusalReason(this.result?.data) : undefined;
   }
 }
 

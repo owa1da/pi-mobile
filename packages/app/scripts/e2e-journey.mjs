@@ -3,7 +3,7 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v9), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v10), --keep (leave the sandbox up),
 //          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
 //          --theme dark|light (default dark: the run's
 //          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as A from "./e2e-adb.mjs";
 import * as E from "./e2e-emulator.mjs";
+import { forgeSteps } from "./e2e-forge-steps.mjs";
 
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = "com.owa1da.pimobile";
@@ -723,7 +724,7 @@ function steps(ctx) {
       },
     ],
     [
-      "The / menu: forge's rows, filtered as typed; a row completes; command.run; Coming soon",
+      "The / menu: forge's rows, filtered as typed; a row completes; command.run; /tasks opens natively",
       async () => {
         const pid = windowPid("waiting");
         await A.waitNode(A.byId("chat-composer"), 20_000, "composer");
@@ -760,12 +761,16 @@ function steps(ctx) {
         A.hideKeyboard();
         await sleep(500);
         await A.tap(A.byId("chat-send"), "send /tasks");
-        await A.waitNode(A.byId("command-coming-soon"), 20_000, "Coming soon");
-        // The notice dismisses itself after a few seconds: capture it first.
-        shot("94-command-coming-soon-dark");
-        const soon = A.dump();
-        assert(soon.some(A.byText(/\/tasks is coming soon/)), "no Coming soon text");
-        assert(!soon.some(A.byId("chat-send-error")), "a send error for /tasks");
+        // The CLI's name for a forge view opens its native screen (never command.run, never pasted).
+        await A.waitNode(A.byId("tasks-list"), 20_000, "native /tasks screen");
+        shot("94-command-native-tasks-dark");
+        assert(!A.find(A.byId("chat-send-error")), "a send error for /tasks");
+        assert(
+          !E.events(pid).some((e) => e.action === "command.run" && e.line === "/tasks"),
+          "/tasks went through command.run",
+        );
+        await back();
+        await A.waitNode(A.byId("chat-composer"), 20_000, "back on the chat");
         const submits = E.events(pid).filter(
           (e) => e.kind === "submit" && (e.text ?? "").startsWith("/"),
         );
@@ -773,6 +778,7 @@ function steps(ctx) {
         await toDashboard();
       },
     ],
+    ...forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil }),
     [
       "Landscape: dashboard, chat and the add-host sheet fit the rotated screen",
       async () => {
@@ -1435,7 +1441,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v9"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v10"),
   );
   const apk = option(
     args,

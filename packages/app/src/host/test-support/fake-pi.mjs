@@ -63,6 +63,10 @@ let leaf = null;
 let messages = 0;
 let firstPrompt = null;
 let resumedLastText = null;
+/** entry id -> parentId, and the user prompts in order (rewind / checkpoints). */
+const parents = new Map();
+let userEntries = [];
+let sessionName = null;
 function textOf(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -79,6 +83,13 @@ if (sessionArg) {
     const e = JSON.parse(line);
     if (e.type === "session") sessionId = e.id;
     else if (e.id) leaf = e.id;
+    if (e.id) parents.set(e.id, e.parentId ?? null);
+    if (e.type === "message" && e.message?.role === "user")
+      userEntries.push({
+        id: e.id,
+        text: firstLineOf(e.message.content),
+        at: Date.parse(e.timestamp) || Date.now(),
+      });
     if (e.type === "message") {
       messages++;
       if (!firstPrompt && e.message?.role === "user")
@@ -114,7 +125,10 @@ if (sessionArg) {
 function append(entry) {
   const full = { ...entry, id: hex8(), parentId: leaf, timestamp: new Date().toISOString() };
   fs.appendFileSync(sessionFile, `${JSON.stringify(full)}\n`);
+  parents.set(full.id, full.parentId);
   leaf = full.id;
+  if (entry.type === "message" && entry.message?.role === "user")
+    userEntries.push({ id: full.id, text: firstLineOf(entry.message.content), at: Date.now() });
   return full;
 }
 
@@ -155,11 +169,16 @@ const COMMANDS = [
   { name: "cost", description: "Session cost and token usage" },
   { name: "diff", description: "Show the changes since a checkpoint" },
   { name: "export", description: "Export the conversation as Markdown" },
+  { name: "mcp", description: "Manage MCP servers" },
   { name: "model", description: "Pick the model and thinking level" },
+  { name: "pause", description: "Pause, then wake the agent later" },
   { name: "rename", description: "Rename this session" },
+  { name: "restore", description: "Restore the files of a checkpoint" },
   { name: "rewind", description: "Rewind the conversation and code" },
   { name: "side", description: "Open a side conversation" },
+  { name: "sync", description: "Sync pi's setup with its repo" },
   { name: "tasks", description: "Background tasks, agents and workflows" },
+  { name: "thinking", description: "Set the thinking level" },
   { name: "usage", description: "Plan usage and limits" },
 ];
 // Rows whose screens are TUI-only views: command.run refuses them ("use the specific action").
@@ -174,6 +193,10 @@ const TUI_VIEWS = new Set([
   "side",
   "tasks",
   "usage",
+  "pause",
+  "sync",
+  "restore",
+  "thinking",
 ]);
 let remoteReady = false;
 let rev = 0;
@@ -191,6 +214,7 @@ const modelInfo = model
   ? { provider: model.split("/")[0], id: model.split("/").slice(1).join("/") || model }
   : { provider: "fake", id: "fake-1" };
 if (thinking) modelInfo.thinking = thinking;
+let thinkingLevel = thinking ?? "medium";
 
 function record() {
   return {
@@ -207,7 +231,7 @@ function record() {
     tmux: tmuxSocket && tmuxPane ? { socket: tmuxSocket, pane: tmuxPane } : null,
     sessionId,
     sessionFile,
-    name: null,
+    name: sessionName,
     firstPrompt,
     messages,
     model: modelInfo,
@@ -239,6 +263,535 @@ function writeRecord() {
 
 // ---------- remote channel ----------
 
+// ---------- forge's native-screen areas (the app's /rewind, /tasks, /model, … screens) ----------
+// FAKE_PI_AREAS=core: only the Wave 11 areas (prompt, questions, commands, footer); every other
+// action is unknown-action, as an older forge build answers (the app says "Update forge").
+const AREAS_CORE = process.env.FAKE_PI_AREAS === "core";
+const forgeDir = path.join(logDir, `${process.pid}.forge`);
+const MCP_OPTIONS = ["github · connected", "linear · needs auth", "Add a server"];
+const MODELS = [
+  { ref: "anthropic/claude-opus-5-5", name: "Opus 5.5" },
+  { ref: "anthropic/claude-sonnet-5", name: "Sonnet 5" },
+  { ref: "openai/gpt-6", name: "GPT 6" },
+  { ref: "openai/gpt-6-mini", name: "GPT 6 mini" },
+  { ref: "google/gemini-3-pro", name: "Gemini 3 Pro" },
+  { ref: "fake/fake-1", name: "Fake 1" },
+];
+const THINKING = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+const modelName = (ref) => MODELS.find((m) => m.ref === ref)?.name ?? "";
+const pins = {
+  pinned: ["anthropic/claude-opus-5-5", "openai/gpt-6"],
+  recent: ["google/gemini-3-pro"],
+};
+let wake = null;
+let side = null;
+let btwLast = null;
+const restored = [];
+
+function forgeFile(name, text) {
+  fs.mkdirSync(forgeDir, { recursive: true });
+  const file = path.join(forgeDir, name);
+  if (text !== undefined) fs.writeFileSync(file, text);
+  return file;
+}
+const jsonl = (entries) => entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+const msg = (id, parentId, role, text, extra = {}) => ({
+  type: "message",
+  id,
+  parentId,
+  timestamp: new Date().toISOString(),
+  message: { role, content: [{ type: "text", text }], timestamp: Date.now(), ...extra },
+});
+function appendTo(file, role, text) {
+  const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+  const last = JSON.parse(lines[lines.length - 1]);
+  const id = hex8();
+  fs.appendFileSync(file, `${JSON.stringify(msg(id, last.id ?? null, role, text))}\n`);
+}
+function sessionFileFor(name, id, entries) {
+  const header = {
+    type: "session",
+    version: 3,
+    id,
+    timestamp: new Date().toISOString(),
+    cwd: process.cwd(),
+  };
+  return forgeFile(name, jsonl([header, ...entries]));
+}
+
+let tasks = null;
+function seedTasks() {
+  if (tasks) return tasks;
+  const shellLog = forgeFile(
+    "test-watch.log",
+    [
+      "$ npm test -- --watch",
+      "",
+      " RUN  v4.1.7 /work/api",
+      "",
+      " ✓ src/limiter.test.ts (12 tests) 41ms",
+      " ✓ src/bucket.test.ts (8 tests) 17ms",
+      " × src/routes.test.ts > rejects a burst over the limit",
+      "   → expected 429, received 200",
+      "",
+    ].join("\n"),
+  );
+  const agent = sessionFileFor("agent-review.jsonl", uuid(), [
+    msg(
+      "a1",
+      null,
+      "user",
+      "Review the token bucket refactor in src/limiter.ts for race conditions.",
+    ),
+    msg(
+      "a2",
+      "a1",
+      "assistant",
+      "Two refill paths can run at once: `take()` refills before checking, and the timer refills too. Guard the refill with the same lock, or refill only in `take()`.",
+      { stopReason: "stop" },
+    ),
+  ]);
+  tasks = [
+    {
+      owner: "main",
+      key: "sh-1",
+      kind: "shell",
+      name: "npm test -- --watch",
+      status: "running",
+      detail: null,
+      canStop: true,
+      canResume: false,
+      sessionFile: null,
+      logPath: shellLog,
+      runDir: null,
+    },
+    {
+      owner: "main",
+      key: "ag-review",
+      kind: "agent",
+      name: "review: token bucket",
+      status: "done",
+      detail: null,
+      canStop: false,
+      canResume: true,
+      sessionFile: agent,
+      logPath: null,
+      runDir: null,
+    },
+    {
+      owner: "main",
+      key: "wf-sweep",
+      kind: "workflow",
+      name: "sweep · 3 agents",
+      status: "interrupted",
+      detail: "2 of 3 agents finished",
+      canStop: false,
+      canResume: true,
+      sessionFile: null,
+      logPath: null,
+      runDir: path.join(forgeDir, "runs", "20261002T101204-sweep"),
+    },
+  ];
+  // The watcher keeps writing while it runs.
+  setInterval(() => {
+    const shell = tasks.find((t) => t.key === "sh-1");
+    if (shell?.status === "running")
+      fs.appendFileSync(
+        shellLog,
+        ` ✓ src/limiter.test.ts (12 tests) ${30 + Math.floor(Math.random() * 20)}ms\n`,
+      );
+  }, 2000).unref();
+  return tasks;
+}
+
+/** Checkpoints: one per prompt on this branch (n from 1), with made-up change counts. */
+function checkpoints() {
+  return userEntries.map((e, i) => ({
+    n: i + 1,
+    entryId: e.id,
+    label: e.text.slice(0, 80),
+    at: e.at,
+    files: i === 0 ? 0 : (i % 3) + 1,
+    added: i === 0 ? 0 : 7 * i + 3,
+    removed: i === 0 ? 0 : 2 * i,
+  }));
+}
+
+function forgeAreas() {
+  if (AREAS_CORE) return {};
+  return {
+    wake,
+    side: side ? { open: true, working: side.working, sessionFile: side.file } : null,
+    tasks: seedTasks(),
+    checkpoints: checkpoints(),
+    pins,
+  };
+}
+
+function patchFor(n) {
+  return [
+    "diff --git a/src/limiter.ts b/src/limiter.ts",
+    "--- a/src/limiter.ts",
+    "+++ b/src/limiter.ts",
+    "@@ -1,9 +1,14 @@",
+    " import { clock } from './clock';",
+    "-export function limit(req: Request) {",
+    "-  return counter.hit(req.ip) > MAX;",
+    "+export class TokenBucket {",
+    "+  private tokens = CAPACITY;",
+    "+  private last = clock.now();",
+    "+  take(): boolean {",
+    "+    this.refill();",
+    "+    if (this.tokens < 1) return false;",
+    "+    this.tokens -= 1;",
+    "+    return true;",
+    "+  }",
+    " }",
+    `diff --git a/README.md b/README.md`,
+    "--- a/README.md",
+    "+++ b/README.md",
+    "@@ -12,3 +12,4 @@",
+    " ## Rate limits",
+    `-Requests are counted per IP (checkpoint ${n}).`,
+    "+Each IP gets a token bucket of 20 requests, refilled at 5 per second, so a long horizontal line in a diff has to scroll sideways on a phone.",
+    "",
+  ].join("\n");
+}
+
+const ok = (data = null) => ({ code: "ok", data });
+const bad = (message) => ({ code: "invalid", message });
+const argText = (v) => (typeof v === "string" ? v.trim() : "");
+
+function answerFor(question) {
+  if (/bucket/i.test(question))
+    return "A token bucket holds up to N tokens and refills at a steady rate; each request takes one, so short bursts pass and sustained floods wait.";
+  return `Short answer: ${question.replace(/\?$/, "")} — yes, and nothing in the session changes.`;
+}
+
+function openSide(seed) {
+  const id = uuid();
+  side = { file: sessionFileFor(`side-${id}.jsonl`, id, []), working: false };
+  if (seed) sideTurn(seed);
+}
+function sideTurn(question) {
+  appendTo(side.file, "user", question);
+  side.working = true;
+  const current = side;
+  setTimeout(() => {
+    if (side !== current) return;
+    appendTo(current.file, "assistant", `side: ${answerFor(question)}`);
+    current.working = false;
+    writeRecord();
+  }, 400).unref();
+}
+
+function forgeAct(action, args) {
+  if (AREAS_CORE) return { code: "unknown-action", message: `${action} is not implemented` };
+  const res = forgeRun(action, args);
+  if (res.code !== "unknown-action")
+    log({ kind: "remote", action, by: "app", args, code: res.code });
+  writeRecord();
+  return res;
+}
+
+/** The first group that knows the action answers it. */
+function forgeRun(action, args) {
+  for (const run of [runCheckpoints, runTasks, runSide, runModels, runWake, runSession]) {
+    const res = run(action, args);
+    if (res !== UNKNOWN) return res;
+  }
+  return { code: "unknown-action", message: `${action} is not implemented` };
+}
+
+const UNKNOWN = { code: "unknown-action" };
+
+function runCheckpoints(action, args) {
+  switch (action) {
+    case "rewind.preview": {
+      const i = userEntries.findIndex((e) => e.id === args.entryId);
+      if (i < 0) return { code: "stale", message: "that prompt is not on this branch" };
+      const after = checkpoints().slice(i);
+      const sum = (k) => after.reduce((a, c) => a + c[k], 0);
+      return ok({ files: Math.min(9, sum("files")), added: sum("added"), removed: sum("removed") });
+    }
+    case "rewind.apply": {
+      const i = userEntries.findIndex((e) => e.id === args.entryId);
+      if (i < 0) return { code: "stale", message: "that prompt is not on this branch" };
+      if (!["both", "conversation", "code"].includes(args.mode)) return bad("bad mode");
+      const target = userEntries[i];
+      if (args.mode !== "code") {
+        // The branch goes back to before the prompt: the next entry hangs off its parent.
+        leaf = parents.get(target.id) ?? null;
+        userEntries = userEntries.slice(0, i);
+      }
+      notice(
+        args.mode === "conversation"
+          ? "Navigated to selected point"
+          : `Code restored to before: ${target.text}`,
+      );
+      return ok();
+    }
+    case "checkpoint.diff": {
+      const n = Number(args.n);
+      if (!checkpoints().some((c) => c.n === n))
+        return { code: "stale", message: "no such checkpoint" };
+      return ok({ patch: patchFor(n), truncated: false });
+    }
+    case "checkpoint.restore": {
+      const n = Number(args.n);
+      if (!checkpoints().some((c) => c.n === n))
+        return { code: "stale", message: "no such checkpoint" };
+      restored.push(n);
+      notice(`Restored to checkpoint ${n}`);
+      return ok();
+    }
+    default:
+      return UNKNOWN;
+  }
+}
+
+function runTasks(action, args) {
+  switch (action) {
+    case "task.stop": {
+      const task = seedTasks().find((t) => t.owner === args.owner && t.key === args.key);
+      if (!task) return { code: "stale", message: "no such task" };
+      if (!task.canStop)
+        return { code: "refused", message: "not running", data: { reason: "gate" } };
+      Object.assign(task, { status: "stopped", canStop: false });
+      return ok();
+    }
+    case "task.resume": {
+      const task = seedTasks().find(
+        (t) => t.key === args.runId || (t.runDir && path.basename(t.runDir) === args.runId),
+      );
+      if (!task) return { code: "stale", message: "no such run" };
+      Object.assign(task, { status: "running", canResume: false, canStop: true });
+      return ok();
+    }
+    case "task.tail": {
+      const task = seedTasks().find((t) => t.owner === args.owner && t.key === args.key);
+      if (!task?.logPath) return { code: "stale", message: "no log" };
+      const all = fs.readFileSync(task.logPath, "utf8");
+      const bytes = Number(args.bytes) > 0 ? Number(args.bytes) : 16384;
+      return ok({ text: all.slice(-bytes) });
+    }
+    case "agent.send": {
+      const task = seedTasks().find((t) => t.key === args.key && t.kind === "agent");
+      if (!task) return { code: "stale", message: "no such agent" };
+      if (!argText(args.text) || !["steer", "followUp"].includes(args.mode))
+        return bad("text and mode");
+      appendTo(task.sessionFile, "user", argText(args.text));
+      setTimeout(() => {
+        appendTo(task.sessionFile, "assistant", `agent: noted, ${argText(args.text).slice(0, 40)}`);
+        writeRecord();
+      }, 300).unref();
+      return ok();
+    }
+    case "agent.resume": {
+      const task = seedTasks().find((t) => t.key === args.key && t.kind === "agent");
+      if (!task) return { code: "stale", message: "no such agent" };
+      Object.assign(task, { status: "running", canResume: false, canStop: true });
+      return ok();
+    }
+    default:
+      return UNKNOWN;
+  }
+}
+
+function runSide(action, args) {
+  switch (action) {
+    case "side.open":
+      if (side) return { code: "refused", message: "the side is open", data: { reason: "gate" } };
+      openSide(argText(args.text));
+      return ok();
+    case "side.send":
+      if (!side) return { code: "stale", message: "the side is closed" };
+      if (!argText(args.text)) return bad("text");
+      sideTurn(argText(args.text));
+      return ok();
+    case "side.close":
+      if (!side) return { code: "stale", message: "the side is closed" };
+      side = null;
+      return ok();
+    case "btw.ask": {
+      const question = argText(args.text);
+      if (!question) return bad("text");
+      setTimeout(() => {
+        btwLast = { question, answer: answerFor(question) };
+        append({ type: "custom", customType: "forge-btw", data: btwLast });
+        writeRecord();
+      }, 500).unref();
+      return ok();
+    }
+    case "btw.fork":
+      if (!btwLast) return { code: "stale", message: "no answer to fork" };
+      if (side) return { code: "refused", message: "the side is open", data: { reason: "gate" } };
+      openSide("");
+      appendTo(side.file, "user", btwLast.question);
+      appendTo(side.file, "assistant", btwLast.answer);
+      return ok();
+    case "btw.clear":
+      append({ type: "custom", customType: "forge-btw-clear", data: {} });
+      btwLast = null;
+      return ok();
+    default:
+      return UNKNOWN;
+  }
+}
+
+function runModels(action, args) {
+  switch (action) {
+    case "models.list":
+      return ok({ available: MODELS });
+    case "model.set": {
+      if (!MODELS.some((m) => m.ref === args.ref)) return bad("not an available model");
+      const [provider, ...rest] = args.ref.split("/");
+      modelInfo.provider = provider;
+      modelInfo.id = rest.join("/");
+      pins.recent = [args.ref, ...pins.recent.filter((r) => r !== args.ref)]
+        .filter((r) => !pins.pinned.includes(r))
+        .slice(0, 10);
+      return ok();
+    }
+    case "thinking.set":
+      if (!THINKING.has(args.level)) return bad("not a level");
+      thinkingLevel = args.level;
+      modelInfo.thinking = args.level;
+      return ok();
+    case "pin.toggle":
+      if (typeof args.ref !== "string" || !args.ref) return bad("ref");
+      if (pins.pinned.includes(args.ref)) pins.pinned = pins.pinned.filter((r) => r !== args.ref);
+      else {
+        pins.pinned = [...pins.pinned, args.ref];
+        pins.recent = pins.recent.filter((r) => r !== args.ref);
+      }
+      return ok();
+    default:
+      return UNKNOWN;
+  }
+}
+
+function runWake(action, args) {
+  switch (action) {
+    case "usage.refresh":
+      return ok({
+        accounts: [
+          {
+            title: "Claude · you@example.com · Max 20x",
+            meters: [
+              { label: "5-hour", left: 93, detail: "Resets in 5h 30m" },
+              { label: "Weekly", left: 65, detail: "Resets in 3d 21h" },
+            ],
+          },
+          { title: "OpenRouter · laptop", meters: [{ label: "Credits", value: "$12.34 left" }] },
+        ],
+      });
+    case "cost.read":
+      return ok({
+        rows: [
+          { label: "Messages", value: `${messages}` },
+          { label: "Tokens", value: `${messages * 6000} in · ${messages * 900} out` },
+          { label: "Cache", value: "81% hit" },
+          { label: "Total", value: `$${(messages * 0.021).toFixed(3)}` },
+        ],
+      });
+    case "wake.set": {
+      const reason = argText(args.reason) || null;
+      let due;
+      if (typeof args.in === "number" && args.in >= 1 && args.in <= 1440)
+        due = Date.now() + args.in * 60_000;
+      else if (typeof args.at === "number" && args.at > Date.now()) due = args.at;
+      else return bad("in (minutes) or at (epoch ms)");
+      wake = { due, reason, missed: false };
+      return ok();
+    }
+    case "wake.cancel":
+      if (!wake) return { code: "stale", message: "Nothing scheduled" };
+      wake = null;
+      return ok();
+    case "export.run": {
+      const want = argText(args.path);
+      const file = want
+        ? path.resolve(process.cwd(), want)
+        : path.join(process.cwd(), `${sessionId.slice(0, 8)}-session.md`);
+      if (!file.endsWith(".md"))
+        return {
+          code: "refused",
+          message: "/export writes Markdown · use a .md name",
+          data: { reason: "gate" },
+        };
+      if (fs.existsSync(file) && args.overwrite !== true)
+        return {
+          code: "refused",
+          message: `Not exported: ${path.basename(file)} exists`,
+          data: { reason: "gate", exists: true },
+        };
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `# ${sessionName ?? firstPrompt ?? "Session"}\n`);
+      notice(`Session exported to: ${file}`);
+      return ok({ path: file });
+    }
+    default:
+      return UNKNOWN;
+  }
+}
+
+function runSession(action, args) {
+  switch (action) {
+    case "session.rename":
+      if (!argText(args.name)) return bad("name");
+      sessionName = argText(args.name).slice(0, 200);
+      return ok();
+    case "session.branch":
+    case "session.clear": {
+      const keep =
+        action === "session.branch"
+          ? fs.readFileSync(sessionFile, "utf8").split("\n").filter(Boolean).slice(1)
+          : [];
+      const oldId = sessionId;
+      sessionId = uuid();
+      sessionFile = sessionFile.replace(oldId, sessionId);
+      if (sessionFile.indexOf(sessionId) < 0)
+        sessionFile = path.join(path.dirname(sessionFile), `${sessionId}.jsonl`);
+      fs.writeFileSync(
+        sessionFile,
+        jsonl([
+          {
+            type: "session",
+            version: 3,
+            id: sessionId,
+            timestamp: new Date().toISOString(),
+            cwd: process.cwd(),
+          },
+        ]) + keep.map((l) => `${l}\n`).join(""),
+      );
+      if (action === "session.clear") {
+        leaf = null;
+        userEntries = [];
+        messages = 0;
+        firstPrompt = null;
+        lastText = null;
+        lastRun = null;
+        sessionName = null;
+      } else sessionName = argText(args.name) || sessionName;
+      return ok();
+    }
+    case "sync.status":
+      return ok({
+        text: "~/.pi/forge: master, up to date with origin\nsettings: in sync\nskills: 14 linked",
+      });
+    case "sync.run":
+      return ok({ text: "Pulled 2 commits · setup ok · Reloaded" });
+    case "changelog.read":
+      return ok({
+        markdown:
+          "## 1.4.0\n\n- `/rewind` shows what each prompt changed.\n- The status line keeps the context when narrow.\n\n## 1.3.2\n\n- Fixed `/export` names with spaces.\n",
+      });
+    default:
+      return { code: "unknown-action", message: `${action} is not implemented` };
+  }
+}
+
 function writeRemoteState() {
   if (!REMOTE || !remoteReady) return;
   rev++;
@@ -253,13 +806,19 @@ function writeRemoteState() {
     prompt: openDialog,
     questions: asks,
     footer: {
-      model: { provider: modelInfo.provider, id: modelInfo.id, name: "", thinking: thinking ?? "" },
+      model: {
+        provider: modelInfo.provider,
+        id: modelInfo.id,
+        name: modelName(`${modelInfo.provider}/${modelInfo.id}`),
+        thinking: thinkingLevel,
+      },
       contextPercent: Math.min(100, messages * 3),
       contextTokens: messages * 6000,
       contextWindow: 200000,
       cost: Math.round(messages * 0.021 * 1000) / 1000,
     },
     commands: COMMANDS,
+    ...forgeAreas(),
   };
   const file = path.join(remoteRoot, "state.json");
   const tmp = `${file}.tmp`;
@@ -423,10 +982,24 @@ function runCommand(args) {
   const name = /^\/(\S+)/.exec(line)?.[1];
   if (!name || !COMMANDS.some((c) => c.name === name))
     return { code: "invalid", message: "not a command" };
-  if (TUI_VIEWS.has(name))
-    return { code: "refused", message: `/${name} opens a terminal view: use its action` };
+  if (TUI_VIEWS.has(name) || (name === "rename" && line === "/rename"))
+    return {
+      code: "refused",
+      message: `/${name} opens a terminal view: use its action`,
+      data: { reason: "tui-only" },
+    };
   if (openDialog)
-    return { code: "refused", message: "a dialog or a panel has the terminal's input" };
+    return {
+      code: "refused",
+      message: "a dialog or a panel has the terminal's input",
+      data: { reason: "busy" },
+    };
+  if (name === "mcp") {
+    // forge's /mcp asks with pi's own select: the app answers it like any dialog.
+    log({ kind: "remote", action: "command.run", by: "app", line });
+    openPromptDialog({ kind: "select", title: "MCP servers", options: MCP_OPTIONS });
+    return { code: "ok" };
+  }
   log({ kind: "remote", action: "command.run", by: "app", line });
   notice(`Ran ${line}`);
   return { code: "ok" };
@@ -458,7 +1031,7 @@ function act(message) {
     case "command.run":
       return runCommand(args);
     default:
-      return { code: "unknown-action", message: `${message.action} is not implemented` };
+      return forgeAct(message.action, args);
   }
 }
 
