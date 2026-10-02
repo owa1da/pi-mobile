@@ -9,13 +9,14 @@ import { StyleSheet } from "react-native-unistyles";
 import { ChatView } from "@/components/pi/chat-view";
 import { Composer } from "@/components/pi/composer";
 import { ConfirmSheet } from "@/components/pi/confirm-sheet";
+import { SheetActions, sheetActionStyles } from "@/components/pi/sheet-actions";
 import { MutedSpinner } from "@/components/pi/icons";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { Button } from "@/components/ui/button";
 import { connectionRunner } from "@/remote/client";
 import { readBtwHistory } from "@/remote/session-file";
 import type { RemoteBtw } from "@/remote/types";
-import type { BtwExchange } from "@/remote/views";
+import { modelErrorKey, type BtwExchange } from "@/remote/views";
 import { useChatFeed } from "@/screens/session/use-chat-feed";
 import { connectionStore } from "@/stores/app";
 import { usePoller } from "@/stores/use-polling";
@@ -298,6 +299,9 @@ function BtwBody({
   );
   if (history === null) return <Loading />;
   const showError = Boolean(error) && !pendingQuestion;
+  // pi's raw provider text ("Unknown provider: unknown") in plain words; other text as forge says it.
+  const errorKey = error ? modelErrorKey(error) : null;
+  const plainError = errorKey ? t(`pi.forge.modelErrors.${errorKey}`) : error;
   return (
     <ScrollView contentContainerStyle={forgeStyles.scroll} testID="btw-history">
       {history.length === 0 && !pendingQuestion && !error ? (
@@ -321,7 +325,7 @@ function BtwBody({
       {showError ? (
         <View style={styles.exchange} testID="btw-error">
           {errorQuestion ? <Text style={styles.question}>{errorQuestion}</Text> : null}
-          <Text style={styles.errorText}>{error}</Text>
+          <Text style={styles.errorText}>{plainError}</Text>
         </View>
       ) : null}
     </ScrollView>
@@ -343,24 +347,26 @@ function BtwActions({
 }) {
   return (
     <View style={styles.actions}>
-      <Button
-        variant="ghost"
-        onPress={onClear}
-        loading={busy === "btw.clear"}
-        style={styles.fill}
-        testID="btw-clear"
-      >
-        {clearLabel}
-      </Button>
-      <Button
-        variant="secondary"
-        onPress={onFork}
-        loading={busy === "btw.fork"}
-        style={styles.fill}
-        testID="btw-fork"
-      >
-        {forkLabel}
-      </Button>
+      <SheetActions>
+        <Button
+          variant="ghost"
+          onPress={onClear}
+          loading={busy === "btw.clear"}
+          style={sheetActionStyles.button}
+          testID="btw-clear"
+        >
+          {clearLabel}
+        </Button>
+        <Button
+          variant="default"
+          onPress={onFork}
+          loading={busy === "btw.fork"}
+          style={sheetActionStyles.button}
+          testID="btw-fork"
+        >
+          {forkLabel}
+        </Button>
+      </SheetActions>
     </View>
   );
 }

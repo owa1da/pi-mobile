@@ -77,6 +77,31 @@ export function slashQuery(text: string): string | undefined {
   return rest;
 }
 
+/** `/mcp`'s subcommands that run without a terminal (forge refuses bare `/mcp`: pi's manager view). */
+export const MCP_SUBCOMMANDS = ["login", "logout", "reconnect"] as const;
+export type McpSubcommand = (typeof MCP_SUBCOMMANDS)[number];
+
+/**
+ * The rows the menu offers: forge's rows, with `/mcp` replaced by the subcommands that work here
+ * (`/mcp login`, `/mcp logout`, `/mcp reconnect`). Bare `/mcp` opens pi's MCP manager, a
+ * terminal-only view, so the menu never offers it.
+ */
+export function menuRows(
+  commands: readonly RemoteCommand[],
+  describe: (sub: McpSubcommand) => string,
+): RemoteCommand[] {
+  return commands.flatMap((command) =>
+    command.name === "mcp"
+      ? MCP_SUBCOMMANDS.map((sub) => ({ name: `mcp ${sub}`, description: describe(sub) }))
+      : [command],
+  );
+}
+
+/** A row's testID suffix: its name with spaces as dashes (`mcp-reconnect`). */
+export function rowTestId(name: string): string {
+  return name.replace(/\s+/g, "-");
+}
+
 /** Rows matching `query`: names starting with it first (menu order kept), then names containing it. */
 export function filterCommands(commands: readonly RemoteCommand[], query: string): RemoteCommand[] {
   const q = query.toLowerCase();

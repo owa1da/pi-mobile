@@ -1,11 +1,12 @@
-// /model and /thinking: the thinking level (thinking.set), then the models grouped as forge's
-// picker groups them: Pinned, Recent, then every other model (models.list). A tap sets the model
+// /model and /thinking: the thinking level (thinking.set), then forge's picker (pins.md): the
+// pins until you type, then matching pins and the other models (models.list). A tap sets the model
 // (model.set) and goes back, as the picker closes on Enter; the pin toggles pin.toggle.
 
 import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { SearchField } from "@/components/ui/search-field";
 import { StyleSheet } from "react-native-unistyles";
 import {
   ThemedCheck,
@@ -36,6 +37,12 @@ import {
   useForgeAction,
 } from "./parts";
 
+/** Models unpinned while the picker is open, after a toggle of `ref` (pinned again: it leaves). */
+function unpinnedAfterToggle(prev: readonly string[], ref: string, wasPinned: boolean): string[] {
+  const rest = prev.filter((r) => r !== ref);
+  return wasPinned ? [...rest, ref] : rest;
+}
+
 export function ModelView({ channel }: ForgeViewProps) {
   const { t } = useTranslation();
   const action = useForgeAction(channel);
@@ -45,6 +52,9 @@ export function ModelView({ channel }: ForgeViewProps) {
   const [thinking, setThinking] = useState<ThinkingInfo | null | undefined>(undefined);
   /** pin.toggle's answer, until the state catches up. */
   const [pinsNow, setPinsNow] = useState<{ pinned: string[]; recent: string[] } | null>(null);
+  const [query, setQuery] = useState("");
+  /** Models unpinned while this picker is open: forge keeps them in an Unpinned group for undo. */
+  const [unpinnedHere, setUnpinnedHere] = useState<string[]>([]);
   const ready = channel.available && channel.loaded;
   const statePins = channel.state?.pins;
   const pins = pinsNow ?? statePins;
@@ -67,7 +77,10 @@ export function ModelView({ channel }: ForgeViewProps) {
     };
   }, [ready, run]);
 
-  const groups = useMemo(() => (available ? modelGroups(available, pins) : []), [available, pins]);
+  const groups = useMemo(
+    () => (available ? modelGroups(available, pins, query, unpinnedHere) : []),
+    [available, pins, query, unpinnedHere],
+  );
   const pinned = useMemo(() => new Set(pins?.pinned ?? []), [pins]);
   const known = useMemo(() => new Set((available ?? []).map((m) => m.ref)), [available]);
 
@@ -81,12 +94,16 @@ export function ModelView({ channel }: ForgeViewProps) {
     [run],
   );
   const togglePin = useCallback(
-    (ref: string) =>
+    (ref: string) => {
+      const wasPinned = pinned.has(ref);
       void run("pin.toggle", { ref }).then((out) => {
-        if (out.ok) setPinsNow(parsePinsResult(out.data));
+        if (!out.ok) return undefined;
+        setPinsNow(parsePinsResult(out.data));
+        setUnpinnedHere((prev) => unpinnedAfterToggle(prev, ref, wasPinned));
         return undefined;
-      }),
-    [run],
+      });
+    },
+    [pinned, run],
   );
   const setLevel = useCallback(
     (level: string) =>
@@ -109,6 +126,8 @@ export function ModelView({ channel }: ForgeViewProps) {
         pinned={pinned}
         known={known}
         current={current}
+        query={query}
+        onQuery={setQuery}
         onLevel={setLevel}
         onPick={pick}
         onTogglePin={togglePin}
@@ -128,10 +147,14 @@ function ModelList({
   pinned,
   known,
   current,
+  query,
+  onQuery,
   onLevel,
   onPick,
   onTogglePin,
 }: {
+  query: string;
+  onQuery: (query: string) => void;
   levels: ThinkingInfo | null;
   groups: ReturnType<typeof modelGroups>;
   pinned: ReadonlySet<string>;
@@ -142,12 +165,25 @@ function ModelList({
   onTogglePin: (ref: string) => void;
 }) {
   const { t } = useTranslation();
+  // An other-only result list needs no heading (pins.md).
+  const headed = !(groups.length === 1 && groups[0]?.key === "other");
+  let empty: string | null = null;
+  if (groups.length === 0)
+    empty = query.trim()
+      ? t("pi.forge.model.noMatch", { query: query.trim() })
+      : t("pi.forge.model.noPins");
   return (
     <ScrollView testID="model-list" keyboardShouldPersistTaps="handled">
       {levels && levels.levels.length > 0 ? (
         <>
           <SectionLabel>{t("pi.forge.model.thinking")}</SectionLabel>
-          <View style={styles.levels} accessibilityRole="radiogroup">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.levels}
+            accessibilityRole="radiogroup"
+            testID="thinking-levels"
+          >
             {levels.levels.map((level) => (
               <LevelChip
                 key={level}
@@ -156,12 +192,27 @@ function ModelList({
                 onPick={onLevel}
               />
             ))}
-          </View>
+          </ScrollView>
         </>
+      ) : null}
+      <View style={styles.search}>
+        <SearchField
+          value={query}
+          onChangeText={onQuery}
+          placeholder={t("pi.forge.model.search")}
+          clearAccessibilityLabel={t("pi.forge.model.clearSearch")}
+          testID="model-search"
+          clearTestID="model-search-clear"
+        />
+      </View>
+      {empty ? (
+        <Text style={styles.empty} testID="model-empty">
+          {empty}
+        </Text>
       ) : null}
       {groups.map((group) => (
         <View key={group.key}>
-          <SectionLabel>{t(`pi.forge.model.groups.${group.key}`)}</SectionLabel>
+          {headed ? <SectionLabel>{t(`pi.forge.model.groups.${group.key}`)}</SectionLabel> : null}
           {group.models.map((model) => (
             <ModelRow
               key={`${group.key}-${model.ref}`}
@@ -224,7 +275,7 @@ const ModelRow = memo(function ModelRow({
   return (
     <ListRow
       title={model.name}
-      subtitle={selectable ? ref : t("pi.forge.model.unavailable")}
+      subtitle={selectable ? null : t("pi.forge.model.unavailable")}
       selected={current}
       onPress={selectable ? pick : undefined}
       testID={`model-row-${ref}`}
@@ -261,10 +312,22 @@ function LevelChip({
 const styles = StyleSheet.create((theme) => ({
   levels: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[4],
     paddingBottom: theme.spacing[2],
+  },
+  search: {
+    minHeight: MIN_TOUCH,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: theme.spacing[4],
+    paddingVertical: theme.spacing[2],
+  },
+  empty: {
+    paddingHorizontal: theme.spacing[4],
+    paddingVertical: theme.spacing[3],
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
   },
   chip: {
     minHeight: MIN_TOUCH,

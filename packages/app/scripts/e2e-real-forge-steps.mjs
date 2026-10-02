@@ -10,7 +10,15 @@ import fs from "node:fs";
 import path from "node:path";
 import * as A from "./e2e-adb.mjs";
 import * as E from "./e2e-emulator.mjs";
-import { kbDown, leave, sendLine, slash, typeChecked, deleteChars } from "./e2e-forge-steps.mjs";
+import {
+  deleteChars,
+  kbDown,
+  leave,
+  mcpFromMenu,
+  sendLine,
+  slash,
+  typeChecked,
+} from "./e2e-forge-steps.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -68,6 +76,10 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
         const sub = await subBar(/Fake Tiny · medium · ctx 0%\/100k$/, "real footer");
         ctx.notes.push(`real forge footer: "${sub.text}"`);
         shot("140-real-footer-dark");
+        // Item 7: a session with no messages shows just the composer, never an endless spinner.
+        await sleep(3000);
+        const spin = A.dump().find((n) => /^Loading (messages|session)$/.test(n.desc));
+        assert(!spin, `an empty session still spins: "${spin?.desc}"`);
         await slash("model");
         await A.waitNode(A.byId("thinking-high"), 20_000, "real thinking levels");
         assert(!A.find(A.byId("thinking-xhigh")), "a level forge does not offer is shown");
@@ -76,10 +88,15 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
         await A.tap(A.byId("thinking-high"), "high");
         await forgeState((s) => s.footer?.model?.thinking === "high", "thinking high");
         await A.waitNode((n) => n.id === "thinking-high" && n.selected, 10_000, "high selected");
+        await typeChecked("model-search", "plain", "model-list");
+        await kbDown();
+        await A.waitNode(A.byId("model-pin-fake/plain"), 10_000, "search finds Fake Plain");
         await A.tap(A.byId("model-pin-fake/plain"), "pin Fake Plain");
         await forgeState((s) => s.pins?.pinned?.includes("fake/plain"), "fake/plain pinned");
         await A.waitNode(A.byText("Unpin Fake Plain"), 15_000, "Fake Plain pinned in the app");
-        assert(A.find(A.byText("Pinned")), "no Pinned group");
+        await A.tap(A.byId("model-search-clear"), "clear search");
+        await A.waitNode(A.byText("Pinned"), 10_000, "Pinned group");
+        assert(!A.find(A.byText("fake/plain")), "a raw provider/id subtitle");
         shot("142-real-model-pinned-dark");
         await A.tap(A.byId("model-row-fake/plain"), "Fake Plain");
         await A.waitNode(A.byId("chat-composer"), 20_000, "back on the chat");
@@ -88,10 +105,14 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
         await subBar(/Fake Plain · ctx 0%\/50\.0k$/, "footer with Fake Plain");
         shot("143-real-footer-plain-dark");
         await slash("model");
-        await A.waitNode(A.byId("model-row-fake/tiny"), 20_000, "real models again");
+        await A.waitNode(A.byId("model-row-fake/plain"), 20_000, "real pins again");
         assert(!A.find(A.byId("thinking-high")), "thinking levels for a model that does not think");
         await A.tap(A.byId("model-pin-fake/plain"), "unpin Fake Plain");
         await forgeState((s) => !s.pins?.pinned?.includes("fake/plain"), "fake/plain unpinned");
+        await A.waitNode(A.byText("Unpinned"), 10_000, "unpinned here stays for undo");
+        await typeChecked("model-search", "tiny", "model-list");
+        await kbDown();
+        await A.waitNode(A.byId("model-row-fake/tiny"), 10_000, "search finds Fake Tiny");
         await A.tap(A.byId("model-row-fake/tiny"), "Fake Tiny");
         await A.waitNode(A.byId("chat-composer"), 20_000, "back on the chat");
         await subBar(/Fake Tiny · high · ctx 0%\/100k$/, "footer back on Fake Tiny, high");
@@ -255,7 +276,11 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
         await kbDown();
         await A.tap(A.byId("btw-send"), "btw send");
         // forge's btw state: pending, then the model's failure (nothing listens offline).
-        await A.waitNode(A.byText("Connection error."), 30_000, "btw error from real forge");
+        await A.waitNode(
+          A.byText(/^pi could not reach the model/),
+          30_000,
+          "btw error from real forge",
+        );
         assert(A.find(A.byId("btw-error")), "no btw-error block");
         shot("155-real-btw-error-dark");
         await A.tap(A.byId("btw-close"), "close the btw panel");
@@ -265,18 +290,11 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
       },
     ],
     [
-      "Real forge: /mcp alone stays on the computer; /mcp reconnect's select answered in the app",
+      "Real forge: the / menu offers /mcp login|logout|reconnect; reconnect's select answered in the app",
       async () => {
         if (!real()) return skip("mcp");
         await openReal();
-        await sendLine("/mcp");
-        await A.waitNode(
-          A.byId("command-computer-only"),
-          15_000,
-          "/mcp works only on the computer",
-        );
-        shot("156-real-mcp-computer-only-dark");
-        await sendLine("/mcp reconnect");
+        await mcpFromMenu();
         await A.waitNode(A.byText(/^MCP server$/), 30_000, "real forge's mcp select");
         shot("157-real-mcp-select-dark");
         const github = A.dump().find(

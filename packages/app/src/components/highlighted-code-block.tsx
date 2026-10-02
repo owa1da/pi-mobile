@@ -23,7 +23,7 @@ import {
   markdownCopyDataSet,
   TRAILING_CODE_LINE_BREAKS,
 } from "@/assistant-selection-copy/markup";
-import { touchSlop } from "@/styles/touch";
+import { MIN_TOUCH, touchSlop } from "@/styles/touch";
 
 interface HighlightedCodeBlockProps {
   code: string;
@@ -252,7 +252,8 @@ const CopyButton = React.memo(function CopyButton({ getCode, visible, inline }: 
       pointerEvents={visible ? "auto" : "none"}
       accessibilityRole="button"
       accessibilityLabel={copied ? t("message.actions.copied") : t("message.actions.copyCode")}
-      hitSlop={COPY_CODE_SLOP}
+      hitSlop={inline ? undefined : COPY_CODE_SLOP}
+      testID="code-copy"
       dataSet={markdownCopyDataSet.ignore}
     >
       {({ hovered }) => {
@@ -276,16 +277,24 @@ const copyButtonStyles = StyleSheet.create((theme) => ({
     right: theme.spacing[2],
     padding: theme.spacing[1],
   },
-  // 14dp glyph + 8dp padding each side = 30dp; COPY_CODE_SLOP lifts it to the touch floor.
+  // The glyph sits where it always did (14dp, 8dp in from the top-right corner), but the
+  // Pressable's own bounds are the full touch floor (48dp): the extra room reaches left and down,
+  // over the code's first line, so the block's layout does not move.
   inline: {
+    width: MIN_TOUCH,
+    height: MIN_TOUCH,
     padding: theme.spacing[2],
+    alignItems: "flex-end",
+    justifyContent: "flex-start",
   },
   headerRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
+    zIndex: 1,
     marginTop: -theme.spacing[2],
     marginRight: -theme.spacing[2],
-    marginBottom: -theme.spacing[1],
+    // Was 30dp tall with -4 below (26dp of flow); now 48dp tall, same 26dp of flow.
+    marginBottom: -(MIN_TOUCH - 26),
   },
   containerVisible: {
     opacity: 1,

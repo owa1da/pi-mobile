@@ -12,7 +12,9 @@ import {
   commandName,
   completeCommand,
   filterCommands,
+  menuRows,
   nativeTarget,
+  rowTestId,
   matchCommand,
   refusalOutcome,
   slashQuery,
@@ -174,6 +176,25 @@ describe("the / menu", () => {
       "recompile",
     ]);
     expect(filterCommands(commands, "zzz")).toEqual([]);
+  });
+
+  it("offers /mcp's working subcommands, never bare /mcp (a terminal-only view)", () => {
+    const rows = menuRows(
+      [
+        { name: "model", description: "Pick a model" },
+        { name: "mcp", description: "Manage MCP servers" },
+      ],
+      (sub) => `do ${sub}`,
+    );
+    expect(rows.map((r) => r.name)).toEqual(["model", "mcp login", "mcp logout", "mcp reconnect"]);
+    expect(rows[3].description).toBe("do reconnect");
+    expect(filterCommands(rows, "mcp").map((r) => r.name)).toEqual([
+      "mcp login",
+      "mcp logout",
+      "mcp reconnect",
+    ]);
+    expect(completeCommand(rows[3])).toBe("/mcp reconnect ");
+    expect(rowTestId("mcp reconnect")).toBe("mcp-reconnect");
   });
 
   it("completes a row and matches a sent line to a row", () => {

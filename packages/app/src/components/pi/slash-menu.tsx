@@ -5,6 +5,7 @@ import { memo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView, Text, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { rowTestId } from "@/remote/menu";
 import type { RemoteCommand } from "@/remote/types";
 import { MIN_TOUCH } from "@/styles/touch";
 
@@ -33,7 +34,7 @@ const CommandRow = memo(function CommandRow({
           ? t("pi.remote.commandRow", { name: command.name, description: command.description })
           : `/${command.name}`
       }
-      testID={`slash-row-${command.name}`}
+      testID={`slash-row-${rowTestId(command.name)}`}
     >
       <Text style={styles.name} numberOfLines={1}>
         /{command.name}

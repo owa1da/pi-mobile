@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { subBarStatus, waitingBannerVisible, type ChannelView } from "./chrome";
+import {
+  fitLine,
+  lineWidth,
+  subBarStatus,
+  waitingBannerVisible,
+  type ChannelView,
+  type LineKind,
+} from "./chrome";
 import type { RemoteState } from "@/remote/types";
 
 describe("subBarStatus", () => {
@@ -99,5 +106,56 @@ describe("waitingBannerVisible", () => {
     expect(waitingBannerVisible("waiting", ch({ ...base, view: "dialog", prompt: null }))).toBe(
       true,
     );
+  });
+});
+
+describe("fitLine (forge's LINE_DROP_ORDER)", () => {
+  const p = (kind: LineKind, width: number, name: string = kind) => ({ kind, width, name });
+  const names = (parts: { name: string }[]) => parts.map((part) => part.name);
+  // Idle · Sonnet 5 · high · ctx 18%/200k · ~$0.126 · ◷ wakes in 30m
+  const line = [
+    p("state", 30),
+    p("model", 60),
+    p("thinking", 30),
+    p("context", 80),
+    p("cost", 50),
+    p("item", 100, "wake"),
+  ];
+  const SEP = 10;
+
+  it("keeps every part when the line fits", () => {
+    expect(names(fitLine(line, lineWidth(line, SEP), SEP))).toEqual(names(line));
+  });
+
+  it("drops the effort first, whole, before any item is cut", () => {
+    const room = lineWidth(line, SEP) - 20;
+    expect(names(fitLine(line, room, SEP))).toEqual(["state", "model", "context", "cost", "wake"]);
+  });
+
+  it("drops the model with its effort, then the cost, keeping context and items", () => {
+    // state 30 + context 80 + wake 100 + 2 seps = 230
+    expect(names(fitLine(line, 240, SEP))).toEqual(["state", "context", "wake"]);
+  });
+
+  it("never shows the effort without its model", () => {
+    const fitted = fitLine(line, 300, SEP);
+    expect(fitted.some((part) => part.kind === "thinking")).toBe(
+      fitted.some((part) => part.kind === "model"),
+    );
+  });
+
+  it("brings back a dropped part that fits again in the room left", () => {
+    // Items go before the state; with room for state + cost only, cost comes back.
+    expect(names(fitLine(line, 90, SEP))).toEqual(["state", "cost"]);
+  });
+
+  it("drops the right-most item first", () => {
+    const items = [p("state", 30), p("item", 50, "shell"), p("item", 100, "wake")];
+    expect(names(fitLine(items, 95, SEP))).toEqual(["state", "shell"]);
+  });
+
+  it("keeps the most important part alone when nothing fits, for the caller to cut", () => {
+    expect(names(fitLine(line, 10, SEP))).toEqual(["state"]);
+    expect(names(fitLine([p("model", 60), p("thinking", 30)], 10, SEP))).toEqual(["model"]);
   });
 });

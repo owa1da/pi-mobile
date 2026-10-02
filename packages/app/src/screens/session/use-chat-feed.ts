@@ -2,7 +2,7 @@
 // for a few seconds after sending.
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { SessionRow } from "@/host/types";
+import { HostError, type SessionRow } from "@/host/types";
 import { connectionStore } from "@/stores/app";
 import { ChatFeed } from "@/stores/chat-feed";
 import { usePoller } from "@/stores/use-polling";
@@ -19,6 +19,11 @@ export type FeedSource = Pick<SessionRow, "sessionFile" | "state">;
 export function useChatFeed(hostId: string, row: FeedSource | undefined, active: boolean) {
   const sessionFile = row?.sessionFile;
   const [version, setVersion] = useState(0);
+  /**
+   * pi writes a new session's file only with its first entry: until then the file is not there.
+   * That is an empty chat (just the composer), not a read that is still pending.
+   */
+  const [missing, setMissing] = useState(false);
   const boostUntil = useRef(0);
   const feed = useMemo(
     () =>
@@ -34,9 +39,14 @@ export function useChatFeed(hostId: string, row: FeedSource | undefined, active:
     if (!connectionStore.getState().getService(hostId)) return ERROR_MS;
     try {
       const { changed, more } = await feed.poll();
+      setMissing(false);
       if (changed) setVersion(feed.version);
       if (more) return 0;
     } catch (error) {
+      if (error instanceof HostError && error.code === "not-found") {
+        setMissing(true);
+        return IDLE_MS;
+      }
       connectionStore.getState().reportFailure(hostId, error);
       return ERROR_MS;
     }
@@ -78,7 +88,8 @@ export function useChatFeed(hostId: string, row: FeedSource | undefined, active:
   return {
     rows,
     truncated: feed.truncated,
-    loading: Boolean(sessionFile) && !feed.loaded,
+    // The spinner shows only while the first read is pending: never for a file not written yet.
+    loading: Boolean(sessionFile) && !feed.loaded && !missing,
     hasFile: Boolean(sessionFile),
     boost,
     addPending,

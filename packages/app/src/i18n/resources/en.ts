@@ -6,7 +6,7 @@ export const en = {
       empty: "No SSH hosts yet.",
       emptyTitle: "Connect to your machine",
       emptyBody:
-        "Pi talks to the pi sessions running in tmux on your computer over SSH. Nothing is installed there.",
+        "Pi connects to your computer over SSH and shows the pi sessions running there. Nothing is installed on it.",
       add: "Add host",
       edit: "Edit {{label}}",
       connecting: "Connecting…",
@@ -101,7 +101,7 @@ export const en = {
       },
       noSessions: "No sessions",
       emptyTitle: "No pi sessions on {{host}}",
-      emptyBody: "Describe a task below to start one. It opens in tmux on the host.",
+      emptyBody: "Describe a task below to start one. It runs on your computer.",
       showMore: "Show {{count}} more",
       composerPlaceholder: "Describe a task for a new session",
       starting: "Starting pi…",
@@ -148,14 +148,14 @@ export const en = {
       placeholder: "Message pi",
       placeholderWorking: "Queue a follow-up",
       placeholderClosed: "Resume and send",
-      closedHint: "Sending reopens this session in a new tmux window.",
+      closedHint: "Sending reopens this session on your computer.",
       send: "Send",
       stop: "Stop",
       dismiss: "Dismiss",
       errors: {
         "waiting-for-input": "pi is asking a question. Answer it before sending a new message.",
         "pane-busy":
-          "This session's tmux pane is in copy mode on your computer. Press q there to leave it.",
+          "This session is scrolled back on your computer. Press q there to return to the prompt.",
         "pane-busy-draft":
           "This session has an unsent draft on your computer. Send or clear it there first.",
         "pane-busy-no-prompt":
@@ -192,6 +192,11 @@ export const en = {
       inputBusy: "Something is open in pi on your computer. Close it there first.",
       notMain: "pi is showing another view on your computer. Go back to the main chat there first.",
       commands: "Commands",
+      mcp: {
+        login: "Sign in to an MCP server",
+        logout: "Sign out of an MCP server",
+        reconnect: "Reconnect an MCP server",
+      },
       commandRow: "/{{name}}, {{description}}",
       errors: {
         stale: "Already answered",
@@ -219,7 +224,7 @@ export const en = {
         task: "Task",
         model: "Model",
         usage: "Usage",
-        cost: "Session",
+        cost: "Cost",
         changelog: "Changelog",
         pause: "Pause",
         export: "Export",
@@ -264,6 +269,14 @@ export const en = {
         placeholder: "Message the side…",
         openPlaceholder: "Start a side conversation…",
       },
+      updateBody:
+        "The forge on your computer is older than this screen. Update it there, then open this again.",
+      back: "Back",
+      modelErrors: {
+        notSetUp: "pi has no model set up to answer this. Pick one with /model, then ask again.",
+        auth: "pi is not signed in to this model's provider. Sign in on your computer, then ask again.",
+        connection: "pi could not reach the model. Try again in a moment.",
+      },
       btw: {
         empty: "Ask a quick question without derailing the session.",
         placeholder: "Ask a quick question…",
@@ -285,7 +298,11 @@ export const en = {
       },
       model: {
         thinking: "Thinking",
-        groups: { pinned: "Pinned", recent: "Recent", all: "All models" },
+        groups: { pinned: "Pinned", unpinned: "Unpinned", other: "Other models" },
+        search: "Find a model",
+        clearSearch: "Clear search",
+        noPins: "No pins yet. Type to find a model.",
+        noMatch: 'No model matches "{{query}}"',
         unavailable: "Not available",
         pin: "Pin {{name}}",
         unpin: "Unpin {{name}}",

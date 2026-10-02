@@ -261,7 +261,9 @@ describe("native forge screens against the fake pi", () => {
     expect(list.thinking?.levels).toContain("high");
     const available = list.available;
     const s0 = await client.readState(row);
-    expect(modelGroups(available, s0?.pins).map((g) => g.key)).toEqual(["pinned", "recent", "all"]);
+    // forge's picker: only the pins until you type, then matching pins and the other models.
+    expect(modelGroups(available, s0?.pins).map((g) => g.key)).toEqual(["pinned"]);
+    expect(modelGroups(available, s0?.pins, "gemini").map((g) => g.key)).toEqual(["other"]);
     const set = await client.send(row, "model.set", { ref: "anthropic/claude-sonnet-5" });
     expect(set.data).toMatchObject({ ref: "anthropic/claude-sonnet-5" });
     const level = parseThinking((await client.send(row, "thinking.set", { level: "high" })).data);

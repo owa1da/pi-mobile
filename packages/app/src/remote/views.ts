@@ -224,7 +224,7 @@ export interface ModelChoice {
 }
 
 export interface ModelGroup {
-  key: "pinned" | "recent" | "all";
+  key: "pinned" | "unpinned" | "other";
   models: ModelChoice[];
 }
 
@@ -278,27 +278,73 @@ export function parsePinsResult(data: unknown): { pinned: string[]; recent: stri
 }
 
 /**
- * Pinned (saved order), then recent (newest first, never a pin), then every other model. A pin
- * that is not available still shows (it can be unpinned, never picked); empty groups go.
+ * A provider's raw error (forge's btw/side state carries pi's text, `Unknown provider: unknown`) →
+ * the plain-copy key it means, or null when the text is already plain enough to show as it is.
+ */
+export function modelErrorKey(raw: string): "notSetUp" | "auth" | "connection" | null {
+  if (/unknown provider|unknown model|no model|model .*not found|no api key|api key/i.test(raw))
+    return /api key/i.test(raw) ? "auth" : "notSetUp";
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|log ?in|invalid.*(key|token)/i.test(raw))
+    return "auth";
+  if (/connection|network|ECONN|ENOTFOUND|fetch failed|timed? ?out|socket/i.test(raw))
+    return "connection";
+  return null;
+}
+
+/** A name or ref folded for search, as forge's matcher folds it: `-`, `_` and spaces agree. */
+function fold(text: string): string {
+  return text.toLowerCase().replace(/[-_\s]+/g, "");
+}
+
+/** Every word of `query` is in the model's name or `provider/id` (forge's every-word match). */
+export function modelMatches(model: ModelChoice, query: string): boolean {
+  const words = query.trim().split(/\s+/).filter(Boolean).map(fold);
+  if (words.length === 0) return true;
+  const hay = [fold(model.name), fold(model.ref)];
+  return words.every((word) => hay.some((h) => h.includes(word)));
+}
+
+function exactMatch(model: ModelChoice, query: string): boolean {
+  const q = fold(query);
+  const id = model.ref.slice(model.ref.indexOf("/") + 1);
+  return fold(model.name) === q || fold(id) === q || fold(model.ref) === q;
+}
+
+/**
+ * forge's picker (pins.md, "The picker"). Empty query: only the pins, in saved order (a pin that is
+ * not available still shows: it can be unpinned, never picked), then the models unpinned while
+ * this picker is open, for undo. Typed query: matching pins in saved order, then the other
+ * matches, exact before every-word. Empty groups go.
  */
 export function modelGroups(
   available: readonly ModelChoice[],
   pins: { pinned: readonly string[]; recent: readonly string[] } | undefined,
+  query = "",
+  unpinnedHere: readonly string[] = [],
 ): ModelGroup[] {
   const byRef = new Map(available.map((m) => [m.ref, m]));
+  const pinnedSet = new Set(pins?.pinned ?? []);
   const pinned = (pins?.pinned ?? []).map((ref) => byRef.get(ref) ?? { ref, name: ref });
-  const pinnedSet = new Set(pinned.map((m) => m.ref));
-  const recent = (pins?.recent ?? [])
-    .filter((ref) => !pinnedSet.has(ref))
-    .map((ref) => byRef.get(ref))
-    .filter((m): m is ModelChoice => Boolean(m));
-  const shown = new Set([...pinnedSet, ...recent.map((m) => m.ref)]);
-  const all = available.filter((m) => !shown.has(m.ref));
-  const groups: ModelGroup[] = [
-    { key: "pinned", models: pinned },
-    { key: "recent", models: recent },
-    { key: "all", models: all },
-  ];
+  let groups: ModelGroup[];
+  if (!query.trim()) {
+    const unpinned = unpinnedHere
+      .filter((ref, at) => !pinnedSet.has(ref) && unpinnedHere.indexOf(ref) === at)
+      .map((ref) => byRef.get(ref) ?? { ref, name: ref });
+    groups = [
+      { key: "pinned", models: pinned },
+      { key: "unpinned", models: unpinned },
+    ];
+  } else {
+    const matches = available.filter((m) => !pinnedSet.has(m.ref) && modelMatches(m, query));
+    const other = [
+      ...matches.filter((m) => exactMatch(m, query)),
+      ...matches.filter((m) => !exactMatch(m, query)),
+    ];
+    groups = [
+      { key: "pinned", models: pinned.filter((m) => modelMatches(m, query)) },
+      { key: "other", models: other },
+    ];
+  }
   return groups.filter((g) => g.models.length > 0);
 }
 
@@ -330,8 +376,12 @@ export function costText(cost: number): string {
 /** Where the line starts to say "compacts at N%": from 3/4 of the way to the point. */
 const HINT_SHARE = 0.75;
 
+/** What a footer part is, for the order in which the line gives it up (forge's `LINE_DROP_ORDER`). */
+export type FooterPartKind = "thinking" | "model" | "cost" | "context" | "item";
+
 export interface FooterPart {
   text: string;
+  kind: FooterPartKind;
   /** Set on the context field: its colour on the desktop. */
   tone?: ContextTone;
 }
@@ -340,7 +390,9 @@ function contextPart(footer: RemoteFooter): FooterPart | null {
   const window = footer.contextWindow;
   if (!window || window <= 0) return null;
   if (footer.contextPercent === null || footer.contextTokens === null)
-    return footer.compactionPaused ? { text: "compaction paused", tone: "warning" } : null;
+    return footer.compactionPaused
+      ? { text: "compaction paused", kind: "context", tone: "warning" }
+      : null;
   const percent = Math.max(0, Math.round(footer.contextPercent));
   let text = `ctx ${percent}%/${windowText(window)}`;
   if (footer.compactionPaused) text += `${SEP}compaction paused`;
@@ -349,7 +401,7 @@ function contextPart(footer: RemoteFooter): FooterPart | null {
     if (footer.contextTokens >= HINT_SHARE * point)
       text += `${SEP}compacts at ${footer.compactAt}%`;
   }
-  return { text, tone: footer.compactionPaused ? "warning" : footer.contextTone };
+  return { text, kind: "context", tone: footer.compactionPaused ? "warning" : footer.contextTone };
 }
 
 /**
@@ -361,13 +413,13 @@ export function footerParts(footer: RemoteFooter | null | undefined): FooterPart
   const parts: FooterPart[] = [];
   const model = footer.model;
   if (model && model.id && model.id !== "unknown") {
-    parts.push({ text: model.name || model.id });
-    if (model.thinking) parts.push({ text: model.thinking });
+    parts.push({ text: model.name || model.id, kind: "model" });
+    if (model.thinking) parts.push({ text: model.thinking, kind: "thinking" });
   }
   const context = contextPart(footer);
   if (context) parts.push(context);
-  if (footer.cost !== null) parts.push({ text: `~${costText(footer.cost)}` });
-  for (const item of footer.items) parts.push({ text: item });
+  if (footer.cost !== null) parts.push({ text: `~${costText(footer.cost)}`, kind: "cost" });
+  for (const item of footer.items) parts.push({ text: item, kind: "item" });
   return parts;
 }
 

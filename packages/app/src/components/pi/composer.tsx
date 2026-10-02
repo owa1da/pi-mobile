@@ -17,7 +17,7 @@ import {
   surfaceSolid,
 } from "./icons";
 import { MIN_TOUCH } from "@/styles/touch";
-import { completeCommand, filterCommands, slashQuery } from "@/remote/menu";
+import { completeCommand, filterCommands, menuRows, slashQuery } from "@/remote/menu";
 import type { RemoteCommand } from "@/remote/types";
 import { SlashMenu } from "./slash-menu";
 
@@ -163,10 +163,15 @@ function useSlashMenu(
   setText: (text: string) => void,
   onPickNative?: (command: RemoteCommand) => boolean,
 ) {
-  const query = commands && !busy ? slashQuery(text) : undefined;
+  const { t } = useTranslation();
+  const rows = useMemo(
+    () => (commands ? menuRows(commands, (sub) => t(`pi.remote.mcp.${sub}`)) : undefined),
+    [commands, t],
+  );
+  const query = rows && !busy ? slashQuery(text) : undefined;
   const matches = useMemo(
-    () => (query !== undefined && commands ? filterCommands(commands, query) : []),
-    [commands, query],
+    () => (query !== undefined && rows ? filterCommands(rows, query) : []),
+    [rows, query],
   );
   const pickCommand = useCallback(
     (command: RemoteCommand) => {

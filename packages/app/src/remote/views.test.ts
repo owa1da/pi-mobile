@@ -17,6 +17,7 @@ import {
   footerRef,
   leftWords,
   meterDetail,
+  modelErrorKey,
   modelGroups,
   parseChangelog,
   parseCheckpointDiff,
@@ -224,17 +225,36 @@ describe("/model", () => {
     ).toEqual({ pinned: ["a/b"], recent: ["c/d"] });
   });
 
-  it("groups pinned, then recent (never a pin), then all; drops empty groups", () => {
-    const groups = modelGroups(available, {
-      pinned: ["openai/gpt", "gone/model"],
-      recent: ["openai/gpt", "google/gem"],
-    });
-    expect(groupRefs(groups)).toEqual([
+  it("shows only the pins with no query, in saved order, and models unpinned here for undo", () => {
+    const pins = { pinned: ["openai/gpt", "gone/model"], recent: ["google/gem"] };
+    expect(groupRefs(modelGroups(available, pins))).toEqual([
       ["pinned", ["openai/gpt", "gone/model"]],
-      ["recent", ["google/gem"]],
-      ["all", ["anthropic/opus"]],
     ]);
-    expect(modelGroups(available, undefined).map((g) => g.key)).toEqual(["all"]);
+    expect(groupRefs(modelGroups(available, pins, "", ["anthropic/opus", "openai/gpt"]))).toEqual([
+      ["pinned", ["openai/gpt", "gone/model"]],
+      ["unpinned", ["anthropic/opus"]],
+    ]);
+    expect(modelGroups(available, undefined)).toEqual([]);
+  });
+
+  it("searches pins first, then other models, folding - _ and spaces, exact first", () => {
+    const pins = { pinned: ["openai/gpt"], recent: [] };
+    expect(groupRefs(modelGroups(available, pins, "o"))).toEqual([
+      ["pinned", ["openai/gpt"]],
+      ["other", ["anthropic/opus", "google/gem"]],
+    ]);
+    expect(groupRefs(modelGroups(available, pins, "opus 5.5"))).toEqual([
+      ["other", ["anthropic/opus"]],
+    ]);
+    expect(groupRefs(modelGroups(available, pins, "gpt6"))).toEqual([["pinned", ["openai/gpt"]]]);
+    expect(modelGroups(available, pins, "nothing-like-it")).toEqual([]);
+    const two = [
+      { ref: "a/gem-pro", name: "Gem Pro" },
+      { ref: "a/gem", name: "Gem" },
+    ];
+    expect(groupRefs(modelGroups(two, undefined, "gem"))).toEqual([
+      ["other", ["a/gem", "a/gem-pro"]],
+    ]);
   });
 
   it("knows the footer's model ref, never 'unknown'", () => {
@@ -267,10 +287,15 @@ describe("footer", () => {
     const near = footerParts(
       footer({ contextPercent: 70, contextTokens: 140_000, contextTone: "warning" }),
     );
-    expect(near[2]).toEqual({ text: "ctx 70%/200k · compacts at 83%", tone: "warning" });
+    expect(near[2]).toEqual({
+      text: "ctx 70%/200k · compacts at 83%",
+      kind: "context",
+      tone: "warning",
+    });
     expect(footerParts(footer({ contextTokens: 100_000 }))[2].text).toBe("ctx 12%/200k");
     expect(footerParts(footer({ compactionPaused: true }))[2]).toEqual({
       text: "ctx 12%/200k · compaction paused",
+      kind: "context",
       tone: "warning",
     });
     expect(
@@ -493,5 +518,15 @@ describe("/btw", () => {
     expect(script).toContain(`grep -F '"customType":"forge-btw'`);
     expect(() => btwEntriesScript("relative.jsonl", "pimtag1234")).toThrow();
     expect(parseEntryLines('{"a":1}\n{"cut\n\n{"b":2}')).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+});
+
+describe("modelErrorKey", () => {
+  it("maps pi's raw provider errors to plain copy, leaving plain text alone", () => {
+    expect(modelErrorKey("Unknown provider: unknown")).toBe("notSetUp");
+    expect(modelErrorKey("No API key found for anthropic")).toBe("auth");
+    expect(modelErrorKey("401 Unauthorized")).toBe("auth");
+    expect(modelErrorKey("Connection error.")).toBe("connection");
+    expect(modelErrorKey("The answer was cut short.")).toBeNull();
   });
 });

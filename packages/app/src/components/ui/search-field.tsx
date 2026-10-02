@@ -3,6 +3,7 @@ import { Pressable, View } from "react-native";
 import { Search, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
+import { MIN_TOUCH } from "@/styles/touch";
 import {
   EditingTextInput as TextInput,
   type EditingTextInputHandle,
@@ -96,7 +97,6 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minWidth: 0,
     maxWidth: SEARCH_FIELD_MAX_WIDTH,
-    paddingVertical: theme.spacing[1.5],
     paddingHorizontal: theme.spacing[3],
     borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.surface1,
@@ -111,7 +111,8 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minWidth: 0,
     padding: 0,
-    height: 20,
+    // The text box itself is the touch floor (48dp Android / 44pt iOS), not a 20dp strip in padding.
+    height: MIN_TOUCH,
     // The browser's focus ring would sit inside the field's own focus border.
     // `outlineWidth` is typed on ViewStyle since RN 0.81 and is a no-op on
     // native, so this needs neither a cast nor a platform branch.

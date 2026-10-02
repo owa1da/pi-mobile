@@ -404,6 +404,21 @@ function steps(ctx) {
           `section order ${order}`,
         );
         shot("06-dashboard-dark");
+        // Item 2: the model stays on every row, and the title gets the room (model and age keep
+        // their natural width; the title is the part that truncates).
+        for (const row of nodes.filter(A.idPrefix("session-row-"))) {
+          const texts = nodes.filter((n) => n.text && inside(n, row));
+          // The row's label starts with its title (the glyph is a text node of its own).
+          const title = texts.find((n) => n.text.length > 1 && row.desc.startsWith(n.text));
+          assert(
+            texts.length >= 3,
+            `row ${row.id} lacks title/model/age: ${texts.map((n) => n.text)}`,
+          );
+          assert(title, `row ${row.id}: no title node (label "${row.desc}")`);
+          const rowW = row.bounds[2] - row.bounds[0];
+          const titleW = title.bounds[2] - title.bounds[0];
+          assert(titleW >= rowW * 0.45, `row ${row.id}: title ${titleW}px of ${rowW}px`);
+        }
         auditControls(ctx, "dashboard", [
           ["Back", byDesc("Back")],
           ["session row", A.idPrefix("session-row-")],
@@ -436,8 +451,10 @@ function steps(ctx) {
         await A.waitNode(A.byId("chat-list"), 30_000, "chat");
         await sleep(2500);
         shot("07-chat-completed-bottom-dark");
+        await A.waitNode(A.byId("code-copy"), 10_000, "a code block's copy button");
         auditControls(ctx, "chat", [
           ["Back", byDesc("Back")],
+          ["copy code", A.byId("code-copy")],
           ["composer field", A.byId("chat-composer")],
           ["Send", A.byId("chat-send")],
         ]);

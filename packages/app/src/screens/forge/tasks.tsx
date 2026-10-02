@@ -8,6 +8,7 @@ import { FlatList, ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ChatView } from "@/components/pi/chat-view";
 import { Composer } from "@/components/pi/composer";
+import { ActionBar, sheetActionStyles } from "@/components/pi/sheet-actions";
 import { Button } from "@/components/ui/button";
 import type { RemoteTask } from "@/remote/types";
 import { findTask, tailText, taskRows, taskRunning, taskView } from "@/remote/views";
@@ -149,13 +150,13 @@ function TaskFooter({
     void run("task.resume", { runId: runIdOf(task) });
   }, [run, task]);
   return (
-    <View style={forgeStyles.footer}>
+    <ActionBar>
       {task.canStop ? (
         <Button
           variant="destructive"
           onPress={stop}
           loading={busy === "task.stop"}
-          style={styles.fill}
+          style={sheetActionStyles.button}
           testID="task-stop"
         >
           {t("pi.forge.tasks.stop")}
@@ -165,13 +166,13 @@ function TaskFooter({
           variant="default"
           onPress={resume}
           loading={busy === "task.resume"}
-          style={styles.fill}
+          style={sheetActionStyles.button}
           testID="task-resume"
         >
           {t("pi.forge.tasks.resume")}
         </Button>
       )}
-    </View>
+    </ActionBar>
   );
 }
 

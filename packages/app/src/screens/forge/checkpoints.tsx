@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { FlatList, ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ConfirmSheet } from "@/components/pi/confirm-sheet";
+import { ActionBar, sheetActionStyles } from "@/components/pi/sheet-actions";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/contexts/toast-context";
 import type { RemoteCheckpoint } from "@/remote/types";
@@ -123,17 +124,17 @@ export function DiffView({ hostId, row, channel, params }: ForgeViewProps) {
       <View style={styles.fill}>{body}</View>
       <ErrorLine message={action.error} onDismiss={action.clearError} />
       {diff && !action.unsupported ? (
-        <View style={forgeStyles.footer}>
+        <ActionBar>
           <Button
             variant="destructive"
             onPress={ask}
             loading={action.busy === "checkpoint.restore"}
-            style={styles.fill}
+            style={sheetActionStyles.button}
             testID="checkpoint-restore"
           >
             {t("pi.forge.checkpoints.restore")}
           </Button>
-        </View>
+        </ActionBar>
       ) : null}
       <ConfirmSheet
         visible={confirm}
@@ -161,46 +162,69 @@ function PatchView({ diff }: { diff: CheckpointDiff }) {
           {t("pi.forge.checkpoints.truncated")}
         </Text>
       ) : null}
-      <ScrollView horizontal contentContainerStyle={styles.hscroll} testID="diff-view">
-        <View style={styles.lines}>
-          {lines.map((line) => (
-            <PatchLine key={line.at} line={line} />
-          ))}
-        </View>
-      </ScrollView>
+      {/* Lines wrap (a phone is narrower than any patch): the +/− sits in a gutter of its own, so
+          a wrapped line still reads as one change and nothing is cut at the edge. */}
+      <View style={styles.lines} testID="diff-view">
+        {lines.map((line) => (
+          <PatchLine key={line.at} line={line} />
+        ))}
+      </View>
     </ScrollView>
   );
 }
 
+/** The gutter's sign and the line's text after it (headers have no sign: their text is whole). */
+function splitSign(line: DiffLine): { sign: string; body: string } {
+  if (line.kind === "file" || line.kind === "hunk") return { sign: "", body: line.text };
+  return { sign: line.text.slice(0, 1), body: line.text.slice(1) };
+}
+
 function PatchLine({ line }: { line: DiffLine }) {
+  const { sign, body } = splitSign(line);
+  const tone = [
+    line.kind === "add" && styles.add,
+    line.kind === "del" && styles.del,
+    line.kind === "hunk" && styles.hunk,
+    line.kind === "file" && styles.file,
+  ];
   return (
-    <Text
+    <View
       style={[
-        styles.line,
-        line.kind === "add" && styles.add,
-        line.kind === "del" && styles.del,
-        line.kind === "hunk" && styles.hunk,
-        line.kind === "file" && styles.file,
+        styles.lineRow,
+        line.kind === "add" && styles.addBg,
+        line.kind === "del" && styles.delBg,
       ]}
     >
-      {line.text || " "}
-    </Text>
+      <Text style={[styles.gutter, ...tone]}>{sign || " "}</Text>
+      <Text style={[styles.line, ...tone]}>{body || " "}</Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   fill: { flex: 1 },
-  hscroll: { minWidth: "100%" },
   lines: { alignItems: "stretch", paddingVertical: theme.spacing[2] },
+  lineRow: { flexDirection: "row", paddingLeft: theme.spacing[2], paddingRight: theme.spacing[4] },
+  gutter: {
+    width: theme.spacing[4],
+    textAlign: "center",
+    color: theme.colors.foregroundMuted,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 18,
+  },
   line: {
-    paddingHorizontal: theme.spacing[4],
+    flex: 1,
+    minWidth: 0,
     color: theme.colors.foreground,
     fontFamily: theme.fontFamily.mono,
     fontSize: theme.fontSize.sm,
     lineHeight: 18,
   },
-  add: { color: theme.colors.diffAddition, backgroundColor: theme.colors.statusSuccessTint },
-  del: { color: theme.colors.diffDeletion, backgroundColor: theme.colors.statusDangerTint },
+  add: { color: theme.colors.diffAddition },
+  del: { color: theme.colors.diffDeletion },
+  addBg: { backgroundColor: theme.colors.statusSuccessTint },
+  delBg: { backgroundColor: theme.colors.statusDangerTint },
   hunk: { color: theme.colors.foregroundMuted },
   file: { color: theme.colors.foregroundMuted, fontWeight: "600" },
 }));

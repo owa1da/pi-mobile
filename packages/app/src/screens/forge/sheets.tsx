@@ -165,11 +165,14 @@ function SheetBody({
   rowRef.current = row;
   const shownRef = useRef(shown);
   shownRef.current = shown;
+  /** The pending wake-up when the sheet opens: editing it starts from its message. */
+  const wakeRef = useRef(channel.state?.wake);
+  wakeRef.current = channel.state?.wake;
   // A new open starts afresh.
   useEffect(() => {
     const opened = shownRef.current;
     setText(initialText(opened, rowRef.current));
-    setReason("");
+    setReason(opened?.kind === "pause" ? (wakeRef.current?.reason ?? "") : "");
     setMode(/[:.]/.test(opened?.arg ?? "") ? "at" : "in");
     setFieldError(null);
     setResult(null);
@@ -265,6 +268,7 @@ function SheetBody({
             text={text}
             onText={kind === "export" ? changeExport : setText}
             onReason={setReason}
+            initialReason={kind === "pause" ? (wake?.reason ?? "") : ""}
             mode={mode}
             onMode={setMode}
             wake={wake ?? null}
@@ -362,6 +366,8 @@ interface ContentProps {
   text: string;
   onText: (value: string) => void;
   onReason: (value: string) => void;
+  /** The Message field's text when the sheet opens: the pending wake-up's reason, when editing it. */
+  initialReason: string;
   mode: "in" | "at";
   onMode: (mode: "in" | "at") => void;
   wake: RemoteWake | null;
@@ -412,7 +418,8 @@ function SheetContent(props: ContentProps) {
   }
 }
 
-function PauseBody({ text, onText, onReason, mode, onMode, wake, fieldError, now }: ContentProps) {
+function PauseBody(props: ContentProps) {
+  const { text, onText, onReason, initialReason, mode, onMode, wake, fieldError, now } = props;
   const { t } = useTranslation();
   const options = useMemo(
     () => [
@@ -443,7 +450,7 @@ function PauseBody({ text, onText, onReason, mode, onMode, wake, fieldError, now
       </Field>
       <Field label={t("pi.forge.pause.reason")}>
         <FormTextInput
-          initialValue=""
+          initialValue={initialReason}
           onChangeText={onReason}
           placeholder={t("pi.forge.pause.reasonPlaceholder")}
           accessibilityLabel={t("pi.forge.pause.reason")}

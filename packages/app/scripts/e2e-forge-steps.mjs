@@ -65,6 +65,27 @@ export async function slash(name) {
   await sleep(1200);
 }
 
+/**
+ * The `/` menu offers /mcp login, logout and reconnect and never bare /mcp (pi's MCP manager is a
+ * terminal-only view); picking reconnect completes the line, which is then sent.
+ */
+export async function mcpFromMenu() {
+  await A.waitNode(A.byId("chat-composer"), 20_000, "composer");
+  await typeInto("chat-composer", "/mcp");
+  await kbDown();
+  await A.waitNode(A.byId("slash-row-mcp-reconnect"), 10_000, "/mcp reconnect row");
+  const nodes = A.dump();
+  for (const sub of ["login", "logout", "reconnect"])
+    assert(nodes.find(A.byId(`slash-row-mcp-${sub}`)), `no /mcp ${sub} row`);
+  assert(!nodes.find(A.byId("slash-row-mcp")), "the menu offers bare /mcp (terminal-only)");
+  await A.tap(A.byId("slash-row-mcp-reconnect"), "/mcp reconnect row");
+  await sleep(500);
+  const field = A.find(A.byId("chat-composer"));
+  assert(field?.text === "/mcp reconnect ", `composer holds "${field?.text}"`);
+  await kbDown();
+  await A.tap(A.byId("chat-send"), "send /mcp reconnect");
+}
+
 /** Sends a `/` line from the composer (a row forge runs with command.run). */
 export async function sendLine(line) {
   await A.waitNode(A.byId("chat-composer"), 20_000, "composer");
@@ -171,15 +192,15 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         assert(!A.find(A.byId("checkpoint-row-3")), "the rewound checkpoint is still listed");
         shot("105-checkpoints-dark");
         await A.tap(A.byId("checkpoint-row-2"), "checkpoint 2");
-        await A.waitNode(A.byText(/^\+export class TokenBucket \{$/), 20_000, "diff lines");
+        await A.waitNode(A.byText(/^export class TokenBucket \{$/), 20_000, "diff lines");
         shot("106-diff-dark");
-        const view = A.find(A.byId("diff-view"));
-        if (view) {
-          const y = Math.round((view.bounds[1] + view.bounds[3]) / 2);
-          A.swipe(900, y, 150, y, 400);
-          await sleep(900);
-          shot("107-diff-scrolled-dark");
-        }
+        // Long lines wrap inside the screen, after their gutter: nothing is cut at the edge.
+        const long = A.find((n) => n.text.startsWith("Each IP gets a token bucket"));
+        assert(long, "the long README line is missing");
+        const [lx1, ly1, lx2, ly2] = long.bounds;
+        assert(lx1 > 0 && lx2 <= 1080, `diff line runs off screen: ${long.bounds}`);
+        assert(ly2 - ly1 > 60, `the long diff line did not wrap (${ly2 - ly1}px tall)`);
+        ctx.notes.push(`diff wraps: long line ${ly2 - ly1}px tall, x ${lx1}..${lx2}`);
         await A.tap(A.byId("checkpoint-restore"), "Restore");
         await A.waitNode(A.byId("restore-sheet-confirm"), 10_000, "restore confirm");
         await sleep(600);
@@ -250,7 +271,9 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await typeChecked("btw-composer", "will this fail", "btw-history");
         await kbDown();
         await A.tap(A.byId("btw-send"), "btw send (fails)");
-        await A.waitNode(A.byText("Unknown provider: unknown"), 20_000, "btw error");
+        // Item 10: pi's raw "Unknown provider: unknown" reads as plain copy.
+        await A.waitNode(A.byText(/^pi has no model set up to answer this/), 20_000, "btw error");
+        assert(!A.find(A.byText(/Unknown provider/)), "the raw provider error leaks");
         assert(A.find(A.byId("btw-error")), "no btw-error block");
         shot("113a-btw-error-dark");
         auditControls(ctx, "btw", [["Close", A.byId("btw-close")]]);
@@ -314,28 +337,48 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /model sets thinking, pins, picks a model from Pinned/Recent/All; footer follows",
+      "Forge: /model as forge's picker (pins until you type, no Recent, name-only rows, chips on one row)",
       async () => {
         await slash("model");
         await A.waitNode(A.byId("thinking-high"), 20_000, "thinking levels");
         await A.waitNode(A.byText("Pinned"), 20_000, "Pinned group");
-        assert(A.find(A.byText("Recent")), "no Recent group");
+        let nodes = A.dump();
+        assert(!nodes.find(A.byText("Recent")), "a Recent group forge's picker does not show");
+        assert(!nodes.find(A.byText("All models")), "the catalogue before any search");
+        assert(
+          !nodes.find(A.byId("model-row-google/gemini-3-pro")),
+          "an unpinned model with no query",
+        );
+        assert(!nodes.find(A.byText("anthropic/claude-opus-5-5")), "a raw provider/id subtitle");
+        const chips = nodes.filter(
+          (n) => n.id.startsWith("thinking-") && n.id !== "thinking-levels",
+        );
+        const tops = new Set(chips.map((n) => n.bounds[1]));
+        assert(chips.length >= 3 && tops.size === 1, `thinking chips on ${tops.size} rows`);
         shot("118-model-dark");
         auditControls(ctx, "model", [
           ["thinking chip", A.byId("thinking-high")],
-          ["pin toggle", A.byId("model-pin-google/gemini-3-pro")],
+          ["pin toggle", A.byId("model-pin-openai/gpt-6")],
+          ["search", A.byId("model-search")],
         ]);
         const since = mark();
         await A.tap(A.byId("thinking-high"), "high");
         await acted("thinking.set", since, (e) => e.args?.level === "high");
         await A.waitNode((n) => n.id === "thinking-high" && n.selected, 10_000, "high selected");
+        await typeChecked("model-search", "gemini", "model-list");
+        await kbDown();
+        await A.waitNode(A.byId("model-row-google/gemini-3-pro"), 10_000, "search finds gemini");
         await A.tap(A.byId("model-pin-google/gemini-3-pro"), "pin gemini");
         await acted("pin.toggle", since, (e) => e.args?.ref === "google/gemini-3-pro");
         await A.waitNode(A.byText("Unpin Gemini 3 Pro"), 15_000, "gemini pinned");
-        const sonnet = await scrollUntil(
+        await A.tap(A.byId("model-search-clear"), "clear search");
+        await A.waitNode(A.byId("model-row-google/gemini-3-pro"), 10_000, "gemini under Pinned");
+        await typeChecked("model-search", "sonnet", "model-list");
+        await kbDown();
+        const sonnet = await A.waitNode(
           A.byId("model-row-anthropic/claude-sonnet-5"),
+          10_000,
           "sonnet row",
-          { from: [540, 1900], to: [540, 1100] },
         );
         shot("119-model-all-dark");
         A.tapNode(sonnet);
@@ -406,6 +449,14 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
           15_000,
           "the wake-up in the footer",
         );
+        {
+          // Item 1: forge's drop order. The line is too long for a phone, so whole parts go
+          // (the effort first) and the right-most item stays whole: never "◷ wakes i…".
+          const line = A.find(A.byId("session-state"))?.text ?? "";
+          assert(!line.includes(" · high · "), `the effort should go first: "${line}"`);
+          assert(/ · ◷ wakes in (29|30)m$/.test(line), `the wake item was cut: "${line}"`);
+          ctx.notes.push(`footer fitted: "${line}"`);
+        }
         await slash("pause");
         await A.waitNode(
           A.byText(/^Wakes at \d+:\d{2} [AP]M · in (29|30)m · waiting for CI$/),
@@ -413,6 +464,9 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
           "pending wake-up",
         );
         shot("124-pause-pending-dark");
+        // Item 9: editing a pending wake-up starts from its message.
+        const reasonField = A.find(A.byId("pause-reason"));
+        assert(reasonField?.text === "waiting for CI", `Message holds "${reasonField?.text}"`);
         await A.tap(A.byId("pause-cancel-wake"), "cancel wake-up");
         await acted("wake.cancel", since);
         await A.waitGone(A.byId("pause-value"), 10_000, "pause sheet to close");
@@ -481,17 +535,10 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /mcp alone stays on the computer; /mcp reconnect's select is answered in the app",
+      "Forge: the / menu offers /mcp login|logout|reconnect (never bare /mcp); reconnect's select answered",
       async () => {
-        await sendLine("/mcp");
-        await A.waitNode(
-          A.byId("command-computer-only"),
-          15_000,
-          "/mcp works only on the computer",
-        );
-        shot("130a-mcp-computer-only-dark");
         const since = mark();
-        await sendLine("/mcp reconnect");
+        await mcpFromMenu();
         await acted("command.run", since, (e) => e.line === "/mcp reconnect");
         await A.waitNode(A.byText(/^MCP server$/), 20_000, "mcp select");
         shot("130-mcp-select-dark");

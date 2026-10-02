@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
+import { ActionBar, sheetActionStyles } from "@/components/pi/sheet-actions";
 import { Button } from "@/components/ui/button";
 import {
   accountHeading,
@@ -108,20 +109,21 @@ export function UsageView({ channel }: ForgeViewProps) {
     );
   return (
     <ForgeFrame title={t("pi.forge.titles.usage")}>
-      {body}
+      {/* The body takes the room in every state (data, empty, error), so Refresh stays at the bottom. */}
+      <View style={styles.fill}>{body}</View>
       <ErrorLine message={action.error} onDismiss={action.clearError} />
       {channel.available && !action.unsupported ? (
-        <View style={forgeStyles.footer}>
+        <ActionBar>
           <Button
             variant="secondary"
             onPress={pressRefresh}
             loading={action.busy === "usage.refresh"}
-            style={styles.fill}
+            style={sheetActionStyles.button}
             testID="usage-refresh"
           >
             {t("pi.forge.usage.refresh")}
           </Button>
-        </View>
+        </ActionBar>
       ) : null}
     </ForgeFrame>
   );
@@ -153,7 +155,7 @@ export function CostView({ channel }: ForgeViewProps) {
         {sections.map((section) => (
           <View key={section.key} style={styles.section}>
             {section.title ? (
-              <Text style={styles.heading} accessibilityRole="header">
+              <Text style={[styles.heading, styles.costHeading]} accessibilityRole="header">
                 {section.title}
               </Text>
             ) : null}
@@ -166,7 +168,7 @@ export function CostView({ channel }: ForgeViewProps) {
               >
                 <Text style={styles.label}>{row.label}</Text>
                 {row.value ? (
-                  <Text style={styles.value} selectable numberOfLines={2}>
+                  <Text style={styles.value} selectable>
                     {row.value}
                   </Text>
                 ) : null}
@@ -265,6 +267,7 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
   },
   section: { paddingTop: theme.spacing[3] },
+  costHeading: { paddingHorizontal: theme.spacing[4], paddingBottom: theme.spacing[1] },
   heading: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,

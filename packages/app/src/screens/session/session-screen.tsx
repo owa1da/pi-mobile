@@ -4,7 +4,7 @@
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View } from "react-native";
+import { Text, View, type LayoutChangeEvent } from "react-native";
 import Animated from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { AssistantFileLinkResolverProvider } from "@/assistant-file-links";
@@ -36,7 +36,7 @@ import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
 import { useAnnounceOnChange, announce } from "@/components/pi/use-announce";
 import { latestReply, nextReplyAnnouncement, previewText } from "./announce";
-import { subBarStatus, waitingBannerVisible } from "./chrome";
+import { fitLine, subBarStatus, waitingBannerVisible, type LineKind } from "./chrome";
 import { friendlyHostError, type FriendlyError } from "./send-errors";
 import { useChatFeed } from "./use-chat-feed";
 import { AnswerDock, openIdsOf } from "./answer-dock";
@@ -298,16 +298,77 @@ function keyedParts(
   word: string | null,
   parts: FooterPart[],
   model: string | undefined,
-): (FooterPart & { key: string; first: boolean })[] {
-  let shown = parts;
-  if (shown.length === 0) shown = model ? [{ text: model }] : [];
-  const all = word ? [{ text: word }, ...shown] : shown;
+): SubBarPart[] {
+  let shown: Unkeyed[] = parts;
+  if (shown.length === 0) shown = model ? [{ text: model, kind: "model" }] : [];
+  const all: Unkeyed[] = word ? [{ text: word, kind: "state" }, ...shown] : shown;
   const seen = new Map<string, number>();
-  return all.map((part, index) => {
+  return all.map((part) => {
     const count = seen.get(part.text) ?? 0;
     seen.set(part.text, count + 1);
-    return { text: part.text, tone: part.tone, key: `${part.text}#${count}`, first: index === 0 };
+    return { text: part.text, kind: part.kind, tone: part.tone, key: `${part.text}#${count}` };
   });
+}
+
+interface Unkeyed {
+  text: string;
+  kind: LineKind;
+  tone?: FooterPart["tone"];
+}
+
+interface SubBarPart {
+  text: string;
+  kind: LineKind;
+  tone?: FooterPart["tone"];
+  key: string;
+}
+
+/** Slack for kerning between separately measured runs (the line is drawn as one run). */
+const FIT_SLACK = 2;
+
+/**
+ * The sub-bar's parts fitted to its width as forge fits its line (`fitLine`): measured off-screen
+ * once per text, then whole parts dropped in forge's order; never an item cut in half.
+ */
+function useFittedParts(all: SubBarPart[]) {
+  const [room, setRoom] = useState<number | null>(null);
+  const [widths, setWidths] = useState<Record<string, number>>({});
+  const [sepWidth, setSepWidth] = useState<number | null>(null);
+  const onRoom = useCallback((e: LayoutChangeEvent) => setRoom(e.nativeEvent.layout.width), []);
+  const onSep = useCallback((e: LayoutChangeEvent) => setSepWidth(e.nativeEvent.layout.width), []);
+  const measure = useCallback(
+    (key: string, width: number) =>
+      setWidths((prev) => (prev[key] === width ? prev : { ...prev, [key]: width })),
+    [],
+  );
+  const ready =
+    room !== null && sepWidth !== null && all.every((part) => widths[part.key] !== undefined);
+  const shown = ready
+    ? fitLine(
+        all.map((part) => ({ ...part, width: widths[part.key]! })),
+        room - FIT_SLACK,
+        sepWidth,
+      )
+    : all;
+  return { shown, onRoom, onSep, measure };
+}
+
+function MeasuredText({
+  part,
+  onWidth,
+}: {
+  part: SubBarPart;
+  onWidth: (key: string, width: number) => void;
+}) {
+  const onLayout = useCallback(
+    (e: LayoutChangeEvent) => onWidth(part.key, e.nativeEvent.layout.width),
+    [onWidth, part.key],
+  );
+  return (
+    <Text style={styles.measureText} numberOfLines={1} onLayout={onLayout}>
+      {part.text}
+    </Text>
+  );
 }
 
 /** The context field's colour, as the desktop line colours it (warning/error); else inherited. */
@@ -338,6 +399,7 @@ function SessionSubBar({
   const word = quiet ? null : t(status.key);
   // forge's status line when it publishes one (exactly the desktop's facts), else the row's model.
   const all = keyedParts(word, footerParts(footer), model);
+  const fitted = useFittedParts(all);
   let glyph = rowGlyph(row);
   if (status.kind === "pending") glyph = "working";
   else if (status.kind !== "state") glyph = "gone";
@@ -348,14 +410,28 @@ function SessionSubBar({
         <Text
           style={[styles.subBarText, quiet && styles.subBarQuiet]}
           numberOfLines={1}
+          onLayout={fitted.onRoom}
           testID="session-state"
         >
-          {all.map((part) => (
+          {fitted.shown.map((part, index) => (
             <Text key={part.key} style={toneStyle(part.tone)}>
-              {part.first ? part.text : ` · ${part.text}`}
+              {index === 0 ? part.text : ` · ${part.text}`}
             </Text>
           ))}
         </Text>
+      </View>
+      <View
+        style={styles.measure}
+        pointerEvents="none"
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      >
+        <Text style={styles.measureText} numberOfLines={1} onLayout={fitted.onSep}>
+          {" · "}
+        </Text>
+        {all.map((part) => (
+          <MeasuredText key={part.key} part={part} onWidth={fitted.measure} />
+        ))}
       </View>
     </View>
   );
@@ -648,6 +724,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   subBarText: { flex: 1, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   subBarQuiet: { color: theme.colors.foregroundExtraMuted },
+  measure: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: 10_000,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    opacity: 0,
+  },
+  measureText: { flexShrink: 0, fontSize: theme.fontSize.sm },
   toneWarning: { color: theme.colors.statusWarning },
   toneError: { color: theme.colors.statusDanger },
   banners: {
