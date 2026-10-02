@@ -50,6 +50,16 @@ let sessionFile;
 let leaf = null;
 let messages = 0;
 let firstPrompt = null;
+let resumedLastText = null;
+function textOf(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("\n");
+}
+const firstLineOf = (content) => textOf(content).trim().split("\n")[0];
 if (sessionArg) {
   sessionFile = path.resolve(sessionArg);
   const lines = fs.readFileSync(sessionFile, "utf8").split("\n").filter(Boolean);
@@ -60,7 +70,9 @@ if (sessionArg) {
     if (e.type === "message") {
       messages++;
       if (!firstPrompt && e.message?.role === "user")
-        firstPrompt = String(e.message.content).split("\n")[0];
+        firstPrompt = textOf(e.message.content).split("\n")[0] || null;
+      if (e.message?.role === "assistant" && firstLineOf(e.message.content))
+        resumedLastText = firstLineOf(e.message.content).slice(0, 200);
     }
   }
   try {
@@ -109,8 +121,11 @@ const startedAt = Date.now();
 let state = "idle";
 let stateSince = startedAt;
 let waitingFor = null;
-let lastRun = null;
-let lastText = null;
+let lastRun = resumedLastText
+  ? { startedAt: Date.now() - 1000, endedAt: Date.now(), outcome: "completed", error: null }
+  : null;
+let lastText = resumedLastText;
+const WAIT_TITLE = process.env.FAKE_PI_WAIT_TITLE || "Allow bash?";
 const modelInfo = model
   ? { provider: model.split("/")[0], id: model.split("/").slice(1).join("/") || model }
   : { provider: "fake", id: "fake-1" };
@@ -192,7 +207,7 @@ function submit(text, pasted) {
   log({ kind: "submit", text, pasted });
   if (text === "/quit") return quit();
   if (text === "/work") return setState("working");
-  if (text === "/wait") return setState("waiting", { kind: "select", title: "Allow bash?" });
+  if (text === "/wait") return setState("waiting", { kind: "select", title: WAIT_TITLE });
   if (!text.trim()) return;
   if (!firstPrompt) firstPrompt = text.split("\n")[0];
   append({
@@ -226,7 +241,7 @@ function submit(text, pasted) {
 }
 
 process.on("SIGUSR1", () => setState("idle"));
-process.on("SIGUSR2", () => setState("waiting", { kind: "select", title: "Allow bash?" }));
+process.on("SIGUSR2", () => setState("waiting", { kind: "select", title: WAIT_TITLE }));
 
 const delay = Number(process.env.FAKE_PI_DELAY_MS ?? 300);
 setTimeout(() => {

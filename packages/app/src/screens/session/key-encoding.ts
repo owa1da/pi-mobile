@@ -128,10 +128,13 @@ export function encodeKey(
 
 /**
  * Soft keyboards deliver typed text as input data, not key events. With the sticky Ctrl armed, the
- * first character becomes its control byte and Ctrl is released.
+ * first character becomes its control byte and Ctrl is released. Data starting with ESC is not
+ * typed text: xterm answers terminal queries through the same channel (e.g. the color-scheme
+ * report `ESC[?997;1n` that tmux asks for on every theme change), so it passes through untouched
+ * and leaves Ctrl armed.
  */
 export function applyStickyCtrl(data: string, armed: boolean): { send: string; consumed: boolean } {
-  if (!armed || data.length === 0) return { send: data, consumed: false };
+  if (!armed || data.length === 0 || data.startsWith(ESC)) return { send: data, consumed: false };
   const first = Array.from(data)[0] ?? "";
   if (first.length !== 1) return { send: data, consumed: true };
   return { send: ctrlChar(first) + data.slice(first.length), consumed: true };

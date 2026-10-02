@@ -15,6 +15,7 @@ import {
   startScript,
   windowName,
   wrapForAnyShell,
+  parseStartedLine,
 } from "./commands";
 import { base64EncodeText, utf8ByteLength } from "./encoding";
 import { buildSnapshot, parseListing } from "./procs";
@@ -254,9 +255,7 @@ class HostServiceImpl implements PiHostService {
     const err = lines.find((line) => line.startsWith("ERR"));
     let started: StartedSession | undefined;
     if (ok) {
-      const [tmuxSession, windowId, pane, pid] = ok.slice(3).split("\t");
-      if (tmuxSession !== undefined && windowId && pane && pid)
-        started = { tmuxSession, windowId, pane, pid: Number(pid) };
+      started = parseStartedLine(ok.slice(3));
     }
     if (err) {
       const [, reason = "", ...rest] = err.split(" ");

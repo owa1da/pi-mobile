@@ -139,6 +139,16 @@ describe("key bar encoding", () => {
     expect(applyStickyCtrl("dx", true)).toEqual({ send: "\x04x", consumed: true });
     expect(applyStickyCtrl("c", false)).toEqual({ send: "c", consumed: false });
   });
+
+  it("leaves Ctrl armed for terminal reports xterm sends through onData (ESC-prefixed)", () => {
+    // tmux asks for the color scheme (mode 2031); xterm answers right after a re-render.
+    expect(applyStickyCtrl("\x1b[?997;1n", true)).toEqual({
+      send: "\x1b[?997;1n",
+      consumed: false,
+    });
+    expect(applyStickyCtrl("\x1bP>|xterm.js(6.1.0)\x1b\\", true).consumed).toBe(false);
+    expect(applyStickyCtrl("a", true)).toEqual({ send: "\x01", consumed: true });
+  });
 });
 
 describe("friendlyHostError", () => {

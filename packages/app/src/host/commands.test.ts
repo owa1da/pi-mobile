@@ -1,7 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-import { shQuote, tmuxArg, tmuxFormatLiteral, tq, windowName, wrapForAnyShell } from "./commands";
+import {
+  attachCleanupScript,
+  parseStartedLine,
+  shQuote,
+  startScript,
+  tmuxArg,
+  tmuxFormatLiteral,
+  tq,
+  windowName,
+  wrapForAnyShell,
+} from "./commands";
 import {
   base64Decode,
   base64Encode,
@@ -110,5 +120,40 @@ describe("encoding", () => {
       .replace(/(.{76})/g, "$1\n");
     expect(utf8Decode(base64Decode(b64))).toBe("x".repeat(100));
     expect(utf8Decode(Uint8Array.from([0x61, 0xe2, 0x9c]))).toBe("a\ufffd\ufffd");
+  });
+});
+
+describe("tmux format output without a UTF-8 client", () => {
+  // tmux prints control characters (tabs) as "_" in -F/-P output when the client is not UTF-8,
+  // which is the case over SSH (no LANG is sent): formats must not rely on tabs.
+  it("parses the start script's space-separated OK line, session name last", () => {
+    expect(parseStartedLine("@4 %12 4242 pi")).toEqual({
+      windowId: "@4",
+      pane: "%12",
+      pid: 4242,
+      tmuxSession: "pi",
+    });
+    expect(parseStartedLine("@1 %2 3 my work session")?.tmuxSession).toBe("my work session");
+    expect(parseStartedLine("pi_@10_%10_1490580")).toBeUndefined();
+  });
+
+  it("uses no tab separators in the start and attach-cleanup scripts", () => {
+    const start = startScript({
+      nonce: "N",
+      tmux: "tmux",
+      socket: "/tmp/s",
+      cwd: "/tmp",
+      cwdFallbackHome: false,
+      windowName: "pi",
+      env: [],
+      argv: ["pi"],
+      waitReady: { procsDir: "/tmp/p", timeoutMs: 1000 },
+      pasteStdin: true,
+    });
+    const cleanup = attachCleanupScript({ tmux: "tmux", socket: "/tmp/s", sessionName: "pim-1-a" });
+    for (const script of [start, cleanup]) {
+      expect(script).not.toContain("\t");
+      expect(script).not.toContain("\\t");
+    }
   });
 });

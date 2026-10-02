@@ -317,6 +317,38 @@ describe("host service on an isolated tmux server", () => {
     );
   });
 
+  it("starts and resumes-then-sends when the host shell has no UTF-8 locale (as over SSH)", async () => {
+    // Without LANG tmux prints the tabs of -P/-F output as "_"; the start script must not need them.
+    const bare = createSandbox();
+    try {
+      delete bare.env.LANG;
+      const plain = bare.service();
+      const big = `${"z".repeat(9000)}\nend`;
+      const started = await plain.startSession({ prompt: big, cwd: bare.home });
+      expect(started.pane).toMatch(/^%\d+$/);
+      await bare.waitForEvent(started.pid, (e) => e.kind === "submit", 10_000, "big submit");
+      const live = await rowFor(bare, plain, (r) => r.pid === started.pid && r.messages > 0, "row");
+      await plain.sendPrompt(live, "/quit");
+      const closed = await rowFor(
+        bare,
+        plain,
+        (r) => !r.live && r.sessionId === live.sessionId,
+        "closed",
+      );
+      await plain.sendPrompt(closed, "after resume");
+      const resumed = await rowFor(
+        bare,
+        plain,
+        (r) => r.live && r.sessionId === live.sessionId,
+        "resumed",
+      );
+      await bare.waitForEvent(resumed.pid!, (e) => e.kind === "submit", 10_000, "resumed submit");
+      expect(submitTexts(bare, resumed.pid!)).toContain("after resume");
+    } finally {
+      bare.cleanup();
+    }
+  });
+
   it("reads the chat of a session incrementally", async () => {
     const started = await svc.startSession({ prompt: "chat one", cwd: sb.home });
     const row = await rowFor(sb, svc, (r) => r.pid === started.pid && r.messages >= 2, "row");

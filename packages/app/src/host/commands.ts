@@ -288,11 +288,13 @@ export interface StartScriptInput extends TmuxTarget {
 }
 
 /**
- * Output: `<nonce> OK <session>\t<window>\t<pane>\t<pid>` (then `<nonce> READY`/`<nonce> PASTED`),
- * or `<nonce> ERR <reason>` with reason file|cwd|tmux|timeout|died|paste.
+ * Output: `<nonce> OK <window> <pane> <pid> <session>` (then `<nonce> READY`/`<nonce> PASTED`),
+ * or `<nonce> ERR <reason>` with reason file|cwd|tmux|timeout|died|paste. The OK fields are
+ * space-separated with the free-form session name last: tmux prints control characters such as
+ * tabs as `_` in format output when the client is not UTF-8 (no LANG over SSH, no -u).
  */
 export function startScript(input: StartScriptInput): string {
-  const fmt = "#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}";
+  const fmt = "#{window_id} #{pane_id} #{pane_pid} #{session_name}";
   const common = [
     "-d",
     "-P",
@@ -327,7 +329,7 @@ printf '%s OK %s\\n' "$N" "$OUT"
 ${
   wait
     ? `
-PANE=$(printf '%s' "$OUT" | cut -f3); PID=$(printf '%s' "$OUT" | cut -f4)
+PANE=$(printf '%s' "$OUT" | cut -d' ' -f2); PID=$(printf '%s' "$OUT" | cut -d' ' -f3)
 R=${shQuote(wait.procsDir)}/$PID.json; SID=${shQuote(sid)}
 i=0; MAX=${Math.ceil(wait.timeoutMs / 250)}; ok=0
 while [ "$i" -lt "$MAX" ]; do
@@ -427,12 +429,21 @@ exec "$T" -u -S "$S" new-session -d -s "$NAME" -t "$2" \\; set-option -t "$NAME"
 `;
 }
 
+/** The fields of startScript's `OK` line: `<window> <pane> <pid> <session name…>`. */
+export function parseStartedLine(
+  line: string,
+): { tmuxSession: string; windowId: string; pane: string; pid: number } | undefined {
+  const match = /^(@\d+) (%\d+) (\d+) (.*)$/.exec(line.trim());
+  if (!match) return undefined;
+  return { windowId: match[1]!, pane: match[2]!, pid: Number(match[3]), tmuxSession: match[4]! };
+}
+
 /** Kill the phone's session only while another session in its group still holds the windows. */
 export function attachCleanupScript(input: TmuxTarget & { sessionName: string }): string {
   return `
 T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}; NAME=${shQuote(input.sessionName)}
 case "$NAME" in pim-*) ;; *) exit 0;; esac
-if "$T" -S "$S" list-sessions -F '#{session_name}\t#{session_group_size}' 2>/dev/null | awk -F'\t' -v n="$NAME" '$1 == n && $2 > 1 { f = 1 } END { exit !f }'; then
+if "$T" -S "$S" list-sessions -F '#{session_group_size} #{session_name}' 2>/dev/null | awk -v n="$NAME" '$2 == n && NF == 2 && $1 > 1 { f = 1 } END { exit !f }'; then
   "$T" -S "$S" kill-session -t "=$NAME" 2>/dev/null
 fi
 exit 0
