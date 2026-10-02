@@ -2,6 +2,7 @@ import {
   forwardRef,
   useCallback,
   useMemo,
+  useRef,
   useState,
   type ForwardedRef,
   type ReactNode,
@@ -165,12 +166,16 @@ export const FormTextInput = forwardRef<EditingTextInputHandle, FormTextInputPro
     const chromeSizeStyle = size === "sm" ? formInputStyles.chromeSm : formInputStyles.chromeMd;
     const inputSizeStyle = size === "sm" ? formInputStyles.inputSm : formInputStyles.inputMd;
     const splitStyle = useMemo(() => splitFormTextInputStyle(style), [style]);
+    const localRef = useRef<EditingTextInputHandle | null>(null);
     const setInputRef = useCallback(
       (node: EditingTextInputHandle | null) => {
+        localRef.current = node;
         assignTextInputRef(ref, node);
       },
       [ref],
     );
+    // The chrome's padding is part of the 44dp field: a tap there focuses the input.
+    const focusInput = useCallback(() => localRef.current?.focus(), []);
     const handleFocus = useCallback<NonNullable<AdaptiveTextInputProps["onFocus"]>>(
       (event) => {
         setFocused(true);
@@ -212,7 +217,15 @@ export const FormTextInput = forwardRef<EditingTextInputHandle, FormTextInputPro
     );
 
     return (
-      <Pressable disabled={isDisabled} style={chromeStyle}>
+      <Pressable
+        disabled={isDisabled}
+        style={chromeStyle}
+        onPress={focusInput}
+        // The EditText is the one announced node; the chrome is not a second, unnamed control.
+        accessible={false}
+        focusable={false}
+        importantForAccessibility="no"
+      >
         <AdaptiveTextInput
           ref={setInputRef}
           editable={editable}

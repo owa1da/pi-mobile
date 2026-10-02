@@ -221,8 +221,13 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     flex: 1,
   },
+  // 44dp target; the negative margin keeps the glyph on the header's trailing rail.
   closeButton: {
-    padding: theme.spacing[2],
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: -theme.spacing[1.5],
   },
   content: {
     flex: 1,

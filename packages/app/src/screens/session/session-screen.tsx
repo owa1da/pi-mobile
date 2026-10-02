@@ -35,8 +35,10 @@ import {
 import { findRow } from "@/stores/sessions-store";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
+import { useAnnounceOnChange, announce } from "@/components/pi/use-announce";
 import { useIsHandheld } from "@/utils/use-handheld";
 import { setImmersive } from "../../../modules/pi-system-bars";
+import { latestReply, nextReplyAnnouncement, previewText } from "./announce";
 import { shouldCollapseTerminalChrome, subBarStatus } from "./chrome";
 import { friendlyHostError, type FriendlyError } from "./send-errors";
 import { useChatFeed } from "./use-chat-feed";
@@ -129,7 +131,7 @@ export function SessionScreen() {
         {collapsed ? null : (
           <SessionSubBar row={row} tab={tab} onTab={setTab} connection={connection} />
         )}
-        <ConnectionBanner hostId={hostId} connection={connection} />
+        <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
         <View style={tab === "chat" ? FILL : HIDDEN}>
           <ChatPane
             hostId={hostId}
@@ -171,7 +173,12 @@ export function SessionScreen() {
     );
   } else {
     body = (
-      <View style={styles.center}>
+      <View
+        style={styles.center}
+        accessible
+        accessibilityLabel={t("pi.session.loading")}
+        testID="session-loading"
+      >
         <MutedSpinner size="small" />
       </View>
     );
@@ -221,6 +228,7 @@ function SessionSubBar({
         value={tab}
         onValueChange={onTab}
         size="sm"
+        role="tabs"
         testID="session-tabs"
       />
     </View>
@@ -267,6 +275,13 @@ function ChatPaneBody({
   const { t } = useTranslation();
   const toast = useToast();
   const feed = useChatFeed(hostId, row, active);
+  useReplyAnnouncement(feed.rows, row.state === "working", active);
+  useAnnounceOnChange(
+    row.state === "waiting"
+      ? t("pi.session.askingAnnounce", { question: row.asking ?? row.detail ?? "" })
+      : null,
+    active,
+  );
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<FriendlyError | null>(null);
   const sendingRef = useRef(false);
@@ -378,6 +393,26 @@ function ChatPaneBody({
   );
 }
 
+/** Speaks pi's final reply once when it lands (never the old one on open, never mid-turn steps). */
+function useReplyAnnouncement(
+  rows: Parameters<typeof latestReply>[0],
+  working: boolean,
+  active: boolean,
+) {
+  const { t } = useTranslation();
+  const baseline = useRef<string | null | undefined>(undefined);
+  const latest = latestReply(rows);
+  const latestKey = latest?.key;
+  const latestText = latest?.text;
+  useEffect(() => {
+    const ref = latestKey !== undefined ? { key: latestKey, text: latestText ?? "" } : null;
+    const next = nextReplyAnnouncement(baseline.current, ref, working);
+    baseline.current = next.baseline;
+    if (next.announce && active)
+      announce(t("pi.session.replied", { preview: previewText(next.announce.text) }));
+  }, [active, latestKey, latestText, t, working]);
+}
+
 function TerminalPane({
   hostId,
   row,
@@ -430,7 +465,7 @@ function TerminalPane({
   }
   if (!connected) {
     return (
-      <View style={styles.center}>
+      <View style={styles.center} accessible accessibilityLabel={t("pi.terminal.connecting")}>
         <MutedSpinner size="small" />
       </View>
     );
@@ -456,7 +491,8 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
     paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[2],
+    // The tabs' 44dp hit row already carries the space below the 32dp pills.
+    paddingBottom: 0,
   },
   subBarMeta: {
     flex: 1,

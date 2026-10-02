@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Keyboard, Pressable, Text, View, useWindowDimensions } from "react-native";
+import {
+  AccessibilityInfo,
+  Keyboard,
+  Pressable,
+  Text,
+  View,
+  findNodeHandle,
+  useWindowDimensions,
+} from "react-native";
 import type { DimensionValue, StyleProp, ViewStyle } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -34,6 +42,10 @@ import { useKeyboardVisibility } from "@/hooks/use-keyboard-visibility";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AdaptiveTextInput } from "@/components/adaptive-text-input";
 import { useIsHandheld } from "@/utils/use-handheld";
+import { useRegisterOpenSheet } from "@/components/pi/sheet-a11y";
+
+/** After the sheet's rise, TalkBack focus moves to its title (announced as a dialog). */
+const SHEET_FOCUS_DELAY_MS = 450;
 
 /** Widest a phone's bottom sheet gets in landscape (Material's 640dp cap), centered. */
 const HANDHELD_SHEET_MAX_WIDTH = 640;
@@ -329,6 +341,16 @@ export function SheetHeaderView({
   const back = header.back;
   const handleBackPress = back?.onPress;
   const search = header.search;
+  const titleRef = useRef<Text>(null);
+  useEffect(() => {
+    if (isWeb) return undefined;
+    const timer = setTimeout(() => {
+      const node = titleRef.current ? findNodeHandle(titleRef.current) : null;
+      if (node) AccessibilityInfo.setAccessibilityFocus(node);
+    }, SHEET_FOCUS_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  const titleLabel = t("pi.sheetDialog", { title: header.title });
   const handleSearchChange = useCallback(
     (value: string) => {
       search?.onChange(value);
@@ -358,7 +380,13 @@ export function SheetHeaderView({
         ) : null}
         {header.leading ? <View style={styles.headerLeadingSlot}>{header.leading}</View> : null}
         <View style={styles.headerTitleGroup}>
-          <Text style={titleStyle} numberOfLines={1}>
+          <Text
+            ref={titleRef}
+            style={titleStyle}
+            numberOfLines={1}
+            accessibilityRole="header"
+            accessibilityLabel={titleLabel}
+          >
             {header.title}
           </Text>
           {header.subtitle}
@@ -536,6 +564,7 @@ export function AdaptiveModalSheet({
   const isMobile = handheldSheet.isMobile;
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardVisibility(visible);
+  useRegisterOpenSheet(visible);
   const resolvedSnapPoints = handheldSheet.snapPoints;
   const sheetStyle = handheldSheet.style;
   const compactSafeAreaPadding = useMemo(

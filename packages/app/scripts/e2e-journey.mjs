@@ -3,8 +3,12 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v4), --keep (leave the sandbox up),
-//          --no-install (use the installed APK).
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v5), --keep (leave the sandbox up),
+//          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
+//          --theme dark|light (default dark: the run's
+//          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
+// Accessibility: every main control is checked for a label and a ≥44dp hit area (bounds plus its
+// declared hitSlop) on the device; the table goes to <screens>/a11y-audit-<theme>.json.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -139,12 +143,105 @@ function rendererLog() {
   return last ? last.slice(last.indexOf("[terminal-webview]")) : "no renderer log line";
 }
 
+/** 44dp with 1px of rounding (bounds are whole pixels: 44dp = 115.5px at 2.625x). */
+const MIN_TARGET_DP = 43.5;
+const round1 = (v) => Math.round(v * 10) / 10;
+const inside = (inner, outer) =>
+  inner.bounds[0] >= outer.bounds[0] &&
+  inner.bounds[1] >= outer.bounds[1] &&
+  inner.bounds[2] <= outer.bounds[2] &&
+  inner.bounds[3] <= outer.bounds[3];
+
+/** The spoken name: the node's own content-desc/text, else its descendants' text. */
+function spokenName(node, nodes) {
+  if (node.desc || node.text) return node.desc || node.text;
+  return nodes
+    .filter((n) => n !== node && n.text && inside(n, node))
+    .map((n) => n.text)
+    .join(" ");
+}
+
+/**
+ * Asserts each control is on screen, has a spoken name and a ≥44dp hit area (bounds + hitSlop on
+ * each side), and records it. controls: [label, predicate, { slop, optional, selected, textOnly }].
+ */
+function auditControls(ctx, screen, controls) {
+  const nodes = A.dump();
+  for (const [label, pred, opts = {}] of controls) {
+    const node = nodes.find(pred);
+    if (!node) {
+      if (opts.optional) continue;
+      const named = nodes.filter((n) => n.desc).map((n) => `${n.cls}:${n.desc}`);
+      throw new Error(`a11y ${screen}: ${label} not found (labelled: ${named.join(" | ")})`);
+    }
+    const [x1, y1, x2, y2] = node.bounds;
+    const slop = opts.slop ?? 0;
+    const w = (x2 - x1) / ctx.dp + slop * 2;
+    const h = (y2 - y1) / ctx.dp + slop * 2;
+    const name = spokenName(node, nodes);
+    ctx.audit.push({
+      screen,
+      control: label,
+      id: node.id,
+      cls: node.cls,
+      name,
+      wDp: round1(w),
+      hDp: round1(h),
+      slopDp: slop,
+      selected: node.selected,
+      enabled: node.enabled,
+    });
+    assert(name, `a11y ${screen}: ${label} has no label`);
+    // A heading (the sheet title) is announced, not tapped: label only.
+    assert(
+      opts.textOnly || Math.min(w, h) >= MIN_TARGET_DP,
+      `a11y ${screen}: ${label} hit area ${round1(w)}x${round1(h)}dp < 44dp`,
+    );
+    if (opts.selected !== undefined)
+      assert(node.selected === opts.selected, `a11y ${screen}: ${label} selected=${node.selected}`);
+  }
+  sweepClickables(ctx, screen, nodes);
+}
+
+/** Every other clickable node of the app on screen: recorded when unnamed or under 44dp. */
+function sweepClickables(ctx, screen, nodes) {
+  const webviews = nodes.filter((n) => n.cls === "android.webkit.WebView");
+  for (const node of nodes) {
+    if (!(node.clickable || node.longClickable) || node.pkg !== PKG) continue;
+    if (webviews.some((w) => w !== node && inside(node, w))) continue;
+    const [x1, y1, x2, y2] = node.bounds;
+    const w = (x2 - x1) / ctx.dp;
+    const h = (y2 - y1) / ctx.dp;
+    const name = spokenName(node, nodes);
+    if (name && Math.min(w, h) >= MIN_TARGET_DP) continue;
+    ctx.sweep.push({ screen, id: node.id, cls: node.cls, name, wDp: round1(w), hDp: round1(h) });
+  }
+}
+
+const byDesc = (desc) => (n) => n.desc === desc && n.clickable;
+
+/** Back to the Hosts list (relaunching the activity if a back press left the app). */
+async function toHosts() {
+  for (let i = 0; i < 4 && !A.find(A.byId("hosts-list")); i++) {
+    if (A.find(A.byId("hosts-add"))) break;
+    await back();
+  }
+  if (!A.find(A.byId("hosts-add"))) {
+    A.adb("shell", "am", "start", "-n", `${PKG}/.MainActivity`);
+    await sleep(2500);
+  }
+  await A.waitNode(A.byId("hosts-list"), 20_000, "hosts list");
+}
+
 // ---------------------------------------------------------------------------
 // steps
 // ---------------------------------------------------------------------------
 
 function steps(ctx) {
-  const shot = (name) => A.screenshot(ctx.screens, name);
+  // --theme light: the run's base appearance is light, so every "-dark" shot is a light one.
+  const shot = (name) =>
+    A.screenshot(ctx.screens, ctx.light ? name.replace(/-dark$/, "-light") : name);
+  const night = (on) => A.nightMode(ctx.light ? false : on);
   return [
     [
       "Fresh launch shows the Hosts empty state",
@@ -160,6 +257,16 @@ function steps(ctx) {
         const key = await A.waitNode(A.byId("host-public-key"), 20_000, "generated key");
         assert(/^ssh-ed25519 AAAA\S+ pi-mobile$/.test(key.text), `bad public key: ${key.text}`);
         shot("02-add-host-sheet-dark");
+        auditControls(ctx, "add-host sheet", [
+          ["sheet title (dialog)", (n) => n.desc.endsWith(", dialog"), { textOnly: true }],
+          ["Close", byDesc("Close")],
+          ["Generate key", A.byId("host-auth-generate"), { selected: true }],
+          ["Paste key", A.byId("host-auth-paste"), { selected: false }],
+          ["Password", A.byId("host-auth-password")],
+          ["Copy public key", A.byId("host-copy-public-key")],
+          ["Cancel", A.byId("host-form-cancel")],
+          ["Save", A.byId("host-save")],
+        ]);
         await typeInto("host-field-label", "Sandbox");
         await typeInto("host-field-host", "10.0.2.2");
         await A.tap(A.byId("host-field-port"), "port");
@@ -173,6 +280,11 @@ function steps(ctx) {
         await A.tap(A.byId("host-save"), "save");
         await A.waitNode(A.idPrefix("host-row-"), 15_000, "host row");
         shot("04-hosts-list-dark");
+        auditControls(ctx, "hosts", [
+          ["Add host (+)", A.byId("hosts-add")],
+          ["host row", A.idPrefix("host-row-")],
+          ["edit pencil", A.idPrefix("host-edit-")],
+        ]);
       },
     ],
     [
@@ -189,6 +301,12 @@ function steps(ctx) {
           "trust sheet hint does not name the ed25519 host key file",
         );
         shot("05-trust-host-key-dark");
+        auditControls(ctx, "trust sheet", [
+          ["sheet title (dialog)", (n) => n.desc.endsWith(", dialog"), { textOnly: true }],
+          ["Close", byDesc("Close")],
+          ["Cancel", A.byId("host-key-cancel")],
+          ["Trust and connect", A.byId("host-key-trust")],
+        ]);
         await A.tap(A.byId("host-key-trust"), "trust");
         const summary = await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard");
         await sleep(2500);
@@ -210,6 +328,12 @@ function steps(ctx) {
           `section order ${order}`,
         );
         shot("06-dashboard-dark");
+        auditControls(ctx, "dashboard", [
+          ["Back", byDesc("Back")],
+          ["session row", A.idPrefix("session-row-")],
+          ["composer field", A.byId("dashboard-composer")],
+          ["Send (disabled)", A.byId("dashboard-send")],
+        ]);
         // State reads without colour or motion: every row's label names its state.
         const waitingDesc = nodes.find(rowOf(sessionIdOf("waiting")))?.desc ?? "";
         const workingDesc = nodes.find(rowOf(sessionIdOf("working")))?.desc ?? "";
@@ -227,6 +351,14 @@ function steps(ctx) {
         await A.waitNode(A.byId("chat-list"), 30_000, "chat");
         await sleep(2500);
         shot("07-chat-completed-bottom-dark");
+        auditControls(ctx, "chat", [
+          ["Back", byDesc("Back")],
+          ["Chat tab", A.byId("session-tab-chat"), { selected: true }],
+          ["Terminal tab", A.byId("session-tab-terminal"), { selected: false }],
+          ["composer field", A.byId("chat-composer")],
+          ["Send", A.byId("chat-send")],
+          ["assistant copy", A.byId("assistant-turn-copy"), { slop: 14, optional: true }],
+        ]);
         assert(A.find(A.byText("Fixed: login redirect loop")), "markdown heading missing");
         A.swipe(540, 900, 540, 1900, 400);
         await sleep(1200);
@@ -245,6 +377,9 @@ function steps(ctx) {
         await A.waitNode(A.byId("user-message-timestamp"), 5000, "timestamp after long-press");
         await sleep(500);
         shot("55-chat-bubble-revealed-dark");
+        auditControls(ctx, "chat (bubble revealed)", [
+          ["Copy message", A.byId("user-message-copy"), { slop: 14 }],
+        ]);
         const nodes = A.dump();
         for (const label of [
           "Thinking",
@@ -264,6 +399,7 @@ function steps(ctx) {
         await A.waitNode(A.byId("tool-call-sheet-close"), 10_000, "tool sheet");
         await sleep(1200);
         shot("10-tool-detail-failed-edit-dark");
+        auditControls(ctx, "tool detail sheet", [["Close", A.byId("tool-call-sheet-close")]]);
         // The error leads the sheet: readable without scrolling past the diff.
         assert(A.find(A.byText(/ENOENT/)), "failed tool error not visible without scrolling");
         await A.tap(A.byId("tool-call-sheet-close"), "close sheet");
@@ -276,11 +412,29 @@ function steps(ctx) {
         await A.tap(rowOf(sessionIdOf("waiting")), "waiting row");
         await A.waitNode(A.byId("chat-waiting-banner"), 30_000, "waiting banner");
         shot("11-chat-waiting-banner-dark");
+        auditControls(ctx, "waiting banner", [
+          ["Answer in terminal", A.byId("chat-answer-in-terminal")],
+        ]);
         await A.tap(A.byId("chat-answer-in-terminal"), "answer in terminal");
         await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
         await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* grouped session");
         await sleep(3000);
         shot("12-terminal-waiting-dark");
+        auditControls(ctx, "terminal", [
+          ["Terminal tab", A.byId("session-tab-terminal"), { selected: true }],
+          ["Chat tab", A.byId("session-tab-chat"), { selected: false }],
+          ["terminal surface", (n) => n.desc.startsWith("Terminal for "), { textOnly: true }],
+          ...[
+            "escape",
+            "tab",
+            "ctrl",
+            "arrowup",
+            "arrowdown",
+            "arrowleft",
+            "arrowright",
+            "enter",
+          ].map((k) => [`key ${k}`, A.byId(`key-${k}`)]),
+        ]);
         ctx.notes.push(`renderer: ${rendererLog()}`);
         const n = eventCount("waiting");
         for (const k of [
@@ -338,6 +492,7 @@ function steps(ctx) {
         assert(!A.find(A.byId("session-tabs")), "sub-bar still shown in collapsed landscape");
         assert(!A.find(A.byId("screen-header")), "header still shown in collapsed landscape");
         shot("14-terminal-landscape-dark");
+        auditControls(ctx, "terminal (collapsed landscape)", [["‹ Chat", A.byId("key-to-chat")]]);
         const landscape = clientSize();
         A.rotate(0);
         await E.waitFor(() => clientSize() === before, 10_000, "portrait pty again");
@@ -473,6 +628,7 @@ function steps(ctx) {
         await A.tap(rowOf(sessionIdOf("working")), "working row");
         const stop = await A.waitNode(A.byId("chat-stop"), 30_000, "stop button");
         shot("19-chat-working-stop-dark");
+        auditControls(ctx, "chat (working)", [["Stop", A.byId("chat-stop")]]);
         A.tapNode(stop);
         await sleep(250);
         A.tapNode(stop);
@@ -533,6 +689,7 @@ function steps(ctx) {
         assert(state.id === "session-state", `connection text is not the sub-bar (${state.id})`);
         ctx.notes.push(`sub-bar while disconnected: "${state.text}"`);
         shot("25-reconnecting-banner-dark");
+        auditControls(ctx, "reconnecting banner", [["Retry", A.byId("connection-retry")]]);
         await E.sshdStart();
         await A.waitGone(A.byId("connection-banner"), 90_000, "banner to clear");
         shot("26-recovered-dark");
@@ -564,6 +721,9 @@ function steps(ctx) {
         await sleep(4000);
         const more = await scrollUntil(A.byText(/^Show \d+ more$/), "Show N more");
         shot("37-dashboard-show-more-dark");
+        auditControls(ctx, "dashboard (overflow)", [
+          ["Show N more", A.byId("dashboard-show-more")],
+        ]);
         const hidden = Number(/\d+/.exec(more.text || more.desc)[0]);
         assert(hidden >= 2, `only ${hidden} closed rows hidden`);
         assert(!A.find(rowOf(oldest)), "oldest closed row shown before Show more");
@@ -578,9 +738,105 @@ function steps(ctx) {
       },
     ],
     [
+      "Font scale 1.3 and 2.0: hosts, dashboard, chat and the add-host sheet keep their controls",
+      async () => {
+        const [W, H] = A.screenSize();
+        const visible = (node) =>
+          node &&
+          node.bounds[2] > node.bounds[0] &&
+          node.bounds[3] > node.bounds[1] &&
+          node.bounds[2] <= W &&
+          node.bounds[3] <= H;
+        const scales = [
+          [1.3, "13", 60],
+          [2, "20", 64],
+        ];
+        await toHosts();
+        const baseRow = A.find(hostRow("Sandbox"));
+        let lastRowH = baseRow.bounds[3] - baseRow.bounds[1];
+        try {
+          for (const [scale, tag, n] of scales) {
+            A.fontScale(scale);
+            await sleep(3500);
+            await toHosts();
+            await sleep(1000);
+            shot(`${n}-fs${tag}-hosts-dark`);
+            // Text is re-measured at the new scale (a runtime change used to keep scale-1 bounds).
+            const sandboxRow = A.find(hostRow("Sandbox"));
+            const rowH = sandboxRow.bounds[3] - sandboxRow.bounds[1];
+            assert(
+              rowH > lastRowH,
+              `host row ${rowH}px did not grow from ${lastRowH}px at ${scale}`,
+            );
+            ctx.notes.push(`font ${scale}: host row ${lastRowH} → ${rowH}px`);
+            lastRowH = rowH;
+            auditControls(ctx, `hosts @${scale}`, [
+              ["Add host (+)", A.byId("hosts-add")],
+              ["host row", hostRow("Sandbox")],
+              ["edit pencil", A.idPrefix("host-edit-")],
+            ]);
+            await A.tap(hostRow("Sandbox"), "Sandbox");
+            await A.waitNode(A.byId("dashboard-composer"), 45_000, `dashboard @${scale}`);
+            await sleep(2500);
+            shot(`${n + 1}-fs${tag}-dashboard-dark`);
+            assert(
+              visible(A.find(A.byId("dashboard-send"))),
+              `dashboard send off screen @${scale}`,
+            );
+            const row = await scrollUntil(rowOf(E.readState().richId), "rich row");
+            A.tapNode(row);
+            await A.waitNode(A.byId("chat-list"), 30_000, `chat @${scale}`);
+            await sleep(2500);
+            shot(`${n + 2}-fs${tag}-chat-dark`);
+            auditControls(ctx, `chat @${scale}`, [
+              ["Chat tab", A.byId("session-tab-chat"), { selected: true }],
+              ["Terminal tab", A.byId("session-tab-terminal")],
+              ["Send", A.byId("chat-send")],
+            ]);
+            const nodes = A.dump();
+            const status = nodes.find(A.byId("session-state"));
+            const tabs = nodes.find(A.byId("session-tabs"));
+            assert(visible(status) && visible(tabs), `sub-bar clipped @${scale}`);
+            assert(
+              status.bounds[2] <= tabs.bounds[0],
+              `sub-bar status overlaps the tabs @${scale}`,
+            );
+            assert(visible(nodes.find(A.byId("chat-composer"))), `composer off screen @${scale}`);
+            ctx.notes.push(
+              `font ${scale}: sub-bar status "${status.text}" ${status.bounds}, tabs ${tabs.bounds}`,
+            );
+            await toDashboard();
+            await back();
+            await A.tap(A.byId("hosts-add"), `add host @${scale}`);
+            await A.waitNode(A.byId("host-field-label"), 20_000, `host form @${scale}`);
+            await sleep(1500);
+            A.hideKeyboard();
+            await sleep(600);
+            shot(`${n + 3}-fs${tag}-add-host-dark`);
+            auditControls(ctx, `add-host sheet @${scale}`, [
+              ["Generate key", A.byId("host-auth-generate")],
+              ["Paste key", A.byId("host-auth-paste")],
+              ["Password", A.byId("host-auth-password")],
+              ["Cancel", A.byId("host-form-cancel")],
+              ["Save", A.byId("host-save")],
+            ]);
+            await back();
+            await A.waitGone(A.byId("host-field-label"), 10_000, "host form to close");
+          }
+        } finally {
+          A.fontScale(1);
+        }
+        await sleep(3500);
+        await toHosts();
+        await A.tap(hostRow("Sandbox"), "Sandbox");
+        await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard at font scale 1");
+        await sleep(1500);
+      },
+    ],
+    [
       "Light mode: dashboard, chat, tool sheet, terminal, hosts",
       async () => {
-        A.nightMode(false);
+        night(false);
         await sleep(3000);
         shot("28-dashboard-light");
         A.rotate(1);
@@ -671,7 +927,7 @@ function steps(ctx) {
     [
       "Paste-private-key sign-in → trust sheet → dashboard",
       async () => {
-        A.nightMode(true);
+        night(true);
         await sleep(1500);
         await toDashboard();
         await back();
@@ -704,6 +960,24 @@ function steps(ctx) {
         A.hideKeyboard();
         await sleep(800);
         shot("44-add-host-paste-dark");
+        // A drag that starts on the multiline key field scrolls the sheet (the field never scrolls).
+        const field = A.find(A.byId("host-field-private-key"));
+        const [fx, fy] = A.center(field);
+        // The sheet may already sit at its scroll end: try up, then down; either must move it.
+        A.swipe(fx, fy, fx, Math.max(200, fy - 600), 500);
+        await sleep(1000);
+        let moved = A.find(A.byId("host-field-private-key"));
+        if (moved && Math.abs(moved.bounds[1] - field.bounds[1]) < 100) {
+          A.swipe(fx, fy, fx, Math.min(2200, fy + 600), 500);
+          await sleep(1000);
+          moved = A.find(A.byId("host-field-private-key"));
+        }
+        // Open (report-a11y.md): the field no longer scrolls itself, but a drag that starts on it
+        // still does not scroll the sheet. Recorded, not asserted, until that is fixed.
+        const sheetMoved = moved && Math.abs(moved.bounds[1] - field.bounds[1]) >= 100;
+        ctx.notes.push(
+          `key-field drag (open item): sheet ${sheetMoved ? "scrolled" : "did not scroll"}, field top ${field.bounds[1]} → ${moved?.bounds[1]}px`,
+        );
         await A.tap(A.byId("host-save"), "save");
         await A.tap(hostRow("Laptop"), "Laptop row", 15_000);
         await A.waitNode(A.byId("host-key-sheet"), 40_000, "trust sheet");
@@ -745,7 +1019,7 @@ function steps(ctx) {
     [
       "Delete every host → Hosts empty state, light",
       async () => {
-        A.nightMode(false);
+        night(false);
         await sleep(1500);
         await toDashboard();
         await back();
@@ -756,7 +1030,13 @@ function steps(ctx) {
           // uiautomator lists the button even while it sits behind the sticky footer, so scroll
           // until it is clear of Cancel/Save, then tap where it is now.
           await revealAboveFooter("host-delete", "host-save");
-          if (first) shot("54-edit-host-delete-row-light");
+          if (first) {
+            shot("54-edit-host-delete-row-light");
+            auditControls(ctx, "edit-host sheet", [
+              ["sheet title (dialog)", (n) => n.desc.endsWith(", dialog"), { textOnly: true }],
+              ["Delete host", A.byId("host-delete")],
+            ]);
+          }
           await A.tap(A.byId("host-delete"), "Delete host");
           // The themed sheet rises after the edit sheet has gone (never a sheet over a sheet).
           await A.waitNode(A.byId("host-delete-sheet-confirm"), 10_000, "delete sheet");
@@ -768,6 +1048,11 @@ function steps(ctx) {
           if (first) {
             await sleep(800);
             shot("47-delete-host-confirm-light");
+            auditControls(ctx, "delete confirm sheet", [
+              ["sheet title (dialog)", (n) => n.desc.endsWith(", dialog"), { textOnly: true }],
+              ["Cancel", A.byId("host-delete-sheet-cancel")],
+              ["Delete", A.byId("host-delete-sheet-confirm")],
+            ]);
             await A.tap(A.byId("host-delete-sheet-cancel"), "cancel delete");
             await A.waitGone(A.byId("host-delete-sheet-confirm"), 10_000, "delete sheet to close");
             assert(A.find(hostRow(label)), "Cancel deleted the host");
@@ -785,7 +1070,7 @@ function steps(ctx) {
     [
       "The Pi icon on the launcher",
       async () => {
-        A.nightMode(true);
+        night(true);
         A.key(3); // HOME
         await sleep(2000);
         A.swipe(540, 2000, 540, 500, 400);
@@ -801,7 +1086,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v4"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v5"),
   );
   const apk = option(
     args,
@@ -809,15 +1094,21 @@ export async function journey(args = []) {
     path.join(APP, "android/app/build/outputs/apk/release/app-release.apk"),
   );
   await E.up();
+  const theme = option(args, "--theme", "dark");
   const ctx = {
     screens,
+    light: theme === "light",
+    dp: A.dpScale(),
+    audit: [],
+    sweep: [],
     notes: [],
     expectedSummary: `${E.readState().windows.real ? 2 : 1} awaiting input · 1 working · 3 completed`,
   };
   if (!args.includes("--no-install")) A.adb("install", "-r", apk);
   A.adb("logcat", "-c");
   A.reduceMotion(true);
-  A.nightMode(true);
+  A.fontScale(1);
+  A.nightMode(!ctx.light);
   // Android shows a one-time "Viewing full screen" dialog the first time an app goes immersive (the
   // collapsed landscape terminal). It takes window focus, hiding the app from uiautomator; a real
   // user dismisses it once. Pre-confirm it on the test device.
@@ -825,7 +1116,11 @@ export async function journey(args = []) {
   A.rotate(0);
   A.launch(PKG, { clear: true });
   const results = [];
-  for (const [name, fn] of steps(ctx)) {
+  // --stop-after N: run the first N steps and leave the app and sandbox as they are (manual passes,
+  // e.g. TalkBack, on a connected host). Implies --keep.
+  const stopAfter = Number(option(args, "--stop-after", "0"));
+  const plan = stopAfter > 0 ? steps(ctx).slice(0, stopAfter) : steps(ctx);
+  for (const [name, fn] of plan) {
     const t0 = Date.now();
     // Every step starts in portrait (landscape steps rotate back themselves); re-lock it so a
     // stale rotation from an earlier run can never leak into a portrait assertion.
@@ -845,17 +1140,22 @@ export async function journey(args = []) {
       E.log(`FAIL ${name}: ${error?.message ?? error} (display rotation ${A.displayRotation()})`);
       A.screenshot(screens, `_fail-${results.length}`);
       A.rotate(0);
+      A.fontScale(1);
       break;
     }
   }
   fs.mkdirSync(screens, { recursive: true });
   fs.writeFileSync(
-    path.join(screens, "journey-results.json"),
+    path.join(screens, `journey-results-${theme}.json`),
     JSON.stringify({ results, notes: ctx.notes }, null, 2),
   );
+  fs.writeFileSync(
+    path.join(screens, `a11y-audit-${theme}.json`),
+    JSON.stringify({ dpScale: ctx.dp, controls: ctx.audit, sweep: ctx.sweep }, null, 2),
+  );
   const passed = results.filter((r) => r.ok).length;
-  E.log(`${passed}/${steps(ctx).length} steps passed`);
+  E.log(`${passed}/${plan.length} steps passed`);
   for (const note of ctx.notes) E.log(`note: ${note}`);
-  if (!args.includes("--keep")) await E.down();
-  if (passed !== steps(ctx).length) process.exitCode = 1;
+  if (!args.includes("--keep") && stopAfter === 0) await E.down();
+  if (passed !== plan.length) process.exitCode = 1;
 }

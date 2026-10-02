@@ -41,7 +41,7 @@ export const HostRow = memo(function HostRow({ host, connection, onPress, onEdit
       onPress={handlePress}
       style={rowStyle}
       accessibilityRole="button"
-      accessibilityLabel={`${host.label}, ${hostAddress(host)}`}
+      accessibilityLabel={[host.label, hostAddress(host), note].filter(Boolean).join(", ")}
       accessibilityState={busy ? BUSY : IDLE_A11Y}
       testID={`host-row-${host.id}`}
     >

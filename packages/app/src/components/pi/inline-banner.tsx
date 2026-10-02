@@ -42,7 +42,7 @@ export function InlineBanner({
         </Text>
       </View>
       {actionLabel && onAction ? (
-        <Button size="sm" variant="secondary" onPress={onAction} testID={actionTestID}>
+        <Button variant="secondary" onPress={onAction} testID={actionTestID}>
           {actionLabel}
         </Button>
       ) : null}
@@ -51,10 +51,11 @@ export function InlineBanner({
           onPress={onDismiss}
           accessibilityRole="button"
           accessibilityLabel={dismissLabel}
-          hitSlop={12}
           style={styles.dismiss}
         >
-          <Text style={styles.dismissText}>×</Text>
+          <Text style={styles.dismissText} importantForAccessibility="no">
+            ×
+          </Text>
         </Pressable>
       ) : null}
     </View>
@@ -67,7 +68,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
     paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[3],
+    // 44dp action and dismiss targets; 8dp keeps the strip as tall as it was with a 32dp button.
+    paddingVertical: theme.spacing[2],
+    minHeight: 56,
     borderRadius: theme.borderRadius.xl,
   },
   warning: { backgroundColor: theme.colors.statusWarningTint },
@@ -85,8 +88,9 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 20,
   },
   dismiss: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
+    marginRight: -theme.spacing[2],
     alignItems: "center",
     justifyContent: "center",
   },

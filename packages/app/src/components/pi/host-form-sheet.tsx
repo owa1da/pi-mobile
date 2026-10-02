@@ -111,6 +111,7 @@ function AddressFields({ form }: { form: HostForm }) {
           initialValue={fields.label}
           onChangeText={onChange.label}
           placeholder={t("pi.hostForm.labelPlaceholder")}
+          accessibilityLabel={t("pi.hostForm.label")}
           testID="host-field-label"
         />
       </Field>
@@ -122,6 +123,7 @@ function AddressFields({ form }: { form: HostForm }) {
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="url"
+          accessibilityLabel={t("pi.hostForm.host")}
           testID="host-field-host"
         />
       </Field>
@@ -132,6 +134,7 @@ function AddressFields({ form }: { form: HostForm }) {
               initialValue={fields.port}
               onChangeText={onChange.port}
               keyboardType="number-pad"
+              accessibilityLabel={t("pi.hostForm.port")}
               testID="host-field-port"
             />
           </Field>
@@ -143,6 +146,7 @@ function AddressFields({ form }: { form: HostForm }) {
               onChangeText={onChange.username}
               autoCapitalize="none"
               autoCorrect={false}
+              accessibilityLabel={t("pi.hostForm.username")}
               testID="host-field-username"
             />
           </Field>
@@ -193,7 +197,7 @@ function GeneratedKeyPanel({ form }: { form: HostForm }) {
     return (
       <View style={styles.inline}>
         <Text style={[styles.muted, styles.flex]}>{t("pi.hostForm.generateFailed")}</Text>
-        <Button size="sm" onPress={form.retryGenerate} testID="host-generate-retry">
+        <Button onPress={form.retryGenerate} testID="host-generate-retry">
           {t("pi.hostForm.generateRetry")}
         </Button>
       </View>
@@ -204,7 +208,6 @@ function GeneratedKeyPanel({ form }: { form: HostForm }) {
       <View style={styles.keyHeader}>
         <Text style={styles.sectionLabel}>{t("pi.hostForm.publicKey")}</Text>
         <Button
-          size="sm"
           variant="ghost"
           onPress={form.copyPublicKey}
           leftIcon={CopyIcon}
@@ -237,10 +240,13 @@ function PastedKeyPanel({ form }: { form: HostForm }) {
             keep ? t("pi.hostForm.privateKeyKeep") : t("pi.hostForm.privateKeyPlaceholder")
           }
           multiline
+          // The field grows with the key and never scrolls itself.
+          scrollEnabled={false}
           autoCapitalize="none"
           autoCorrect={false}
           textAlignVertical="top"
           style={styles.textArea}
+          accessibilityLabel={t("pi.hostForm.privateKey")}
           testID="host-field-private-key"
         />
       </Field>
@@ -250,6 +256,7 @@ function PastedKeyPanel({ form }: { form: HostForm }) {
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
+          accessibilityLabel={t("pi.hostForm.passphrase")}
           testID="host-field-passphrase"
         />
       </Field>
@@ -268,6 +275,7 @@ function PasswordPanel({ form }: { form: HostForm }) {
         secureTextEntry
         autoCapitalize="none"
         autoCorrect={false}
+        accessibilityLabel={t("pi.hostForm.password")}
         testID="host-field-password"
       />
     </Field>
@@ -308,7 +316,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   textArea: {
     minHeight: 120,
-    maxHeight: 200,
     padding: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     backgroundColor: theme.colors.surface2,

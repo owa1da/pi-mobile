@@ -158,6 +158,7 @@ export default function WebViewTerminalEmulator({
   ref,
   streamKey,
   testId = "terminal-surface",
+  accessibilityLabel,
   xtermTheme = {
     background: "#0b0b0b",
     foreground: "#e6e6e6",
@@ -671,6 +672,7 @@ export default function WebViewTerminalEmulator({
       <WebView
         key={webViewEpoch}
         ref={webViewRef}
+        accessibilityLabel={accessibilityLabel}
         source={TERMINAL_WEBVIEW_SOURCE}
         style={webViewStyle}
         containerStyle={webViewContainerStyle}

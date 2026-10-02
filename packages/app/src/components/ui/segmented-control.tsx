@@ -25,9 +25,17 @@ interface SegmentedControlProps<T extends string> {
   onValueChange: (value: T) => void;
   size?: SegmentedControlSize;
   hideLabels?: boolean;
+  /**
+   * Screen-reader semantics: "tabs" switches views (tablist/tab + selected); "choice" picks one
+   * value (radiogroup/radio + checked). Default "choice".
+   */
+  role?: "tabs" | "choice";
   style?: StyleProp<ViewStyle>;
   testID?: string;
 }
+
+/** Every segment's touch target is at least 44dp, whatever the visual pill size. */
+const MIN_HIT = 44;
 
 interface SegmentIconProps {
   icon: SegmentedControlIconRenderer;
@@ -50,6 +58,7 @@ export function SegmentedControl<T extends string>({
   onValueChange,
   size = "md",
   hideLabels = false,
+  role = "choice",
   style,
   testID,
 }: SegmentedControlProps<T>) {
@@ -69,7 +78,11 @@ export function SegmentedControl<T extends string>({
   );
 
   return (
-    <View style={containerStyle} testID={testID}>
+    <View
+      style={containerStyle}
+      accessibilityRole={role === "tabs" ? "tablist" : "radiogroup"}
+      testID={testID}
+    >
       {options.map((option) => {
         const isSelected = option.value === value;
 
@@ -84,6 +97,7 @@ export function SegmentedControl<T extends string>({
             labelSizeStyle={labelSizeStyle}
             currentValue={value}
             onValueChange={onValueChange}
+            role={role}
           />
         );
       })}
@@ -100,6 +114,7 @@ function SegmentItem<T extends string>({
   labelSizeStyle,
   currentValue,
   onValueChange,
+  role,
 }: {
   option: SegmentedControlOption<T>;
   isSelected: boolean;
@@ -109,6 +124,7 @@ function SegmentItem<T extends string>({
   labelSizeStyle: StyleProp<TextStyle>;
   currentValue: T;
   onValueChange: (value: T) => void;
+  role: "tabs" | "choice";
 }) {
   const labelStyle = useMemo(
     () => [styles.label, labelSizeStyle, isSelected && styles.labelSelected],
@@ -119,7 +135,8 @@ function SegmentItem<T extends string>({
       onValueChange(option.value);
     }
   }, [option.disabled, option.value, currentValue, onValueChange]);
-  const pressableStyle = useCallback(
+  // The Pressable is the 44dp hit area; the pill inside keeps the size's visual height.
+  const pillStyle = useCallback(
     ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.segment,
       segmentSizeStyle,
@@ -131,19 +148,53 @@ function SegmentItem<T extends string>({
     [isSelected, option.disabled, segmentSizeStyle],
   );
   const accessibilityState = useMemo(
-    () => ({ selected: isSelected, disabled: option.disabled }),
-    [isSelected, option.disabled],
+    () =>
+      role === "tabs"
+        ? { selected: isSelected, disabled: option.disabled }
+        : { checked: isSelected, selected: isSelected, disabled: option.disabled },
+    [isSelected, option.disabled, role],
   );
   return (
     <Pressable
-      accessibilityRole="button"
+      accessibilityRole={role === "tabs" ? "tab" : "radio"}
+      accessibilityLabel={option.label}
       accessibilityState={accessibilityState}
       aria-selected={isSelected}
       disabled={option.disabled}
       testID={option.testID}
       onPress={handlePress}
-      style={pressableStyle}
+      style={styles.hit}
     >
+      {(state) => (
+        <View style={pillStyle(state)}>
+          <SegmentContent
+            option={option}
+            isSelected={isSelected}
+            iconSize={iconSize}
+            hideLabels={hideLabels}
+            labelStyle={labelStyle}
+          />
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
+function SegmentContent<T extends string>({
+  option,
+  isSelected,
+  iconSize,
+  hideLabels,
+  labelStyle,
+}: {
+  option: SegmentedControlOption<T>;
+  isSelected: boolean;
+  iconSize: number;
+  hideLabels: boolean;
+  labelStyle: StyleProp<TextStyle>;
+}) {
+  return (
+    <>
       {option.icon ? (
         <ThemedSegmentIcon
           icon={option.icon}
@@ -156,7 +207,7 @@ function SegmentItem<T extends string>({
           {option.label}
         </Text>
       )}
-    </Pressable>
+    </>
   );
 }
 
@@ -178,6 +229,11 @@ const styles = StyleSheet.create((theme) => {
     },
     containerMd: {
       ...geometry.segmentedContainerMd,
+    },
+    hit: {
+      minHeight: MIN_HIT,
+      minWidth: MIN_HIT,
+      justifyContent: "center",
     },
     segment: {
       flexDirection: "row",

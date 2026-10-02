@@ -105,6 +105,7 @@ interface TerminalViewProps {
 }
 
 export function TerminalView({ hostId, row, onReconnect, onToChat }: TerminalViewProps) {
+  const { t } = useTranslation();
   const { settings } = useAppSettings();
   const { width, height } = useWindowDimensions();
   // Portrait: an 8dp gutter so text never touches the bezel. Landscape is already inset by the
@@ -192,6 +193,9 @@ export function TerminalView({ hostId, row, onReconnect, onToChat }: TerminalVie
           supportsTerminalInputModeReplay={false}
           scrollbackLines={settings.terminalScrollbackLines}
           fontSize={FONT_SIZE}
+          accessibilityLabel={t("pi.terminal.a11yLabel", {
+            title: row.title || t("pi.session.title"),
+          })}
           onInput={onInput}
           onResize={onResize}
           onTerminalKey={onTerminalKey}

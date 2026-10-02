@@ -471,6 +471,7 @@ export const UserMessage = memo(function UserMessage({
               getContent={getMessageContent}
               containerStyle={userMessageStylesheet.copyButton}
               accessibilityLabel={t("message.actions.copyMessage")}
+              testID="user-message-copy"
             />
           </View>
         ) : null}
@@ -584,6 +585,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
       <TurnCopyButton
         getContent={getContent}
         containerStyle={assistantTurnFooterStylesheet.copyButton}
+        testID="assistant-turn-copy"
       />
       {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
       {primaryLabel ? (
@@ -875,11 +877,15 @@ const turnCopyButtonStylesheet = StyleSheet.create((theme) => ({
   },
 }));
 
+// 18–30dp visual button + 14dp each side = a 46dp+ target.
+const COPY_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 14 };
+
 interface TurnCopyButtonProps {
   getContent: () => string;
   containerStyle?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
   copiedAccessibilityLabel?: string;
+  testID?: string;
 }
 
 export const TurnCopyButton = memo(function TurnCopyButton({
@@ -887,6 +893,7 @@ export const TurnCopyButton = memo(function TurnCopyButton({
   containerStyle,
   accessibilityLabel,
   copiedAccessibilityLabel,
+  testID,
 }: TurnCopyButtonProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -928,6 +935,9 @@ export const TurnCopyButton = memo(function TurnCopyButton({
     <Pressable
       onPress={handleCopy}
       style={pressableStyle}
+      // The icon stays small; the touch target reaches 44dp+ around it.
+      hitSlop={COPY_HIT_SLOP}
+      testID={testID}
       accessibilityRole="button"
       accessibilityLabel={
         copied
@@ -965,6 +975,9 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     borderColor: "transparent",
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1],
+    // A tool row is a 44dp touch target (it opens the detail sheet).
+    minHeight: 44,
+    justifyContent: "center",
     overflow: "hidden",
   },
   pressablePressed: {

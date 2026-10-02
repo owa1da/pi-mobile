@@ -3,18 +3,35 @@ import "@/styles/unistyles";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PortalProvider } from "@gorhom/portal";
 import { Stack } from "expo-router";
-import type { ReactNode } from "react";
-import { View } from "react-native";
+import { useEffect, type ReactNode } from "react";
+import { Dimensions, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet } from "react-native-unistyles";
 import { AppearanceProvider } from "@/appearance/provider";
 import { AppLifecycle, HostKeyPromptHost } from "@/components/pi/app-lifecycle";
+import { useAnySheetOpen } from "@/components/pi/sheet-a11y";
 import { ThemedStatusBar } from "@/components/pi/themed-status-bar";
 import { ToastProvider } from "@/contexts/toast-context";
 import { KeyboardShiftProvider } from "@/keyboard/shift";
 import { ThemedStack } from "@/navigation/themed-stack";
+import { fontScaleChanged } from "@/utils/font-scale";
+import { reloadForFontScale } from "../../modules/pi-system-bars";
+
+/**
+ * Android: when the system font size changes while Pi runs, RN keeps the old text measurements
+ * (clipped labels, overlapping rows). Reload once at the new scale; a cold start is already right.
+ */
+function useReloadOnFontScaleChange() {
+  useEffect(() => {
+    const initial = Dimensions.get("window").fontScale;
+    const sub = Dimensions.addEventListener("change", ({ window }) => {
+      if (fontScaleChanged(initial, window.fontScale)) reloadForFontScale();
+    });
+    return () => sub.remove();
+  }, []);
+}
 
 // QueryClientProvider, I18nProvider, SafeAreaProvider and the error boundary live in
 // root-app.tsx, above the router, so they survive an error-recovery remount.
@@ -42,14 +59,21 @@ function RootProviders({ children }: { children: ReactNode }) {
 /** Left/right safe areas (landscape cutout, side navigation bar); top/bottom are per screen. */
 function SideInsets({ children }: { children: ReactNode }) {
   const insets = useSafeAreaInsets();
+  // A sheet is a dialog: the screens under it leave the accessibility tree while it is open.
+  const sheetOpen = useAnySheetOpen();
   return (
-    <View style={[styles.fill, { paddingLeft: insets.left, paddingRight: insets.right }]}>
+    <View
+      style={[styles.fill, { paddingLeft: insets.left, paddingRight: insets.right }]}
+      importantForAccessibility={sheetOpen ? "no-hide-descendants" : "auto"}
+      accessibilityElementsHidden={sheetOpen}
+    >
       {children}
     </View>
   );
 }
 
 export default function RootLayout() {
+  useReloadOnFontScaleChange();
   return (
     <GestureHandlerRootView style={styles.fill}>
       <View style={styles.surface}>

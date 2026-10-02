@@ -1,5 +1,6 @@
 export const en = {
   pi: {
+    sheetDialog: "{{title}}, dialog",
     hosts: {
       title: "Hosts",
       empty: "No SSH hosts yet.",
@@ -69,6 +70,7 @@ export const en = {
     },
     connect: {
       reconnecting: "Connection lost. Reconnecting…",
+      restored: "Connection restored",
       failed: "Not connected",
       retry: "Retry",
       errors: {
@@ -107,6 +109,7 @@ export const en = {
       start: "Start session",
       modelUnknown: "model unknown",
       hostMissing: "This host was removed.",
+      loading: "Loading sessions",
     },
     session: {
       title: "Session",
@@ -139,6 +142,10 @@ export const en = {
       thinking: "Thinking",
       jumpToLatest: "Latest",
       asking: "pi is asking",
+      askingAnnounce: "pi is asking: {{question}}",
+      replied: "pi replied: {{preview}}",
+      loading: "Loading session",
+      loadingChat: "Loading messages",
       answerInTerminal: "Answer in terminal",
       openTerminal: "Open terminal",
       placeholder: "Message pi",
@@ -177,6 +184,7 @@ export const en = {
       closed: "The terminal closed.",
       failed: "Could not open the terminal: {{message}}",
       reconnect: "Reconnect",
+      a11yLabel: "Terminal for {{title}}",
       keys: {
         Escape: "esc",
         Tab: "tab",

@@ -10,7 +10,7 @@ import {
   ShieldAlert,
   Square,
 } from "lucide-react-native";
-import { ActivityIndicator } from "react-native";
+import { ActivityIndicator, type ActivityIndicatorProps } from "react-native";
 import { withUnistyles } from "react-native-unistyles";
 import { PiIcon } from "@/components/icons/pi-icon";
 import type { Theme } from "@/styles/theme";
@@ -32,6 +32,21 @@ export const surfaceColor = (theme: Theme) => ({ color: theme.colors.surface0 })
 export const dangerColor = (theme: Theme) => ({ color: theme.colors.statusDanger });
 export const extraMutedColor = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 
-export const MutedSpinner = withUnistyles(ActivityIndicator, (theme) => ({
+const ThemedSpinner = withUnistyles(ActivityIndicator, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
+
+/**
+ * A spinner is never announced: TalkBack would read "in progress" on every mount. The state it
+ * stands for is carried by a label nearby (busy state, a loading container, a status line).
+ */
+export function MutedSpinner(props: Omit<ActivityIndicatorProps, "color">) {
+  return (
+    <ThemedSpinner
+      {...props}
+      accessible={false}
+      importantForAccessibility="no-hide-descendants"
+      accessibilityElementsHidden
+    />
+  );
+}

@@ -49,6 +49,9 @@ export function dump() {
           checked: attr(tag, "checked") === "true",
           selected: attr(tag, "selected") === "true",
           enabled: attr(tag, "enabled") !== "false",
+          clickable: attr(tag, "clickable") === "true",
+          longClickable: attr(tag, "long-clickable") === "true",
+          pkg: attr(tag, "package"),
           bounds: b ? [Number(b[1]), Number(b[2]), Number(b[3]), Number(b[4])] : [0, 0, 0, 0],
         });
       }
@@ -128,6 +131,19 @@ export const KEY = { ENTER: 66, BACK: 4, DEL: 67, ESCAPE: 111, MOVE_END: 123, TA
 
 export function swipe(x1, y1, x2, y2, ms = 300) {
   adb("shell", "input", "swipe", String(x1), String(y1), String(x2), String(y2), String(ms));
+}
+
+/** Pixels per dp (density / 160). */
+export function dpScale() {
+  const said = adb("shell", "wm", "density");
+  const override = /Override density: (\d+)/.exec(said);
+  const physical = /Physical density: (\d+)/.exec(said);
+  return Number((override ?? physical)?.[1] ?? 420) / 160;
+}
+
+/** Android system font scale (1 = default). */
+export function fontScale(value) {
+  adb("shell", "settings", "put", "system", "font_scale", String(value));
 }
 
 export function screenSize() {

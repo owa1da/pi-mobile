@@ -329,8 +329,10 @@ const lightSemanticColors = buildLightSemanticColors({
   surfaceDiffEmpty: "#f6f6f6",
   surfaceSidebar: "#f4f4f5",
   foreground: "#1a1a1e",
-  foregroundMuted: "#71717a",
-  foregroundExtraMuted: "#a1a1aa",
+  // Muted clears 4.5:1 on every light surface it sits on (surface2 fields, status-tint banners);
+  // extra-muted clears 4.5:1 on surface0/1 and stays a visible step lighter than muted.
+  foregroundMuted: "#676770",
+  foregroundExtraMuted: "#72727b",
   border: "#e4e4e7",
   borderAccent: "#ececf1",
   accent: "#20744A",
@@ -466,7 +468,7 @@ const paseoDarkColors = buildDarkSemanticColors({
   surfaceDiffEmpty: "#252827",
   surfaceSidebar: "#141716",
   foregroundMuted: "#A1A5A4",
-  foregroundExtraMuted: "#717574",
+  foregroundExtraMuted: "#848887", // 4.8:1 on surface0: the dashboard meta line is body text
   border: "#252B2A",
   borderAccent: "#2F3534",
   accent: "#20744A",

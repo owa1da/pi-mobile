@@ -50,7 +50,7 @@ export function ChatView({ rows, truncated, loading }: ChatViewProps) {
 
   if (loading && rows.length === 0) {
     return (
-      <View style={styles.center}>
+      <View style={styles.center} accessible accessibilityLabel={t("pi.session.loadingChat")}>
         <MutedSpinner size="small" />
       </View>
     );
@@ -151,7 +151,6 @@ function ThinkingRow({ text, live }: { text: string; live: boolean }) {
         style={styles.thinkingHeader}
         accessibilityRole="button"
         accessibilityState={open ? EXPANDED : COLLAPSED}
-        hitSlop={8}
       >
         {open ? (
           <ThemedChevronDown size={14} uniProps={mutedColor} />
@@ -210,7 +209,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
-    minHeight: 36,
+    minHeight: 44,
     paddingHorizontal: theme.spacing[4],
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface2,
@@ -218,12 +217,13 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
   },
   jumpText: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
-  thinking: { paddingVertical: theme.spacing[2], gap: theme.spacing[2] },
+  // The 44dp header is the target; its extra height replaces the container's vertical padding.
+  thinking: { gap: theme.spacing[2] },
   thinkingHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1.5],
-    minHeight: 28,
+    minHeight: 44,
   },
   thinkingLabel: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   thinkingText: {

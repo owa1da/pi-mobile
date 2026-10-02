@@ -37,6 +37,8 @@ export interface TerminalEmulatorProps {
   streamKey: string;
   supportsTerminalInputModeReplay: boolean;
   testId?: string;
+  /** Screen-reader name of the terminal surface (Android contentDescription on the WebView). */
+  accessibilityLabel?: string;
   xtermTheme?: ITheme;
   scrollbackLines: number;
   fontFamily?: string;

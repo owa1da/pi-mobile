@@ -41,6 +41,9 @@ const HIDDEN_FROM_A11Y = {
   accessibilityElementsHidden: true,
   importantForAccessibility: "no-hide-descendants",
   accessible: false,
+  // The glyph column is a fixed 18dp rail; the state word lives in the row's label, so the glyph
+  // grows only a little with the system font size and never pushes the title.
+  maxFontSizeMultiplier: 1.3,
 } as const;
 
 function Spinner() {

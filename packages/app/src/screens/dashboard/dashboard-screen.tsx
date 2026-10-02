@@ -246,7 +246,9 @@ export function DashboardScreen() {
     <View style={styles.screen}>
       <BackHeader title={host?.label ?? t("pi.dashboard.title")} />
       <Animated.View style={[FILL, keyboardStyle]}>
-        {showBanner ? <ConnectionBanner hostId={hostId} connection={connection} /> : null}
+        {showBanner ? (
+          <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
+        ) : null}
         <View style={FILL}>{body}</View>
         {host ? (
           <Composer
@@ -268,8 +270,14 @@ const keyOf = (row: SessionRowData) => row.key;
 const SKELETON_ROWS = ["a", "b", "c", "d"];
 
 function SkeletonRows() {
+  const { t } = useTranslation();
   return (
-    <View style={styles.skeleton} testID="dashboard-loading">
+    <View
+      style={styles.skeleton}
+      testID="dashboard-loading"
+      accessible
+      accessibilityLabel={t("pi.dashboard.loading")}
+    >
       {SKELETON_ROWS.map((key) => (
         <View key={key} style={styles.skeletonRow}>
           <View style={styles.skeletonGlyph} />

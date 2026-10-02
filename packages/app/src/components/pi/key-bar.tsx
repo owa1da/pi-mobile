@@ -7,6 +7,8 @@ import { Pressable, Text, View, type PressableStateCallbackType } from "react-na
 import { StyleSheet } from "react-native-unistyles";
 import { BAR_KEYS, type BarKey } from "@/screens/session/key-encoding";
 
+/** Key caps are fixed 44dp cells in one row: their glyphs grow to 1.3× at most, never clip. */
+const KEY_CAP_MAX_SCALE = 1.3;
 const SELECTED = { selected: true };
 const UNSELECTED = { selected: false };
 
@@ -52,7 +54,9 @@ function ToChatCap({ onPress }: { onPress: () => void }) {
       accessibilityLabel={t("pi.terminal.keyLabels.ToChat")}
       testID="key-to-chat"
     >
-      <Text style={[styles.label, styles.toChatLabel]}>{t("pi.terminal.toChat")}</Text>
+      <Text style={[styles.label, styles.toChatLabel]} maxFontSizeMultiplier={KEY_CAP_MAX_SCALE}>
+        {t("pi.terminal.toChat")}
+      </Text>
     </Pressable>
   );
 }
@@ -86,7 +90,10 @@ const KeyCap = memo(function KeyCap({
       accessibilityState={ctrlState(barKey, armed)}
       testID={`key-${barKey.toLowerCase()}`}
     >
-      <Text style={[styles.label, armed && styles.armedLabel]}>
+      <Text
+        style={[styles.label, armed && styles.armedLabel]}
+        maxFontSizeMultiplier={KEY_CAP_MAX_SCALE}
+      >
         {t(`pi.terminal.keys.${barKey}`)}
       </Text>
     </Pressable>

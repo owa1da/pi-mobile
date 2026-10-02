@@ -13,3 +13,8 @@ useDefaultAndroidSdkVersions()
 android {
   namespace "sh.pimobile.systembars"
 }
+
+dependencies {
+  // ReactApplication.reactHost, for the reload after a runtime font-scale change.
+  implementation 'com.facebook.react:react-android'
+}
