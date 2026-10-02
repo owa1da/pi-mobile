@@ -1,14 +1,14 @@
 {
   "id": "/",
-  "name": "Paseo",
-  "short_name": "Paseo",
-  "description": "Monitor and control local AI coding agents from anywhere.",
+  "name": "Pi",
+  "short_name": "Pi",
+  "description": "Manage pi coding-agent sessions on your machine over SSH.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "orientation": "portrait",
-  "theme_color": "#181B1A",
-  "background_color": "#181B1A",
+  "orientation": "any",
+  "theme_color": "#000000",
+  "background_color": "#000000",
   "categories": ["developer", "productivity", "utilities"],
   "icons": [
     {

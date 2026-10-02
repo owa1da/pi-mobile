@@ -9,6 +9,7 @@ import {
   HEADER_TOP_PADDING_MOBILE,
   useIsCompactFormFactor,
 } from "@/constants/layout";
+import { useIsHandheld } from "@/utils/use-handheld";
 
 interface ScreenHeaderProps {
   left?: ReactNode;
@@ -33,7 +34,9 @@ export function ScreenHeader({
 }: ScreenHeaderProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
-  const isMobile = useIsCompactFormFactor();
+  const isHandheld = useIsHandheld();
+  // A phone in landscape is "md" wide but still a phone: keep the mobile rhythm and targets.
+  const isMobile = useIsCompactFormFactor() || isHandheld;
   // Only add extra padding on mobile for better touch targets; on desktop, only use safe area insets
   const topPadding = isMobile ? HEADER_TOP_PADDING_MOBILE : 0;
   const baseHorizontalPadding = isMobile ? theme.spacing[2] : theme.spacing[3];
@@ -46,9 +49,10 @@ export function ScreenHeader({
     () => [
       styles.row,
       { paddingLeft: baseHorizontalPadding, paddingRight: baseHorizontalPadding },
+      isHandheld && styles.handheldRow,
       borderless && styles.borderless,
     ],
-    [baseHorizontalPadding, borderless],
+    [baseHorizontalPadding, borderless, isHandheld],
   );
   const leftCombinedStyle = useMemo(() => [styles.left, leftStyle], [leftStyle]);
   const rightCombinedStyle = useMemo(() => [styles.right, rightStyle], [rightStyle]);
@@ -95,6 +99,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
     flexShrink: 0,
+  },
+  handheldRow: {
+    height: HEADER_INNER_HEIGHT_MOBILE,
   },
   borderless: {
     borderBottomColor: "transparent",

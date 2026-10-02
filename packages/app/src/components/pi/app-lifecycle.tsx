@@ -26,6 +26,7 @@ export function HostKeyPromptHost() {
     <HostKeyTrustSheet
       visible={prompt !== null}
       hostLabel={host?.label ?? ""}
+      algorithm={prompt?.key.algorithm ?? ""}
       fingerprint={prompt?.key.fingerprint ?? ""}
       onTrust={trust}
       onCancel={cancel}

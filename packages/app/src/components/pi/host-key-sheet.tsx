@@ -7,6 +7,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { splitFingerprint } from "@/stores/tofu";
+import { describeHostKeyAlgorithm } from "@/utils/host-key-algorithm";
 
 const TRUST_SNAP_POINTS = ["55%"];
 const MISMATCH_SNAP_POINTS = ["70%", "90%"];
@@ -34,6 +35,8 @@ function Fingerprint({
 interface TrustSheetProps {
   visible: boolean;
   hostLabel: string;
+  /** The presented key's algorithm, e.g. "ssh-ed25519" or "rsa-sha2-512". */
+  algorithm: string;
   fingerprint: string;
   onTrust: () => void;
   onCancel: () => void;
@@ -42,11 +45,16 @@ interface TrustSheetProps {
 export function HostKeyTrustSheet({
   visible,
   hostLabel,
+  algorithm,
   fingerprint,
   onTrust,
   onCancel,
 }: TrustSheetProps) {
   const { t } = useTranslation();
+  const keyInfo = describeHostKeyAlgorithm(algorithm);
+  const hint = keyInfo.hostKeyFile
+    ? t("pi.hostKey.checkHint", { file: keyInfo.hostKeyFile })
+    : t("pi.hostKey.checkHintUnknown");
   const header = useMemo(() => ({ title: t("pi.hostKey.trustTitle") }), [t]);
   const footer = useMemo(
     () => (
@@ -82,9 +90,13 @@ export function HostKeyTrustSheet({
     >
       <View style={styles.body}>
         <Text style={styles.text}>{t("pi.hostKey.trustBody", { label: hostLabel })}</Text>
-        <Fingerprint label="ed25519" fingerprint={fingerprint} testID="host-key-fingerprint" />
-        <Text style={styles.hint} selectable>
-          {t("pi.hostKey.checkHint")}
+        <Fingerprint
+          label={keyInfo.label}
+          fingerprint={fingerprint}
+          testID="host-key-fingerprint"
+        />
+        <Text style={styles.hint} selectable testID="host-key-hint">
+          {hint}
         </Text>
       </View>
     </AdaptiveModalSheet>

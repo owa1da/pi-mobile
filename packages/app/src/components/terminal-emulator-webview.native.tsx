@@ -555,6 +555,8 @@ export default function WebViewTerminalEmulator({
           callbacksRef.current.onSwipeRight?.();
           break;
         case "debug":
+          // Lands in logcat (ReactNativeJS) on release builds too; renderer choice, webview errors.
+          console.info(`[terminal-webview] ${message.message}`, JSON.stringify(message.details));
           break;
       }
     },

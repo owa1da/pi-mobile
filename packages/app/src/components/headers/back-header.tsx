@@ -6,6 +6,7 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { ArrowLeft } from "lucide-react-native";
 import { ScreenHeader } from "./screen-header";
 import { ScreenTitle } from "./screen-title";
+import { useIsHandheld } from "@/utils/use-handheld";
 
 interface BackHeaderProps {
   title?: string;
@@ -21,6 +22,8 @@ function goBack(): void {
 export function BackHeader({ title, titleAccessory, rightContent, onBack }: BackHeaderProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
+  const isHandheld = useIsHandheld();
+  const backStyle = isHandheld ? HANDHELD_BACK_STYLE : styles.backButton;
   const handleBack = useCallback(() => {
     if (onBack) {
       onBack();
@@ -35,7 +38,7 @@ export function BackHeader({ title, titleAccessory, rightContent, onBack }: Back
         <>
           <Pressable
             onPress={handleBack}
-            style={styles.backButton}
+            style={backStyle}
             accessibilityRole="button"
             accessibilityLabel={t("common.actions.back")}
           >
@@ -62,4 +65,11 @@ const styles = StyleSheet.create((theme) => ({
     },
     borderRadius: theme.borderRadius.lg,
   },
+  // A phone in landscape keeps the 44dp+ portrait target (padding xs).
+  backButtonHandheld: {
+    padding: theme.spacing[3],
+    borderRadius: theme.borderRadius.lg,
+  },
 }));
+
+const HANDHELD_BACK_STYLE = styles.backButtonHandheld;

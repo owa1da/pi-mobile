@@ -795,8 +795,9 @@ export function ToolCallDetailsContent({
 
   const sections: ReactNode[] = buildDetailSections(toolName, detail, diffLines, ds, t);
 
+  // A failure leads: the error must be readable without scrolling past a full-height diff.
   if (errorText) {
-    sections.push(<ErrorSection key="error" errorText={errorText} ds={ds} />);
+    sections.unshift(<ErrorSection key="error" errorText={errorText} ds={ds} />);
   }
 
   if (sections.length === 0) {

@@ -73,6 +73,8 @@ describe("short model and folder", () => {
     ).toBe("Sonnet 4.6");
     expect(shortModel({ provider: "z", id: "x", name: "GLM 5.3 Flash" })).toBe("GLM 5.3 Flash");
     expect(shortModel({ provider: "d", id: "deepseek-v4-flash" })).toBe("Deepseek V4 Flash");
+    expect(shortModel({ provider: "anthropic", id: "claude-opus-5-5" })).toBe("Opus 5.5");
+    expect(shortModel({ provider: "fake", id: "fake-1" })).toBe("Fake 1");
     expect(shortModel({ provider: "d", id: "a-very-long-model-name-that-goes-on" })?.length).toBe(
       20,
     );

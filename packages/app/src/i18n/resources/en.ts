@@ -54,7 +54,8 @@ export const en = {
       trustTitle: "Trust this host?",
       trustBody:
         "First connection to {{label}}. Check that this fingerprint matches the host before you trust it.",
-      checkHint: "On the host: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub",
+      checkHint: "On the host: ssh-keygen -lf {{file}}",
+      checkHintUnknown: "On the host: ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub",
       trust: "Trust and connect",
       cancel: "Cancel",
       mismatchTitle: "Host key changed",
@@ -1662,7 +1663,7 @@ export const en = {
     },
   },
   rootError: {
-    title: "Paseo ran into a problem.",
+    title: "Pi ran into a problem.",
     body: "Try again to reload the app. If this keeps happening, include the details below when you report it.",
     details: "Details",
   },

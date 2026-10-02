@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Keyboard, Pressable, Text, View } from "react-native";
+import { Keyboard, Pressable, Text, View, useWindowDimensions } from "react-native";
 import type { DimensionValue, StyleProp, ViewStyle } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -33,6 +33,12 @@ import { isWeb } from "@/constants/platform";
 import { useKeyboardVisibility } from "@/hooks/use-keyboard-visibility";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AdaptiveTextInput } from "@/components/adaptive-text-input";
+import { useIsHandheld } from "@/utils/use-handheld";
+
+/** Widest a phone's bottom sheet gets in landscape (Material's 640dp cap), centered. */
+const HANDHELD_SHEET_MAX_WIDTH = 640;
+/** Landscape leaves ~400dp of height: sheets open near full height so their content fits. */
+const LANDSCAPE_SNAP_POINTS = ["92%"];
 export { AdaptiveTextInput, type AdaptiveTextInputProps } from "@/components/adaptive-text-input";
 
 // Horizontal indent token shared by the sheet header (title, back arrow,
@@ -477,6 +483,27 @@ export interface AdaptiveModalSheetProps {
   contextBridge?: ContextBridge | null;
 }
 
+/** Phone sheets: near full height in landscape, width capped at 640dp and centered. */
+function useHandheldSheetLayout(snapPoints: string[] | undefined) {
+  const isHandheld = useIsHandheld();
+  const isCompact = useIsCompactFormFactor();
+  const windowSize = useWindowDimensions();
+  const landscape = isHandheld && windowSize.width > windowSize.height;
+  const resolved = useMemo(
+    () => (landscape ? LANDSCAPE_SNAP_POINTS : (snapPoints ?? ["65%", "90%"])),
+    [landscape, snapPoints],
+  );
+  const sideMargin =
+    isHandheld && windowSize.width > HANDHELD_SHEET_MAX_WIDTH
+      ? (windowSize.width - HANDHELD_SHEET_MAX_WIDTH) / 2
+      : 0;
+  const style = useMemo(
+    () => (sideMargin > 0 ? { marginHorizontal: sideMargin } : undefined),
+    [sideMargin],
+  );
+  return { isMobile: isCompact || isHandheld, snapPoints: resolved, style };
+}
+
 export function AdaptiveModalSheet({
   header,
   visible,
@@ -498,10 +525,13 @@ export function AdaptiveModalSheet({
 }: AdaptiveModalSheetProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
-  const isMobile = useIsCompactFormFactor();
+  // A phone in landscape is "md" wide but still a phone: sheets rise from the bottom there too.
+  const handheldSheet = useHandheldSheetLayout(snapPoints);
+  const isMobile = handheldSheet.isMobile;
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardVisibility(visible);
-  const resolvedSnapPoints = useMemo(() => snapPoints ?? ["65%", "90%"], [snapPoints]);
+  const resolvedSnapPoints = handheldSheet.snapPoints;
+  const sheetStyle = handheldSheet.style;
   const compactSafeAreaPadding = useMemo(
     () =>
       getCompactSheetSafeAreaPadding({
@@ -641,6 +671,7 @@ export function AdaptiveModalSheet({
         enableDynamicSizing={false}
         onChange={handleSheetChange}
         onDismiss={handleDismiss}
+        style={sheetStyle}
         backdropOpacity={0.45}
         enablePanDownToClose
         backgroundComponent={SheetBackground}

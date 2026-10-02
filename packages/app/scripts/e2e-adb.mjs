@@ -173,10 +173,23 @@ export function nightMode(on) {
   adb("shell", "cmd", "uimode", "night", on ? "yes" : "no");
 }
 
-/** Portrait (0) or landscape (1) with auto-rotate off. */
+export function displayRotation() {
+  const m = /mRotation=(\d)/.exec(adb("shell", "dumpsys", "window", "displays"));
+  return m ? Number(m[1]) : -1;
+}
+
+/**
+ * Portrait (0) or landscape (1) with auto-rotate off. `wm user-rotation lock` is used because a
+ * plain `settings put system user_rotation` write can be overwritten by the window manager; this
+ * waits (up to 5 s) until the display really is at that rotation.
+ */
 export function rotate(rotation) {
   adb("shell", "settings", "put", "system", "accelerometer_rotation", "0");
-  adb("shell", "settings", "put", "system", "user_rotation", String(rotation));
+  adb("shell", "wm", "user-rotation", "lock", String(rotation));
+  const deadline = Date.now() + 5000;
+  while (displayRotation() !== rotation && Date.now() < deadline) {
+    execFileSync("sleep", ["0.3"]);
+  }
 }
 
 export function launch(pkg, { clear = false } = {}) {

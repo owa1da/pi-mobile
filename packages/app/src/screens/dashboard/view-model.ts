@@ -2,6 +2,7 @@
 // Mirrors forge's sessions page (~/.pi/forge/docs/sessions.md).
 
 import type { SessionModel, SessionRow, SessionSection } from "@/host/types";
+import { modelName } from "@/utils/model-name";
 
 export const SECTION_ORDER: readonly SessionSection[] = ["needs", "working", "completed"];
 /** Closed rows shown under Completed before "Show N more" (forge's completedShown). */
@@ -60,26 +61,14 @@ export function formatAge(sinceMs: number, hostNowSec: number): string {
 
 const MODEL_MAX = 20;
 
-function titleCaseId(id: string): string {
-  const last = id.split("/").pop() ?? id;
-  return last
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
-/** pi's display name without "Vendor: " or "Claude ", else the id read as words; ≤ 20 chars. */
+/** forge's short model name (`Opus 5.5`, `GLM 5.3 Flash`; see utils/model-name), ≤ 20 chars. */
 export function shortModel(model: SessionModel | undefined): string | undefined {
   if (!model) return undefined;
-  const name = model.name?.trim();
-  const base = name
-    ? name.replace(/^[^:]{1,40}:\s*/, "").replace(/^Claude\s+/i, "")
-    : titleCaseId(model.id);
+  const base = modelName({ id: model.id, name: model.name });
   return base ? truncate(base, MODEL_MAX) : undefined;
 }
 

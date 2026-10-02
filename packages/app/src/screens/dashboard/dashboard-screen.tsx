@@ -282,7 +282,8 @@ const styles = StyleSheet.create((theme) => ({
   screen: { flex: 1, backgroundColor: theme.colors.surface0 },
   summary: {
     paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[2],
+    paddingTop: theme.spacing[3],
+    paddingBottom: theme.spacing[1],
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },

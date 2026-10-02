@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet } from "react-native-unistyles";
 import { AppearanceProvider } from "@/appearance/provider";
 import { AppLifecycle, HostKeyPromptHost } from "@/components/pi/app-lifecycle";
@@ -37,16 +38,28 @@ function RootProviders({ children }: { children: ReactNode }) {
   );
 }
 
+/** Left/right safe areas (landscape cutout, side navigation bar); top/bottom are per screen. */
+function SideInsets({ children }: { children: ReactNode }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[styles.fill, { paddingLeft: insets.left, paddingRight: insets.right }]}>
+      {children}
+    </View>
+  );
+}
+
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.fill}>
       <View style={styles.surface}>
         <RootProviders>
-          <ThemedStack screenOptions={SCREEN_OPTIONS}>
-            <Stack.Screen name="index" />
-            <Stack.Screen name="h/[hostId]/index" />
-            <Stack.Screen name="h/[hostId]/s/[sessionId]" />
-          </ThemedStack>
+          <SideInsets>
+            <ThemedStack screenOptions={SCREEN_OPTIONS}>
+              <Stack.Screen name="index" />
+              <Stack.Screen name="h/[hostId]/index" />
+              <Stack.Screen name="h/[hostId]/s/[sessionId]" />
+            </ThemedStack>
+          </SideInsets>
           <AppLifecycle />
           <HostKeyPromptHost />
         </RootProviders>

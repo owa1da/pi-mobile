@@ -576,6 +576,45 @@ async function seed() {
   return windows;
 }
 
+/**
+ * Writes `count` more ended/ records (closed rows), newest first, each with a real session file,
+ * so the dashboard's Completed section overflows past its 5 closed rows ("Show N more").
+ * Returns their session ids, oldest last.
+ */
+export function seedClosed(count) {
+  const ids = [];
+  const cwd = path.join(WORK, "docs");
+  for (let i = 0; i < count; i++) {
+    const sessionId = uuid(`c${String(i).padStart(3, "0")}`);
+    const file = sessionPath(cwd, sessionId);
+    fs.writeFileSync(file, endedSession(sessionId, cwd));
+    const endedAt = Date.now() - (60 + i * 10) * 60_000;
+    fs.writeFileSync(
+      path.join(PROCS, "ended", `${sessionId}.json`),
+      JSON.stringify({
+        v: 1,
+        host: HOSTNAME,
+        pid: 900_000 + i,
+        sessionId,
+        sessionFile: file,
+        cwd,
+        name: `Archived task ${i + 1}`,
+        firstPrompt: `Archived task ${i + 1}`,
+        messages: 2,
+        model: { provider: "zai", id: "glm-5.3-flash" },
+        lastRun: { startedAt: endedAt - 20_000, endedAt, outcome: "completed", error: null },
+        lastText: "Done.",
+        startedAt: endedAt - 600_000,
+        endedAt,
+        endReason: "quit",
+      }) + "\n",
+    );
+    ids.push(sessionId);
+  }
+  log(`seeded ${count} closed sessions`);
+  return ids;
+}
+
 export function procState(pid) {
   try {
     return JSON.parse(fs.readFileSync(path.join(PROCS, `${pid}.json`), "utf8")).state;
@@ -703,7 +742,53 @@ export function ssh(command) {
   ]);
 }
 
+/**
+ * Starts the password gateway (scripts/e2e-password-gateway.mjs) on PORT+1 with the current
+ * sshd host key, as a detached process. Returns { port, password, logFile }.
+ */
+export async function gatewayStart() {
+  const port = PORT + 1;
+  const password = `pim-${Math.random().toString(36).slice(2, 10)}`;
+  const logFile = path.join(ROOT, "gateway-auth.log");
+  const outFd = fs.openSync(path.join(ROOT, "gateway.out"), "a");
+  const child = spawn(process.execPath, [path.join(HERE, "e2e-password-gateway.mjs")], {
+    cwd: APP,
+    detached: true,
+    stdio: ["ignore", outFd, outFd],
+    env: {
+      ...process.env,
+      PIM_GW_HOST_KEY: hostKeyPath(),
+      PIM_GW_HOME: HOME,
+      PIM_GW_USER: USER,
+      PIM_GW_PASSWORD: password,
+      PIM_GW_PORT: String(port),
+      PIM_GW_LOG: logFile,
+    },
+  });
+  child.unref();
+  fs.closeSync(outFd);
+  writeState({ gatewayPid: child.pid });
+  await waitFor(
+    () => fs.readFileSync(path.join(ROOT, "gateway.out"), "utf8").includes("listening"),
+    10_000,
+    "password gateway to listen",
+  );
+  log(`password gateway pid ${child.pid} on 127.0.0.1:${port}`);
+  return { port, password, logFile };
+}
+
+export function gatewayStop() {
+  const pid = readState().gatewayPid;
+  if (pid && pidAlive(pid)) process.kill(pid, "SIGTERM");
+  writeState({ gatewayPid: null });
+}
+
 export async function down() {
+  try {
+    gatewayStop();
+  } catch {
+    // no state
+  }
   await sshdStop().catch(() => undefined);
   try {
     tmux("kill-server");
@@ -777,4 +862,18 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     });
 }
 
-export { ROOT, PORT, SOCKET, AGENT, PROCS, HOME, readState, writeState, waitFor, sleep, log };
+export {
+  ROOT,
+  PORT,
+  SOCKET,
+  AGENT,
+  PROCS,
+  HOME,
+  SSHD_DIR,
+  USER,
+  readState,
+  writeState,
+  waitFor,
+  sleep,
+  log,
+};

@@ -1,0 +1,14 @@
+<!--
+  Pi mark: a π drawn from three rounded bars on a 100×100 grid.
+  Source of every app icon, splash, notification icon and favicon; regenerate the PNGs with
+  `node scripts/build-brand-assets.mjs`. The script reads only the <rect> elements below
+  (x, y, width, height, rx), so keep the mark to rounded rects.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <rect width="100" height="100" fill="#000000" data-role="background" />
+  <g fill="#7ccba0" data-role="glyph">
+    <rect x="18" y="25" width="64" height="11" rx="5.5" />
+    <rect x="31" y="27" width="11" height="49" rx="5.5" />
+    <rect x="58" y="27" width="11" height="49" rx="5.5" />
+  </g>
+</svg>

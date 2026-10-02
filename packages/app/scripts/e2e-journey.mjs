@@ -3,9 +3,10 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v2), --keep (leave the sandbox up),
 //          --no-install (use the installed APK).
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,20 @@ function assert(cond, message) {
 
 function windowPid(name) {
   return E.readState().windows[name].pid;
+}
+
+/** The real pi's sessionId, found by its tmux pane (its pid may sit under a shell). */
+function realSessionId() {
+  const pane = E.readState().windows.real.pane;
+  for (const file of fs.readdirSync(E.PROCS).filter((f) => f.endsWith(".json"))) {
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(E.PROCS, file), "utf8"));
+      if (record.tmux?.pane === pane) return record.sessionId;
+    } catch {
+      // partially written record
+    }
+  }
+  throw new Error(`no procs record for the real pi pane ${pane}`);
 }
 
 function sessionIdOf(name) {
@@ -59,6 +74,52 @@ async function typeInto(id, text) {
   await A.tap(A.byId(id), id);
   A.typeText(text);
   await sleep(500);
+}
+
+/** A saved host's row, by its label (the row's accessibility label is "label, user@host:port"). */
+const hostRow = (label) => (n) => n.id.startsWith("host-row-") && n.desc.startsWith(`${label}, `);
+
+async function hostIdOf(label) {
+  const row = await A.waitNode(hostRow(label), 15_000, `host ${label}`);
+  return row.id.slice("host-row-".length);
+}
+
+function deleteChars(n) {
+  A.adb("shell", "input", "keyevent", ...Array.from({ length: n }, () => String(A.KEY.DEL)));
+}
+
+async function scrollUntil(pred, label, { from = [540, 1800], to = [540, 800], tries = 8 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    const node = A.find(pred);
+    if (node) return node;
+    A.swipe(from[0], from[1], to[0], to[1], 400);
+    await sleep(900);
+  }
+  return A.waitNode(pred, 3000, label);
+}
+
+/** Label, host, port and user in the open host form sheet. */
+async function fillAddress(label, port) {
+  await typeInto("host-field-label", label);
+  await typeInto("host-field-host", "10.0.2.2");
+  await A.tap(A.byId("host-field-port"), "port");
+  A.key(A.KEY.MOVE_END);
+  deleteChars(6);
+  A.typeText(String(port));
+  await typeInto("host-field-username", os.userInfo().username);
+  A.hideKeyboard();
+  await sleep(500);
+}
+
+const widthOf = (size) => Number(size.split("x")[0]);
+
+/** The webview's renderer choice, as logged by the RN side (`[terminal-webview] terminal renderer`). */
+function rendererLog() {
+  const lines = A.adb("logcat", "-d", "-s", "ReactNativeJS:I")
+    .split("\n")
+    .filter((line) => line.includes("terminal renderer"));
+  const last = lines.pop();
+  return last ? last.slice(last.indexOf("[terminal-webview]")) : "no renderer log line";
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +164,13 @@ function steps(ctx) {
         await A.tap(A.idPrefix("host-row-"), "host row");
         await A.waitNode(A.byId("host-key-sheet"), 40_000, "trust sheet");
         const digest = E.readState().hostFingerprint.replace(/^SHA256:/, "");
-        assert(A.find(A.byText(digest)), "trust sheet does not show the sandbox host key");
+        const sheet = A.dump();
+        assert(sheet.some(A.byText(digest)), "trust sheet does not show the sandbox host key");
+        assert(sheet.some(A.byText(/^ED25519 · SHA256$/)), "trust sheet key label is not ED25519");
+        assert(
+          sheet.some(A.byText(/ssh-keygen -lf \/etc\/ssh\/ssh_host_ed25519_key\.pub/)),
+          "trust sheet hint does not name the ed25519 host key file",
+        );
         shot("05-trust-host-key-dark");
         await A.tap(A.byId("host-key-trust"), "trust");
         const summary = await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard");
@@ -161,9 +228,8 @@ function steps(ctx) {
         await A.waitNode(A.byId("tool-call-sheet-close"), 10_000, "tool sheet");
         await sleep(1200);
         shot("10-tool-detail-failed-edit-dark");
-        A.swipe(540, 2100, 540, 1300, 400);
-        await sleep(1000);
-        assert(A.find(A.byText(/ENOENT/)), "failed tool error not in the detail sheet");
+        // The error leads the sheet: readable without scrolling past the diff.
+        assert(A.find(A.byText(/ENOENT/)), "failed tool error not visible without scrolling");
         await A.tap(A.byId("tool-call-sheet-close"), "close sheet");
         await toDashboard();
       },
@@ -179,6 +245,7 @@ function steps(ctx) {
         await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* grouped session");
         await sleep(3000);
         shot("12-terminal-waiting-dark");
+        ctx.notes.push(`renderer: ${rendererLog()}`);
         const n = eventCount("waiting");
         for (const k of [
           "key-escape",
@@ -228,13 +295,13 @@ function steps(ctx) {
         );
         ctx.notes.push(`pty size ${before} → ${withKeyboard} with the keyboard → ${clientSize()}`);
         A.rotate(1);
-        await sleep(3000);
+        await E.waitFor(() => widthOf(clientSize()) > widthOf(before), 10_000, "landscape pty");
+        await sleep(1500);
         shot("14-terminal-landscape-dark");
-        ctx.notes.push(
-          `rotation to landscape: client stays ${clientSize()} (manifest screenOrientation=portrait)`,
-        );
+        const landscape = clientSize();
         A.rotate(0);
-        await sleep(2000);
+        await E.waitFor(() => clientSize() === before, 10_000, "portrait pty again");
+        ctx.notes.push(`rotation: pty ${before} portrait → ${landscape} landscape → ${before}`);
       },
     ],
     [
@@ -249,6 +316,71 @@ function steps(ctx) {
         );
         const after = E.tmux("list-windows", "-t", "pi", "-F", "#{window_id}").trim();
         assert(after === windows, "user windows changed");
+      },
+    ],
+    [
+      "Landscape: dashboard, chat and the add-host sheet fit the rotated screen",
+      async () => {
+        A.rotate(1);
+        await sleep(2500);
+        await A.waitNode(A.byId("dashboard-summary"), 15_000, "dashboard (landscape)");
+        const short = Math.min(...A.screenSize());
+        shot("34-dashboard-landscape-dark");
+        const composer = await A.waitNode(A.byId("dashboard-composer"), 10_000, "composer");
+        assert(composer.bounds[3] <= short, `dashboard composer off screen ${composer.bounds}`);
+        const landscapeScroll = { from: [1200, 850], to: [1200, 350] };
+        const row = await scrollUntil(rowOf(E.readState().richId), "rich row", landscapeScroll);
+        A.tapNode(row);
+        await A.waitNode(A.byId("chat-list"), 30_000, "chat (landscape)");
+        await sleep(2500);
+        shot("35-chat-landscape-dark");
+        const chatComposer = await A.waitNode(A.byId("chat-composer"), 10_000, "chat composer");
+        assert(chatComposer.bounds[3] <= short, `chat composer off screen ${chatComposer.bounds}`);
+        await toDashboard();
+        await back();
+        await A.tap(A.byId("hosts-add"), "add host (landscape)");
+        // In landscape the generated key sits below the sheet's fold; the first field shows.
+        await A.waitNode(A.byId("host-field-label"), 20_000, "host form (landscape)");
+        await sleep(1200);
+        shot("36-add-host-landscape-dark");
+        const save = A.find(A.byId("host-save"));
+        assert(save && save.bounds[3] <= short, "host form Save is off screen in landscape");
+        A.hideKeyboard();
+        await back();
+        await A.waitGone(A.byId("host-field-label"), 10_000, "host form to close");
+        A.rotate(0);
+        await sleep(2000);
+        await A.tap(hostRow("Sandbox"), "Sandbox");
+        await A.waitNode(A.byId("dashboard-summary"), 30_000, "dashboard");
+      },
+    ],
+    [
+      "Real pi + forge in the Terminal tab, portrait and landscape (PIM_E2E_REAL_PI=1)",
+      async () => {
+        if (!E.readState().windows.real) {
+          ctx.notes.push("real pi: skipped (PIM_E2E_REAL_PI unset)");
+          return;
+        }
+        const row = await scrollUntil(rowOf(realSessionId()), "real pi row");
+        A.tapNode(row);
+        await A.tap(A.byId("session-tab-terminal"), "terminal tab", 30_000);
+        await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
+        await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* grouped session");
+        await sleep(6000);
+        shot("32-terminal-real-pi-forge-dark");
+        const portrait = clientSize();
+        A.rotate(1);
+        await E.waitFor(
+          () => widthOf(clientSize()) > widthOf(portrait),
+          10_000,
+          "landscape pty (real pi)",
+        );
+        await sleep(5000);
+        shot("33-terminal-real-pi-landscape-dark");
+        ctx.notes.push(`real pi: pty ${portrait} → ${clientSize()}; ${rendererLog()}`);
+        A.rotate(0);
+        await sleep(2000);
+        await toDashboard();
       },
     ],
     [
@@ -356,7 +488,28 @@ function steps(ctx) {
       },
     ],
     [
-      "Light mode: dashboard, chat, terminal, hosts",
+      "Completed overflow: Show N more reveals the older closed rows",
+      async () => {
+        const ids = E.seedClosed(7);
+        const oldest = ids[ids.length - 1];
+        await sleep(4000);
+        const more = await scrollUntil(A.byText(/^Show \d+ more$/), "Show N more");
+        shot("37-dashboard-show-more-dark");
+        const hidden = Number(/\d+/.exec(more.text || more.desc)[0]);
+        assert(hidden >= 2, `only ${hidden} closed rows hidden`);
+        assert(!A.find(rowOf(oldest)), "oldest closed row shown before Show more");
+        A.tapNode(more);
+        await sleep(1500);
+        assert(!A.find(A.byText(/^Show \d+ more$/)), "Show more still visible after tapping");
+        await scrollUntil(rowOf(oldest), "oldest closed row");
+        shot("38-dashboard-expanded-dark");
+        ctx.notes.push(`show more: "Show ${hidden} more" revealed the oldest closed row`);
+        for (let i = 0; i < 4; i++) A.swipe(540, 700, 540, 1900, 300);
+        await sleep(1000);
+      },
+    ],
+    [
+      "Light mode: dashboard, chat, tool sheet, terminal, hosts",
       async () => {
         A.nightMode(false);
         await sleep(3000);
@@ -365,6 +518,17 @@ function steps(ctx) {
         await A.waitNode(A.byId("chat-list"), 30_000, "chat");
         await sleep(2500);
         shot("29-chat-light");
+        A.swipe(540, 900, 540, 1900, 400);
+        await sleep(1200);
+        A.swipe(540, 900, 540, 1900, 400);
+        await sleep(1200);
+        await A.tap(A.byText("Edit, src/auth/sesion.ts"), "failed edit");
+        await A.waitNode(A.byId("tool-call-sheet-close"), 10_000, "tool sheet");
+        await sleep(1200);
+        shot("39-tool-detail-failed-edit-light");
+        assert(A.find(A.byText(/ENOENT/)), "failed tool error not visible without scrolling");
+        await A.tap(A.byId("tool-call-sheet-close"), "close sheet");
+        await sleep(800);
         await A.tap(A.byId("session-tab-terminal"), "terminal tab");
         await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
         await sleep(4000);
@@ -373,7 +537,165 @@ function steps(ctx) {
         await back();
         await A.waitNode(A.idPrefix("host-row-"), 20_000, "hosts");
         shot("31-hosts-list-light");
+      },
+    ],
+    [
+      "Password sign-in (password gateway) → trust sheet → dashboard, light",
+      async () => {
+        const gw = await E.gatewayStart();
+        await A.tap(A.byId("hosts-add"), "add host");
+        await A.waitNode(A.byId("host-public-key"), 20_000, "add host sheet");
+        await fillAddress("Gateway", gw.port);
+        await A.tap(A.byId("host-auth-password"), "password mode");
+        await typeInto("host-field-password", gw.password);
+        A.hideKeyboard();
+        await sleep(600);
+        shot("40-add-host-password-light");
+        await A.tap(A.byId("host-save"), "save");
+        await A.tap(hostRow("Gateway"), "Gateway row", 15_000);
+        await A.waitNode(A.byId("host-key-sheet"), 40_000, "trust sheet");
+        const digest = E.readState().hostFingerprint.replace(/^SHA256:/, "");
+        assert(A.find(A.byText(digest)), "trust sheet does not show the gateway host key");
+        shot("41-trust-host-key-light");
+        await A.tap(A.byId("host-key-trust"), "trust");
+        await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard over password auth");
+        await sleep(2500);
+        shot("42-dashboard-password-host-light");
+        const auth = fs
+          .readFileSync(gw.logFile, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        assert(
+          auth.some((e) => e.method === "password" && e.ok),
+          `no accepted password auth: ${JSON.stringify(auth)}`,
+        );
+        ctx.notes.push(`password gateway auth attempts: ${JSON.stringify(auth)}`);
+      },
+    ],
+    [
+      "Changed host key in light mode → mismatch sheet → Replace",
+      async () => {
+        await toDashboard();
+        await back();
+        await A.waitNode(hostRow("Sandbox"), 20_000, "hosts");
+        await E.hostkeyRestore();
+        await sleep(1500);
+        await A.tap(hostRow("Sandbox"), "Sandbox");
+        await A.waitNode(A.byId("host-key-mismatch-sheet"), 60_000, "mismatch sheet");
+        shot("43-host-key-mismatch-light");
+        await A.tap(A.byId("host-key-replace"), "replace");
+        await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard after replace");
+      },
+    ],
+    [
+      "Paste-private-key sign-in → trust sheet → dashboard",
+      async () => {
         A.nightMode(true);
+        await sleep(1500);
+        await toDashboard();
+        await back();
+        const keyFile = path.join(E.ROOT, "pasted_ed25519");
+        execFileSync("ssh-keygen", [
+          "-q",
+          "-t",
+          "ed25519",
+          "-N",
+          "",
+          "-C",
+          "pim-pasted",
+          "-f",
+          keyFile,
+        ]);
+        E.authorize(fs.readFileSync(`${keyFile}.pub`, "utf8"));
+        const fp = execFileSync("ssh-keygen", ["-lf", `${keyFile}.pub`], {
+          encoding: "utf8",
+        }).split(/\s+/)[1];
+        await A.tap(A.byId("hosts-add"), "add host");
+        await A.waitNode(A.byId("host-public-key"), 20_000, "add host sheet");
+        await fillAddress("Laptop", E.PORT);
+        await A.tap(A.byId("host-auth-paste"), "paste mode");
+        await A.tap(A.byId("host-field-private-key"), "private key field");
+        const lines = fs.readFileSync(keyFile, "utf8").trim().split("\n");
+        lines.forEach((line, i) => {
+          if (i > 0) A.key(A.KEY.ENTER);
+          A.typeText(line);
+        });
+        A.hideKeyboard();
+        await sleep(800);
+        shot("44-add-host-paste-dark");
+        await A.tap(A.byId("host-save"), "save");
+        await A.tap(hostRow("Laptop"), "Laptop row", 15_000);
+        await A.waitNode(A.byId("host-key-sheet"), 40_000, "trust sheet");
+        await A.tap(A.byId("host-key-trust"), "trust");
+        await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard over the pasted key");
+        const accepted = fs
+          .readFileSync(path.join(E.SSHD_DIR, "sshd.log"), "utf8")
+          .split("\n")
+          .filter((line) => line.includes("Accepted publickey") && line.includes(fp));
+        assert(accepted.length > 0, `sshd never accepted the pasted key ${fp}`);
+        ctx.notes.push(`pasted key: ${accepted[0].replace(/^.*Accepted/, "Accepted")}`);
+      },
+    ],
+    [
+      "Edit host: rename keeps the id, saved key and pinned host key",
+      async () => {
+        await toDashboard();
+        await back();
+        const id = await hostIdOf("Laptop");
+        await A.tap(A.byId(`host-edit-${id}`), "edit Laptop");
+        await A.waitNode(A.byId("host-delete"), 15_000, "edit sheet");
+        await A.tap(A.byId("host-field-label"), "label");
+        A.key(A.KEY.MOVE_END);
+        deleteChars(12);
+        A.typeText("Laptop renamed");
+        A.hideKeyboard();
+        await sleep(600);
+        shot("45-edit-host-dark");
+        await A.tap(A.byId("host-save"), "save");
+        await A.waitNode(hostRow("Laptop renamed"), 15_000, "renamed row");
+        assert(!A.find(hostRow("Laptop")), "old label still listed");
+        assert((await hostIdOf("Laptop renamed")) === id, "rename changed the host id");
+        shot("46-hosts-list-edited-dark");
+        await A.tap(hostRow("Laptop renamed"), "renamed host");
+        await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard after rename");
+        assert(!A.find(A.byId("host-key-sheet")), "rename dropped the pinned host key");
+      },
+    ],
+    [
+      "Delete every host → Hosts empty state, light",
+      async () => {
+        A.nightMode(false);
+        await sleep(1500);
+        await toDashboard();
+        await back();
+        let first = true;
+        for (const label of ["Laptop renamed", "Gateway", "Sandbox"]) {
+          const id = await hostIdOf(label);
+          await A.tap(A.byId(`host-edit-${id}`), `edit ${label}`);
+          await A.tap(A.byId("host-delete"), "delete");
+          // RN's Android Alert puts the last (destructive) button on button1.
+          await A.waitNode(A.byId("button1"), 10_000, "delete confirmation");
+          if (first) shot("47-delete-host-confirm-light");
+          first = false;
+          await A.tap(A.byId("button1"), "confirm delete");
+          await A.waitGone(hostRow(label), 15_000, `${label} to go`);
+        }
+        await A.waitNode(A.byId("hosts-empty"), 15_000, "hosts empty");
+        shot("48-hosts-empty-light");
+        E.gatewayStop();
+      },
+    ],
+    [
+      "The Pi icon on the launcher",
+      async () => {
+        A.nightMode(true);
+        A.key(3); // HOME
+        await sleep(2000);
+        A.swipe(540, 2000, 540, 500, 400);
+        await sleep(2000);
+        await A.waitNode(A.byText("Pi"), 10_000, "Pi in the app drawer");
+        shot("49-launcher-icon-dark");
       },
     ],
   ];
@@ -383,7 +705,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v2"),
   );
   const apk = option(
     args,
@@ -397,6 +719,7 @@ export async function journey(args = []) {
     expectedSummary: `${E.readState().windows.real ? 2 : 1} awaiting input · 1 working · 3 completed`,
   };
   if (!args.includes("--no-install")) A.adb("install", "-r", apk);
+  A.adb("logcat", "-c");
   A.reduceMotion(true);
   A.nightMode(true);
   A.rotate(0);
@@ -404,6 +727,9 @@ export async function journey(args = []) {
   const results = [];
   for (const [name, fn] of steps(ctx)) {
     const t0 = Date.now();
+    // Every step starts in portrait (landscape steps rotate back themselves); re-lock it so a
+    // stale rotation from an earlier run can never leak into a portrait assertion.
+    A.rotate(0);
     try {
       await fn();
       results.push({ step: name, ok: true, ms: Date.now() - t0 });
@@ -414,9 +740,11 @@ export async function journey(args = []) {
         ok: false,
         ms: Date.now() - t0,
         error: String(error?.message ?? error),
+        rotation: A.displayRotation(),
       });
-      E.log(`FAIL ${name}: ${error?.message ?? error}`);
+      E.log(`FAIL ${name}: ${error?.message ?? error} (display rotation ${A.displayRotation()})`);
       A.screenshot(screens, `_fail-${results.length}`);
+      A.rotate(0);
       break;
     }
   }

@@ -31,6 +31,11 @@ import {
 import { isFindShortcut, type FindShortcutPlatform } from "@/pane-find/find-shortcut";
 import { isMacUserAgent } from "@/utils/mac-user-agent";
 import { resolveTerminalFontFamily, resolveTerminalFontSize } from "./terminal-font";
+import {
+  chooseTerminalRenderer,
+  probeWebgl,
+  type TerminalRendererChoice,
+} from "./terminal-renderer-choice";
 
 export type TerminalOutputData = Uint8Array;
 
@@ -81,6 +86,8 @@ export interface TerminalEmulatorRuntimeCallbacks {
     disposition: "main" | "side",
   ) => Promise<void> | void;
   onInputModeChange?: (state: TerminalInputModeState) => Promise<void> | void;
+  /** The renderer in use: after the initial choice, and again when WebGL falls back to DOM. */
+  onRendererChange?: (choice: TerminalRendererChoice & { fallback?: string }) => void;
 }
 
 export interface TerminalResizeEvent {
@@ -549,23 +556,37 @@ export class TerminalEmulatorRuntime {
     };
     registerProtocolQuerySuppression();
 
-    let webglAddonRaf: number | null = requestAnimationFrame(() => {
-      webglAddonRaf = null;
-      try {
-        disposeWebglRenderer();
-        webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-          disposeWebglRenderer();
-        });
-        terminal.loadAddon(webglAddon);
-        imageAddon = new ImageAddon();
-        terminal.loadAddon(imageAddon);
-        registerProtocolQuerySuppression();
-        this.fitAndEmitResize?.({ forceRefresh: true, shouldClaim: false });
-      } catch {
-        disposeWebglRenderer();
-      }
-    });
+    const rendererChoice = chooseTerminalRenderer(probeWebgl(document));
+    const reportRenderer = (fallback?: string): void => {
+      const choice = fallback
+        ? { ...rendererChoice, renderer: "dom" as const, fallback }
+        : rendererChoice;
+      input.root.dataset.terminalRenderer = choice.renderer;
+      this.callbacks.onRendererChange?.(choice);
+    };
+    reportRenderer();
+    let webglAddonRaf: number | null =
+      rendererChoice.renderer !== "webgl"
+        ? null
+        : requestAnimationFrame(() => {
+            webglAddonRaf = null;
+            try {
+              disposeWebglRenderer();
+              webglAddon = new WebglAddon();
+              webglAddon.onContextLoss(() => {
+                disposeWebglRenderer();
+                reportRenderer("context-lost");
+              });
+              terminal.loadAddon(webglAddon);
+              imageAddon = new ImageAddon();
+              terminal.loadAddon(imageAddon);
+              registerProtocolQuerySuppression();
+              this.fitAndEmitResize?.({ forceRefresh: true, shouldClaim: false });
+            } catch {
+              disposeWebglRenderer();
+              reportRenderer("load-failed");
+            }
+          });
 
     const restoreDocumentStyles = this.applyDocumentBoundsStyles({
       root: input.root,

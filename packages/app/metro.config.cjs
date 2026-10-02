@@ -70,7 +70,6 @@ function resolveWithCustomWebOverlay(context, moduleName, platform) {
 }
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-
   return resolveWithCustomWebOverlay(context, moduleName, platform);
 };
 

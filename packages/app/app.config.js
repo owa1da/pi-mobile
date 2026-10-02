@@ -22,7 +22,8 @@ export default {
     name: variant.name,
     slug: "pi-mobile",
     version: nativeReleaseVersion.appVersion,
-    orientation: "portrait",
+    // Rotation is allowed: landscape gives the terminal pane ~2× the columns.
+    orientation: "default",
     icon: "./assets/images/icon.png",
     scheme: "pimobile",
     userInterfaceStyle: "automatic",
@@ -65,6 +66,7 @@ export default {
           resizeMode: "contain",
           backgroundColor: "#ffffff",
           dark: {
+            image: "./assets/images/splash-icon-dark.png",
             backgroundColor: "#000000",
           },
         },
