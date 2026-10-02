@@ -52,7 +52,7 @@ import {
 } from "@/remote/menu";
 import { isRemoteError } from "@/remote/errors";
 import type { RemoteCommand, RemoteFooter } from "@/remote/types";
-import { footerParts } from "@/remote/views";
+import { footerParts, type FooterPart } from "@/remote/views";
 import { takeHandBack } from "@/screens/forge/draft-store";
 import { openForge, type ForgeTool } from "@/screens/forge/parts";
 import { SessionSheets, type OpenSheet, type SheetTool } from "@/screens/forge/sheets";
@@ -279,6 +279,7 @@ function SessionBody(props: SessionBodyProps) {
         openNative={openNative}
       />
       <SessionSheets
+        hostId={hostId}
         row={row}
         channel={channel}
         sheet={sheet}
@@ -287,6 +288,33 @@ function SessionBody(props: SessionBodyProps) {
       />
     </>
   );
+}
+
+/**
+ * The sub-bar's parts: the state word, then forge's status line when it publishes one (exactly the
+ * desktop's facts), else the row's model. Each part gets a stable key (its text, numbered on repeats).
+ */
+function keyedParts(
+  word: string | null,
+  parts: FooterPart[],
+  model: string | undefined,
+): (FooterPart & { key: string; first: boolean })[] {
+  let shown = parts;
+  if (shown.length === 0) shown = model ? [{ text: model }] : [];
+  const all = word ? [{ text: word }, ...shown] : shown;
+  const seen = new Map<string, number>();
+  return all.map((part, index) => {
+    const count = seen.get(part.text) ?? 0;
+    seen.set(part.text, count + 1);
+    return { text: part.text, tone: part.tone, key: `${part.text}#${count}`, first: index === 0 };
+  });
+}
+
+/** The context field's colour, as the desktop line colours it (warning/error); else inherited. */
+function toneStyle(tone: FooterPart["tone"]) {
+  if (tone === "warning") return styles.toneWarning;
+  if (tone === "error") return styles.toneError;
+  return undefined;
 }
 
 function SessionSubBar({
@@ -308,8 +336,8 @@ function SessionSubBar({
   const status = subBarStatus(connection.status, row.state, sending);
   const quiet = status.kind === "quiet";
   const word = quiet ? null : t(status.key);
-  const status_ = footerParts(footer, model);
-  const meta = [word, ...(status_.length > 0 ? status_ : [model])].filter(Boolean).join(" · ");
+  // forge's status line when it publishes one (exactly the desktop's facts), else the row's model.
+  const all = keyedParts(word, footerParts(footer), model);
   let glyph = rowGlyph(row);
   if (status.kind === "pending") glyph = "working";
   else if (status.kind !== "state") glyph = "gone";
@@ -322,7 +350,11 @@ function SessionSubBar({
           numberOfLines={1}
           testID="session-state"
         >
-          {meta}
+          {all.map((part) => (
+            <Text key={part.key} style={toneStyle(part.tone)}>
+              {part.first ? part.text : ` · ${part.text}`}
+            </Text>
+          ))}
         </Text>
       </View>
     </View>
@@ -506,6 +538,8 @@ function ChatPaneBody({
   );
   // A prompt handed back by /rewind lands in the composer when the chat is shown again.
   const [prefill, setPrefill] = useState<{ text: string } | undefined>(undefined);
+  // One hand-back fills the field once: the composer remounts whenever pi's dialog replaces it.
+  const prefillApplied = useCallback(() => setPrefill(undefined), []);
   const sessionId = row.sessionId;
   useFocusEffect(
     useCallback(() => {
@@ -559,6 +593,7 @@ function ChatPaneBody({
           commands={channel.available ? channel.state?.commands : undefined}
           onPickNative={pickNative}
           prefill={prefill}
+          onPrefillApplied={prefillApplied}
           placeholder={t(composerPlaceholderKey(row))}
           onSubmit={send}
           busy={sending}
@@ -613,6 +648,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   subBarText: { flex: 1, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   subBarQuiet: { color: theme.colors.foregroundExtraMuted },
+  toneWarning: { color: theme.colors.statusWarning },
+  toneError: { color: theme.colors.statusDanger },
   banners: {
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[3],

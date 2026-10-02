@@ -9,6 +9,7 @@ import {
   type AskOption,
   type AskQuestion,
   type PromptKind,
+  type RemoteBtw,
   type RemoteCheckpoint,
   type RemoteCommand,
   type RemoteFooter,
@@ -173,19 +174,36 @@ function parseFooterModel(value: unknown): RemoteFooterModel | null {
   return {
     provider: line(value.provider, 80),
     id,
-    name: line(value.name, 120),
-    thinking: line(value.thinking, 20),
+    name: line(value.name, 200),
+    thinking: lineOrNull(value.thinking, 40),
   };
 }
 
+const TONES = new Set(["normal", "warning", "error"]);
+
 function parseFooter(value: unknown): RemoteFooter | null {
   if (!isObj(value)) return null;
+  const tone = typeof value.contextTone === "string" ? value.contextTone : "";
   return {
     model: parseFooterModel(value.model),
     contextPercent: finite(value.contextPercent),
     contextTokens: finite(value.contextTokens),
     contextWindow: finite(value.contextWindow),
     cost: finite(value.cost),
+    compactAt: finite(value.compactAt),
+    compactionPaused: value.compactionPaused === true,
+    contextTone: TONES.has(tone) ? (tone as RemoteFooter["contextTone"]) : "normal",
+    items: stringList(value.items, 20, 200),
+  };
+}
+
+function parseBtw(value: unknown): RemoteBtw | null {
+  if (!isObj(value)) return null;
+  return {
+    open: value.open === true,
+    pending: value.pending === true,
+    question: multiline(value.question)?.trim() || null,
+    error: lineOrNull(value.error),
   };
 }
 
@@ -239,10 +257,10 @@ function parseTask(value: unknown): RemoteTask | null {
 function parseCheckpoint(value: unknown): RemoteCheckpoint | null {
   if (!isObj(value)) return null;
   const n = finite(value.n);
-  if (n === null || typeof value.entryId !== "string" || !value.entryId) return null;
+  if (n === null) return null;
   return {
     n,
-    entryId: value.entryId,
+    entryId: typeof value.entryId === "string" && value.entryId ? value.entryId : null,
     label: line(value.label),
     at: finite(value.at) ?? 0,
     files: finite(value.files) ?? 0,
@@ -309,6 +327,7 @@ function parseAreas(obj: Obj): Partial<RemoteState> {
   if (commands) out.commands = commands;
   const pins = parsePins(obj.pins);
   if (pins) out.pins = pins;
+  if ("btw" in obj) out.btw = obj.btw === null ? null : parseBtw(obj.btw);
   return out;
 }
 

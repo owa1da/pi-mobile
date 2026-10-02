@@ -192,7 +192,10 @@ export function TranscriptProviders({ children }: { children: ReactNode }) {
   );
 }
 
-export type ActionOutcome = { ok: true; data: unknown } | { ok: false; error: unknown };
+/** ok: forge's data and its report line (`message`: rewind.apply and checkpoint.restore say what moved). */
+export type ActionOutcome =
+  | { ok: true; data: unknown; message: string | null }
+  | { ok: false; error: unknown };
 
 /** Runs remote actions for a screen: one busy flag, an inline error, and \"Update forge\" on unknown-action. */
 export function useForgeAction(channel: RemoteChannel) {
@@ -211,7 +214,7 @@ export function useForgeAction(channel: RemoteChannel) {
       setError(null);
       try {
         const result = await send(action, args);
-        return { ok: true, data: result.data };
+        return { ok: true, data: result.data, message: result.message };
       } catch (err) {
         if (isRemoteError(err, "unknown-action")) setUnsupported(true);
         else if (!(isRemoteError(err) && quiet.includes(err.code))) setError(remoteMessage(t, err));

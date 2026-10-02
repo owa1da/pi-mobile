@@ -1,7 +1,9 @@
-// Journey steps for the native forge screens (Wave 12): each one opens a screen from the `/` menu
-// of a dedicated fake pi window (pi-forge, three prompts so it has checkpoints), performs its main
-// action and asserts the fake pi saw it (its remote log). The window is killed at the end without
-// a trace on the dashboard, so the later steps' counts are unchanged.
+// Journey steps for the native forge screens: each one opens a screen from the `/` menu of a
+// dedicated fake pi window (pi-forge, three prompts so it has checkpoints), performs its main action
+// and asserts the fake pi saw it (its remote log). The fake answers in forge's v1.2 shapes. The
+// window is killed at the end without a trace on the dashboard, so the later steps' counts are
+// unchanged. Every text field is typed into, and each type is checked to land in its field with
+// the sheet or screen still open (the /pause bug: typing in a sheet left the app on Hosts).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +17,69 @@ function assert(cond, message) {
 }
 
 const PROMPTS = ["Add a token bucket", "Write tests for it", "Update the README"];
+
+// ---------- helpers shared with the real-forge steps ----------
+
+export async function kbDown() {
+  await sleep(1000);
+  if (A.keyboardShown()) {
+    A.key(A.KEY.BACK);
+    await sleep(700);
+  }
+}
+
+export async function typeInto(id, text) {
+  await A.tap(A.byId(id), id);
+  A.typeText(text);
+  await sleep(500);
+}
+
+/**
+ * Types into a field of an open sheet or screen and checks it landed: the field holds the text,
+ * `holder` (the sheet's or screen's testID) is still on screen, and the app never left for the
+ * dashboard or Hosts.
+ */
+export async function typeChecked(id, text, holder, { expect = text } = {}) {
+  await typeInto(id, text);
+  await sleep(400);
+  const nodes = A.dump();
+  assert(!nodes.find(A.byId("hosts-list")), `typing into ${id} left the app on Hosts`);
+  assert(!nodes.find(A.byId("dashboard-composer")), `typing into ${id} left the session`);
+  assert(nodes.find(A.byId(holder)), `typing into ${id} closed ${holder}`);
+  const field = nodes.find(A.byId(id));
+  assert(field, `${id} left the screen while typing (keyboard covered it, focus lost)`);
+  assert(field.text === expect, `${id} holds "${field.text}", typed "${expect}"`);
+}
+
+export function deleteChars(n) {
+  A.adb("shell", "input", "keyevent", ...Array.from({ length: n }, () => String(A.KEY.DEL)));
+}
+
+/** Opens a forge screen or sheet by tapping its row in the composer's `/` menu. */
+export async function slash(name) {
+  await A.waitNode(A.byId("chat-composer"), 20_000, "composer");
+  await typeInto("chat-composer", `/${name}`);
+  // Close the keyboard here, on the chat (no sheet yet).
+  await kbDown();
+  await A.tap(A.byId(`slash-row-${name}`), `/${name} row`);
+  await sleep(1200);
+}
+
+/** Sends a `/` line from the composer (a row forge runs with command.run). */
+export async function sendLine(line) {
+  await A.waitNode(A.byId("chat-composer"), 20_000, "composer");
+  await typeInto("chat-composer", line);
+  await kbDown();
+  await A.tap(A.byId("chat-send"), `send ${line}`);
+}
+
+/** Back to the session's chat. */
+export async function leave() {
+  await kbDown();
+  A.key(A.KEY.BACK);
+  await sleep(800);
+  await A.waitNode(A.byId("chat-composer"), 20_000, "back on the chat");
+}
 
 export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil }) {
   const w = {};
@@ -33,38 +98,6 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       `fake pi saw ${action}`,
     );
 
-  async function kbDown() {
-    await sleep(1000);
-    if (A.keyboardShown()) {
-      A.key(A.KEY.BACK);
-      await sleep(700);
-    }
-  }
-  async function typeInto(id, text) {
-    await A.tap(A.byId(id), id);
-    A.typeText(text);
-    await sleep(500);
-  }
-  function deleteChars(n) {
-    A.adb("shell", "input", "keyevent", ...Array.from({ length: n }, () => String(A.KEY.DEL)));
-  }
-  /** Opens a forge screen or sheet by tapping its row in the composer's `/` menu. */
-  async function slash(name) {
-    await A.waitNode(A.byId("chat-composer"), 20_000, "composer");
-    await typeInto("chat-composer", `/${name}`);
-    // Close the keyboard here, on the chat (no sheet yet): a Back sent while a sheet is still
-    // rising reaches the navigator, not the sheet.
-    await kbDown();
-    await A.tap(A.byId(`slash-row-${name}`), `/${name} row`);
-    await sleep(1200);
-  }
-  /** Back to the forge session's chat. */
-  async function leave() {
-    await kbDown();
-    A.key(A.KEY.BACK);
-    await sleep(800);
-    await A.waitNode(A.byId("chat-composer"), 20_000, "back on the chat");
-  }
   async function openSession(sessionId) {
     await toDashboard();
     A.tapNode(await scrollUntil(A.byId(`session-row-${sessionId}`), "forge row"));
@@ -78,8 +111,10 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       async () => {
         w.forge = await E.forgeWindow("pi-forge", PROMPTS);
         await openSession(sessionIdOf(pid()));
+        // v1.2: exactly the desktop line: model · effort · ctx · ~$cost · its items.
         const sub = await A.waitNode(
-          (n) => n.id === "session-state" && /· ctx \d+%\/200k · \$0\.\d{3}$/.test(n.text),
+          (n) =>
+            n.id === "session-state" && /· ctx \d+%\/200k · ~\$0\.\d{3,4} · 1 shell$/.test(n.text),
           20_000,
           "footer items in the sub-bar",
         );
@@ -105,6 +140,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await A.waitNode(A.byId("rewind-choice-conversation"), 10_000, "choices");
         for (const c of ["both", "code", "cancel"])
           assert(A.find(A.byId(`rewind-choice-${c}`)), `no ${c} choice`);
+        assert(A.find(A.byId("rewind-sentence")), "no 'The code will be restored' sentence");
         shot("102-rewind-choices-dark");
         const since = mark();
         await A.tap(A.byId("rewind-choice-conversation"), "Restore conversation");
@@ -164,7 +200,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await A.waitNode(A.byId("side-composer"), 20_000, "side composer");
         shot("109-side-empty-dark");
         const since = mark();
-        await typeInto("side-composer", "What is a token bucket");
+        await typeChecked("side-composer", "What is a token bucket", "side-badge");
         await kbDown();
         await A.tap(A.byId("side-send"), "side send");
         const ev = await acted("side.open", since);
@@ -178,17 +214,20 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /btw asks, shows the answer from forge-btw entries, forks into the side, clears",
+      "Forge: /btw asks (pending, answer), forks into the side, fails (error, Close), clears",
       async () => {
         await slash("btw");
         await A.waitNode(A.byId("btw-composer"), 20_000, "btw composer");
         const since = mark();
-        await typeInto("btw-composer", "Is a token bucket fair");
+        await typeChecked("btw-composer", "Is a token bucket fair", "btw-history");
         await kbDown();
         await A.tap(A.byId("btw-send"), "btw send");
         await acted("btw.ask", since, (e) => e.args?.text === "Is a token bucket fair");
+        await A.waitNode(A.byId("btw-pending"), 10_000, "btw pending (forge's btw state)");
+        shot("111a-btw-pending-dark");
         await A.waitNode(A.byId("btw-item-0"), 20_000, "btw answer");
         await A.waitNode(A.byText(/A token bucket holds/), 10_000, "answer text");
+        await A.waitNode(A.byId("btw-close"), 10_000, "Close (forge's panel is open)");
         shot("111-btw-answer-dark");
         await A.tap(A.byId("btw-fork"), "fork");
         await acted("btw.fork", since);
@@ -207,6 +246,18 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await leave();
         await slash("btw");
         await A.waitNode(A.byId("btw-item-0"), 20_000, "history again");
+        // A failed answer writes no entry: forge's state says why, and Close closes its panel.
+        await typeChecked("btw-composer", "will this fail", "btw-history");
+        await kbDown();
+        await A.tap(A.byId("btw-send"), "btw send (fails)");
+        await A.waitNode(A.byText("Unknown provider: unknown"), 20_000, "btw error");
+        assert(A.find(A.byId("btw-error")), "no btw-error block");
+        shot("113a-btw-error-dark");
+        auditControls(ctx, "btw", [["Close", A.byId("btw-close")]]);
+        const s1 = mark();
+        await A.tap(A.byId("btw-close"), "close the btw panel");
+        await acted("btw.close", s1);
+        await A.waitGone(A.byId("btw-close"), 10_000, "btw panel closed");
         await A.tap(A.byId("btw-clear"), "clear");
         await A.waitNode(A.byId("btw-clear-sheet-confirm"), 10_000, "clear confirm");
         await sleep(600);
@@ -219,7 +270,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /tasks rows; a shell's log + stop; an agent's transcript + message + resume",
+      "Forge: /tasks rows; a shell's log + stop; an agent resumed with a message; a run resumed",
       async () => {
         await slash("tasks");
         await A.waitNode(A.byId("tasks-list"), 20_000, "tasks list");
@@ -236,16 +287,20 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await A.waitNode(A.byId("task-row-ag-review"), 15_000, "tasks again");
         await A.tap(A.byId("task-row-ag-review"), "agent row");
         await A.waitNode(A.byText(/Two refill paths can run at once/), 20_000, "agent transcript");
+        await A.waitNode(
+          (n) => n.id === "agent-composer" && /resume the agent/.test(n.text),
+          10_000,
+          "the composer resumes a finished agent",
+        );
         shot("116-task-agent-dark");
         since = mark();
-        await typeInto("agent-composer", "Also check the timer");
+        // v1.2: a resume starts the agent's turn, so it carries the message (agent.resume {key, text}).
+        await typeChecked("agent-composer", "Also check the timer", "task-status");
         await kbDown();
         await A.tap(A.byId("agent-send"), "agent send");
-        const sent = await acted("agent.send", since);
-        assert(sent.args?.mode === "followUp", `agent.send ${JSON.stringify(sent.args)}`);
-        await A.waitNode(A.byText(/agent: noted, Also check the timer/), 20_000, "agent reply");
-        await A.tap(A.byId("task-resume"), "resume agent");
-        await acted("agent.resume", since);
+        const resumed = await acted("agent.resume", since);
+        assert(resumed.args?.text === "Also check the timer", JSON.stringify(resumed.args));
+        await A.waitNode(A.byText(/agent: resumed, Also check the timer/), 20_000, "agent reply");
         shot("117-task-agent-resumed-dark");
         A.key(A.KEY.BACK);
         await A.waitNode(A.byId("task-row-wf-sweep"), 15_000, "tasks again");
@@ -273,6 +328,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         const since = mark();
         await A.tap(A.byId("thinking-high"), "high");
         await acted("thinking.set", since, (e) => e.args?.level === "high");
+        await A.waitNode((n) => n.id === "thinking-high" && n.selected, 10_000, "high selected");
         await A.tap(A.byId("model-pin-google/gemini-3-pro"), "pin gemini");
         await acted("pin.toggle", since, (e) => e.args?.ref === "google/gemini-3-pro");
         await A.waitNode(A.byText("Unpin Gemini 3 Pro"), 15_000, "gemini pinned");
@@ -286,7 +342,8 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await acted("model.set", since, (e) => e.args?.ref === "anthropic/claude-sonnet-5");
         await A.waitNode(A.byId("chat-composer"), 20_000, "back on the chat");
         const sub = await A.waitNode(
-          (n) => n.id === "session-state" && /Sonnet 5 · high · ctx \d+%\/200k · \$/.test(n.text),
+          (n) =>
+            n.id === "session-state" && /Sonnet 5 · high · ctx \d+%\/200k · ~\$\d/.test(n.text),
           20_000,
           "footer with the new model",
         );
@@ -295,31 +352,37 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /usage shows plan numbers and refreshes; /cost shows the session's rows",
+      "Forge: /usage shows plan numbers and refreshes; /cost shows pi's Session Info sections",
       async () => {
         await slash("usage");
-        await A.waitNode(A.byText(/^5-hour, 93% left, Resets in 5h 30m$/), 20_000, "meter");
+        await A.waitNode(
+          A.byText(/^5-hour, 93% left, Resets in 5h (29|30)m$/),
+          20_000,
+          "meter with its reset words",
+        );
+        assert(A.find(A.byText("Claude · Max 20x")), "account heading (name · plan)");
         shot("121-usage-dark");
         const since = mark();
         await A.tap(A.byId("usage-refresh"), "refresh");
-        await acted("usage.refresh", since);
+        await acted("usage.refresh", since, (e) => e.args?.force === true);
         await leave();
         await slash("cost");
         await A.waitNode(A.byText(/^Total, \$\d+\.\d{3}$/), 20_000, "cost total row");
-        assert(A.find(A.byText(/^Messages, \d+$/)), "no Messages row");
+        assert(A.find(A.byText("Messages")), "no Messages section");
+        assert(A.find(A.byText("Tokens")), "no Tokens section");
         shot("122-cost-dark");
         await leave();
       },
     ],
     [
-      "Forge: /pause sets a wake-up in 30 minutes with a message, shows it, cancels it",
+      "Forge: /pause types its fields (stays open), sets a 30-minute wake-up, shows it, cancels; Back while it rises",
       async () => {
         await slash("pause");
         await A.waitNode(A.byId("pause-value"), 15_000, "pause sheet");
         const since = mark();
-        // Message first (the keyboard would cover it), then Minutes, which stays above the keyboard.
-        await typeInto("pause-reason", "waiting for CI");
-        await typeInto("pause-value", "30");
+        // The Message field first: typing there left the app on Hosts before the fix.
+        await typeChecked("pause-reason", "waiting for CI", "pause-sheet");
+        await typeChecked("pause-value", "30", "pause-sheet");
         await kbDown();
         const filled = A.dump();
         const minutes = filled.find(A.byId("pause-value"))?.text;
@@ -332,8 +395,17 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         auditControls(ctx, "pause sheet", [["Pause", A.byId("forge-sheet-submit")]]);
         await A.tap(A.byId("forge-sheet-submit"), "Pause");
         const ev = await acted("wake.set", since);
-        assert(ev.args?.in === 30 && ev.args?.reason === "waiting for CI", JSON.stringify(ev.args));
+        // forge reads a number `in` as seconds.
+        assert(
+          ev.args?.in === 1800 && ev.args?.reason === "waiting for CI",
+          JSON.stringify(ev.args),
+        );
         await A.waitGone(A.byId("pause-value"), 10_000, "pause sheet to close");
+        await A.waitNode(
+          (n) => n.id === "session-state" && /◷ wakes in (29|30)m$/.test(n.text),
+          15_000,
+          "the wake-up in the footer",
+        );
         await slash("pause");
         await A.waitNode(
           A.byText(/^Wakes at \d+:\d{2} [AP]M · in (29|30)m · waiting for CI$/),
@@ -344,15 +416,24 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await A.tap(A.byId("pause-cancel-wake"), "cancel wake-up");
         await acted("wake.cancel", since);
         await A.waitGone(A.byId("pause-value"), 10_000, "pause sheet to close");
+        // Back pressed while the sheet is still rising closes the sheet, never the session.
+        await typeInto("chat-composer", "/pause");
+        await kbDown();
+        A.tapNode(await A.waitNode(A.byId("slash-row-pause"), 10_000, "/pause row"));
+        await sleep(300);
+        A.key(A.KEY.BACK);
+        await sleep(1500);
+        assert(A.find(A.byId("chat-composer")), "Back while the sheet rose left the session");
+        assert(!A.find(A.byId("pause-value")), "Back while the sheet rose left it open");
       },
     ],
     [
-      "Forge: /export (path, then overwrite confirm), /rename, /sync, /changelog",
+      "Forge: /export (path typed, then the exists → overwrite confirm), /rename, /sync, /changelog",
       async () => {
         let since = mark();
         for (const overwrite of [false, true]) {
           await slash("export");
-          await typeInto("export-path-field", "notes/session.md");
+          await typeChecked("export-path-field", "notes/session.md", "export-sheet");
           await kbDown();
           await A.tap(A.byId("forge-sheet-submit"), "Export");
           if (overwrite) {
@@ -372,6 +453,13 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         A.key(A.KEY.MOVE_END);
         deleteChars(40);
         A.typeText("Rate limiter");
+        await sleep(600);
+        const renamed = A.dump();
+        assert(renamed.find(A.byId("rename-sheet")), "typing a name closed the rename sheet");
+        assert(
+          renamed.find(A.byId("rename-field"))?.text === "Rate limiter",
+          "the name did not land in its field",
+        );
         await kbDown();
         shot("127-rename-dark");
         await A.tap(A.byId("forge-sheet-submit"), "Rename");
@@ -382,7 +470,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         shot("128-sync-dark");
         await A.tap(A.byId("forge-sheet-submit"), "Sync");
         await acted("sync.run", since);
-        await A.waitNode(A.byText(/Reloaded/), 15_000, "sync summary");
+        await A.waitNode((n) => n.id === "sync-text" && n.text === "Synced", 15_000, "synced");
         await A.tap(A.byId("forge-sheet-cancel"), "close sync");
         await A.waitGone(A.byId("sync-text"), 10_000, "sync sheet to close");
         await slash("changelog");
@@ -393,17 +481,22 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /mcp runs through command.run and its select is answered in the app",
+      "Forge: /mcp alone stays on the computer; /mcp reconnect's select is answered in the app",
       async () => {
+        await sendLine("/mcp");
+        await A.waitNode(
+          A.byId("command-computer-only"),
+          15_000,
+          "/mcp works only on the computer",
+        );
+        shot("130a-mcp-computer-only-dark");
         const since = mark();
-        await typeInto("chat-composer", "/mcp");
-        await kbDown();
-        await A.tap(A.byId("chat-send"), "send /mcp");
-        await acted("command.run", since, (e) => e.line === "/mcp");
-        await A.waitNode(A.byText(/^MCP servers$/), 20_000, "mcp select");
+        await sendLine("/mcp reconnect");
+        await acted("command.run", since, (e) => e.line === "/mcp reconnect");
+        await A.waitNode(A.byText(/^MCP server$/), 20_000, "mcp select");
         shot("130-mcp-select-dark");
         await A.tap(A.byId("prompt-option-0"), "github");
-        await acted("prompt.respond", since, (e) => e.value === "github · connected");
+        await acted("prompt.respond", since, (e) => e.value === "github");
         await A.waitGone(A.byId("prompt-panel"), 15_000, "select closed");
       },
     ],
@@ -413,7 +506,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         const since = mark();
         const before = sessionIdOf(pid());
         await slash("branch");
-        await typeInto("branch-field", "Leaky bucket");
+        await typeChecked("branch-field", "Leaky bucket", "branch-sheet");
         await kbDown();
         shot("131-branch-dark");
         await A.tap(A.byId("forge-sheet-submit"), "Branch");

@@ -35,6 +35,15 @@ export function hostSkewMs(hostNowSec: number, fetchedAtMs: number): number {
   return Math.abs(skew) < 2000 ? 0 : Math.round(skew);
 }
 
+/**
+ * The host's clock now (the phone's, corrected by the last known offset): countdowns the CLI words
+ * from the host's clock ("Resets in 5h 30m", "Wakes in 23m") read the same on the phone.
+ */
+export function hostNow(service: PiHostService | null | undefined): number {
+  const skew = service ? (bound.get(service)?.skewMs ?? 0) : 0;
+  return Date.now() + skew;
+}
+
 export function setHostSkew(service: PiHostService, skewMs: number): void {
   remoteFor(service);
   const entry = bound.get(service);

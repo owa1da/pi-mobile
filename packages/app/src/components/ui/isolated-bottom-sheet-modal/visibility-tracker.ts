@@ -49,9 +49,13 @@ export function createBottomSheetVisibilityTracker(opts: {
     syncBackPress();
   }
 
-  /** Holds the Back press for exactly the window the sheet is on screen, and no longer. */
+  /**
+   * Holds the Back press from the moment the sheet starts to rise until it is gone. A Back
+   * pressed while the sheet is still rising closes the sheet: it must never reach the navigator
+   * underneath, which would leave the screen the sheet was opened over.
+   */
   function syncBackPress(): void {
-    const wantsBackPress = phase === "presented" && controller !== null;
+    const wantsBackPress = (phase === "presenting" || phase === "presented") && controller !== null;
     if (wantsBackPress === (releaseBackPress !== null)) return;
     if (!wantsBackPress) {
       releaseBackPress?.();

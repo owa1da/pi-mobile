@@ -13,18 +13,23 @@ import { RemoteError } from "./errors";
 import { readBtwHistory } from "./session-file";
 import type { RemoteState } from "./types";
 import {
-  changelogMarkdown,
-  costRows,
+  costSections,
   diffLines,
   exportedPath,
   exportNeedsOverwrite,
+  footerParts,
   modelGroups,
+  parseChangelog,
   parseCheckpointDiff,
-  parseModels,
+  parseModelList,
+  parsePinsResult,
   parseRewindPreview,
+  parseSyncStatus,
+  parseThinking,
   parseUsage,
+  rewindChoices,
   rewindLine,
-  syncText,
+  syncDone,
   tailText,
 } from "./views";
 
@@ -119,6 +124,16 @@ describe("native forge screens against the fake pi", () => {
     expect(s.side).toBeNull();
     expect(s.wake).toBeNull();
     expect(s.footer?.model?.name).toBe("Fake 1");
+    // v1.2 footer: what the desktop line shows, its items last.
+    expect(s.footer).toMatchObject({ compactAt: 83, compactionPaused: false, items: ["1 shell"] });
+    expect(footerParts(s.footer).map((p) => p.text)).toEqual([
+      "Fake 1",
+      "medium",
+      "ctx 18%/200k",
+      "~$0.126",
+      "1 shell",
+    ]);
+    expect(s.btw).toBeNull();
   });
 
   it("rewind: previews what each prompt would undo, applies a mode, and says so", async () => {
@@ -128,14 +143,22 @@ describe("native forge screens against the fake pi", () => {
       (await client.send(row, "rewind.preview", { entryId: last.entryId })).data,
     );
     expect(preview && rewindLine(preview)).toMatch(/^\d+ files? changed \+\d+/);
+    expect(preview).toMatchObject({ entryId: last.entryId, heading: "code", warnings: [] });
+    expect(preview?.code?.sentence).toMatch(/^The code will be restored /);
+    expect(rewindChoices(preview)).toEqual(["both", "conversation", "code", "cancel"]);
     const first = parseRewindPreview(
       (await client.send(row, "rewind.preview", { entryId: s.checkpoints![0].entryId })).data,
     );
-    expect(first?.added).toBeGreaterThan(preview!.added);
+    expect(first?.code?.removed).toBeGreaterThan(preview!.code!.removed);
     expect(
       await codeOf(client.send(row, "rewind.apply", { entryId: last.entryId, mode: "sideways" })),
     ).toBe("invalid");
-    await client.send(row, "rewind.apply", { entryId: last.entryId, mode: "conversation" });
+    const applied = await client.send(row, "rewind.apply", {
+      entryId: last.entryId,
+      mode: "conversation",
+    });
+    expect(applied.data).toBeNull();
+    expect(applied.message).toBe("Navigated to selected point");
     expect(forgeEvents(sb, pid, "rewind.apply").at(-1)?.args).toEqual({
       entryId: last.entryId,
       mode: "conversation",
@@ -152,7 +175,8 @@ describe("native forge screens against the fake pi", () => {
     expect(diff?.truncated).toBe(false);
     const kinds = new Set(diffLines(diff!.patch).lines.map((l) => l.kind));
     expect([...kinds]).toEqual(expect.arrayContaining(["file", "hunk", "add", "del", "context"]));
-    await client.send(row, "checkpoint.restore", { n: 2 });
+    const restored = await client.send(row, "checkpoint.restore", { n: 2 });
+    expect(restored.message).toMatch(/^Restored to checkpoint 2/);
     expect(forgeEvents(sb, pid, "checkpoint.restore").at(-1)?.args).toEqual({ n: 2 });
     expect(await codeOf(client.send(row, "checkpoint.restore", { n: 99 }))).toBe("stale");
   });
@@ -175,7 +199,13 @@ describe("native forge screens against the fake pi", () => {
       mode: "followUp",
     });
     await until(fileHas(agent.sessionFile!, "agent: noted"), "agent reply");
-    await client.send(row, "agent.resume", { key: agent.key });
+    // v1.2: tail is for shells only; a resume carries the user's text.
+    expect(await codeOf(client.send(row, "task.tail", { owner: "main", key: agent.key }))).toBe(
+      "invalid",
+    );
+    expect(await codeOf(client.send(row, "agent.resume", { key: agent.key }))).toBe("invalid");
+    await client.send(row, "agent.resume", { key: agent.key, text: "Now the timer" });
+    await until(fileHas(agent.sessionFile!, "agent: resumed, Now the timer"), "agent resumed");
     expect(forgeEvents(sb, pid, "agent.send").at(-1)?.args).toMatchObject({ mode: "followUp" });
   });
 
@@ -194,6 +224,14 @@ describe("native forge screens against the fake pi", () => {
   it("btw: an answer lands in the session's forge-btw entries; fork opens a side; clear empties it", async () => {
     const run = connectionRunner(sb.connection);
     await client.send(row, "btw.ask", { text: "Is a token bucket fair?" });
+    const pending = await state((x) => x.btw?.pending === true, "btw pending");
+    expect(pending.btw).toEqual({
+      open: true,
+      pending: true,
+      question: "Is a token bucket fair?",
+      error: null,
+    });
+    expect(await codeOf(client.send(row, "btw.ask", { text: "again" }))).toBe("refused");
     const history = await until(async () => {
       const h = await readBtwHistory(run, row.sessionFile!);
       return h.length > 0 ? h : undefined;
@@ -204,15 +242,32 @@ describe("native forge screens against the fake pi", () => {
     await client.send(row, "side.close", {});
     await client.send(row, "btw.clear", {});
     expect(await readBtwHistory(run, row.sessionFile!)).toEqual([]);
+    // A failed answer writes no entry: forge's state says why; Close closes the panel.
+    await client.send(row, "btw.ask", { text: "will this fail" });
+    const failed = await state((x) => Boolean(x.btw?.error), "btw error");
+    expect(failed.btw).toMatchObject({
+      open: true,
+      pending: false,
+      error: "Unknown provider: unknown",
+    });
+    await client.send(row, "btw.close", {});
+    await state((x) => x.btw === null, "btw closed");
+    expect(await codeOf(client.send(row, "btw.close", {}))).toBe("stale");
   });
 
   it("model: lists, groups, sets a model and a thinking level, toggles a pin", async () => {
-    const available = parseModels((await client.send(row, "models.list", {})).data);
+    const list = parseModelList((await client.send(row, "models.list", {})).data);
+    expect(list.current).toBe("fake/fake-1");
+    expect(list.thinking?.levels).toContain("high");
+    const available = list.available;
     const s0 = await client.readState(row);
     expect(modelGroups(available, s0?.pins).map((g) => g.key)).toEqual(["pinned", "recent", "all"]);
-    await client.send(row, "model.set", { ref: "anthropic/claude-sonnet-5" });
-    await client.send(row, "thinking.set", { level: "high" });
-    await client.send(row, "pin.toggle", { ref: "google/gemini-3-pro" });
+    const set = await client.send(row, "model.set", { ref: "anthropic/claude-sonnet-5" });
+    expect(set.data).toMatchObject({ ref: "anthropic/claude-sonnet-5" });
+    const level = parseThinking((await client.send(row, "thinking.set", { level: "high" })).data);
+    expect(level?.level).toBe("high");
+    const pinned = await client.send(row, "pin.toggle", { ref: "google/gemini-3-pro" });
+    expect(parsePinsResult(pinned.data)?.pinned).toContain("google/gemini-3-pro");
     const s = await state((x) => x.footer?.model?.name === "Sonnet 5", "model set");
     expect(s.footer?.model?.thinking).toBe("high");
     expect(s.pins?.pinned).toContain("google/gemini-3-pro");
@@ -222,20 +277,23 @@ describe("native forge screens against the fake pi", () => {
   });
 
   it("usage, cost, changelog and sync read; pause sets and cancels a wake-up", async () => {
-    expect(
-      parseUsage((await client.send(row, "usage.refresh", {})).data)[0].meters[0],
-    ).toMatchObject({
-      label: "5-hour",
-      left: 93,
+    const usage = parseUsage((await client.send(row, "usage.refresh", { force: true })).data);
+    expect(usage.map((a) => [a.name, a.plan])).toEqual([
+      ["Claude", "Max 20x"],
+      ["OpenRouter", "Free tier"],
+    ]);
+    expect(usage[0].meters[0]).toMatchObject({ label: "5-hour", ratio: 0.93 });
+    const cost = costSections((await client.send(row, "cost.read", {})).data);
+    expect(cost.map((c) => c.title)).toEqual([null, "Messages", "Tokens", "Cost"]);
+    const log = parseChangelog((await client.send(row, "changelog.read", {})).data);
+    expect(log.markdown).toContain("## 1.4.0");
+    expect(log.truncated).toBe(false);
+    expect(parseSyncStatus((await client.send(row, "sync.status", {})).data)).toMatchObject({
+      level: "info",
     });
-    const cost = costRows((await client.send(row, "cost.read", {})).data, null);
-    expect(cost.map((r) => r.label)).toContain("Total");
-    expect(changelogMarkdown((await client.send(row, "changelog.read", {})).data)).toContain(
-      "## 1.4.0",
-    );
-    expect(syncText((await client.send(row, "sync.status", {})).data)).toContain("up to date");
-    expect(syncText((await client.send(row, "sync.run", {})).data)).toContain("Reloaded");
-    await client.send(row, "wake.set", { in: 30, reason: "waiting for CI" });
+    expect(syncDone((await client.send(row, "sync.run", {})).data)).toBe(true);
+    // `in` is seconds (forge reads a number as seconds): 30 minutes.
+    await client.send(row, "wake.set", { in: 1800, reason: "waiting for CI" });
     const s = await state((x) => Boolean(x.wake), "wake set");
     expect(s.wake?.reason).toBe("waiting for CI");
     expect(s.wake!.due - Date.now()).toBeGreaterThan(29 * 60_000);
@@ -252,7 +310,8 @@ describe("native forge screens against the fake pi", () => {
       .catch((e: unknown) => e);
     expect(refused).toBeInstanceOf(RemoteError);
     const err = refused as RemoteError;
-    expect(exportNeedsOverwrite(err.detail, err.result?.data)).toBe(true);
+    expect(err.reason).toBe("exists");
+    expect(exportNeedsOverwrite(err.reason)).toBe(true);
     expect(
       exportedPath(
         (await client.send(row, "export.run", { path: "notes/a.md", overwrite: true })).data,
@@ -260,14 +319,16 @@ describe("native forge screens against the fake pi", () => {
     ).toBe(first);
   });
 
-  it("/mcp runs through command.run and its select is answered like any dialog", async () => {
-    await client.send(row, "command.run", { line: "/mcp" });
+  it("/mcp alone is terminal-only; /mcp reconnect's select is answered like any dialog", async () => {
+    const alone = await client.send(row, "command.run", { line: "/mcp" }).catch((e: unknown) => e);
+    expect((alone as RemoteError).reason).toBe("tui-only");
+    await client.send(row, "command.run", { line: "/mcp reconnect" });
     const s = await state((x) => Boolean(x.prompt), "mcp select");
-    expect(s.prompt).toMatchObject({ kind: "select", title: "MCP servers", answerable: true });
+    expect(s.prompt).toMatchObject({ kind: "select", title: "MCP server", answerable: true });
     await client.send(row, "prompt.respond", { id: s.prompt!.id, value: s.prompt!.options![0] });
-    expect(
-      sb.events(pid).some((e) => e.action === "prompt.respond" && e.value === "github · connected"),
-    ).toBe(true);
+    expect(sb.events(pid).some((e) => e.action === "prompt.respond" && e.value === "github")).toBe(
+      true,
+    );
     await state((x) => x.prompt === null, "mcp closed");
   });
 
@@ -304,7 +365,7 @@ describe("an older forge build (FAKE_PI_AREAS=core)", () => {
     const row = await rowFor(svc, (r) => r.pid === started.pid && r.state === "idle", "idle");
     const s = await until(async () => client.readState(row), "state");
     expect(s.footer).toBeTruthy();
-    for (const key of ["tasks", "checkpoints", "pins", "side", "wake"] as const)
+    for (const key of ["tasks", "checkpoints", "pins", "side", "wake", "btw"] as const)
       expect(s[key]).toBeUndefined();
     for (const action of [
       "rewind.preview",

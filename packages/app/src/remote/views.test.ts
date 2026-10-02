@@ -1,29 +1,40 @@
 import { describe, expect, it } from "vitest";
 import { btwEntriesScript, parseEntryLines } from "./session-file";
 import {
+  accountHeading,
+  accountNote,
   agoText,
   btwHistory,
-  changelogMarkdown,
-  checkpointChange,
+  changeText,
   checkpointsNewestFirst,
-  costRows,
+  checkpointTitle,
+  costSections,
   costText,
   diffLines,
   exportedPath,
   exportNeedsOverwrite,
   footerParts,
   footerRef,
+  leftWords,
+  meterDetail,
   modelGroups,
+  parseChangelog,
   parseCheckpointDiff,
-  parseModels,
+  parseModelList,
+  parsePinsResult,
   parseRewindPreview,
+  parseSyncStatus,
+  parseThinking,
   parseUsage,
+  rewindChoices,
   rewindLine,
   rewindPrompts,
   sessionName,
-  syncText,
+  syncDone,
   tailText,
   taskRows,
+  usageAt,
+  taskView,
   wakeArgs,
   wakeWhen,
   windowText,
@@ -39,32 +50,53 @@ const footer = (over: Partial<RemoteFooter> = {}): RemoteFooter => ({
   contextTokens: 24000,
   contextWindow: 200000,
   cost: 0.42,
+  compactAt: 83,
+  compactionPaused: false,
+  contextTone: "normal",
+  items: [],
   ...over,
 });
 
 describe("/rewind", () => {
-  it("words the counts as the CLI does", () => {
-    expect(rewindLine({ files: 4, added: 21, removed: 2, text: null })).toBe(
-      "4 files changed +21 -2",
-    );
-    expect(rewindLine({ files: 1, added: 3, removed: 0, text: null })).toBe("1 file changed +3");
-    expect(rewindLine({ files: 0, added: 0, removed: 0, text: null })).toBe("No code changes");
-    expect(rewindLine({ files: 0, added: 0, removed: 0, text: "! m.txt left alone" })).toBe(
-      "! m.txt left alone",
-    );
+  const v12 = {
+    entryId: "e9",
+    quote: "Update the README",
+    at: 1790000000000,
+    heading: "code",
+    row: "3 files changed +17 -4",
+    code: {
+      files: ["README.md", "a.ts", "b.ts"],
+      added: 4,
+      removed: 17,
+      counted: true,
+      sentence: "The code will be restored +4 -17 in README.md and 2 other files.",
+    },
+    modes: ["both", "conversation", "code"],
+    warnings: ["! m.txt left alone"],
+  };
+
+  it("reads rewind.preview as forge builds it (v1.2)", () => {
+    const preview = parseRewindPreview(v12);
+    expect(preview).toMatchObject({ entryId: "e9", heading: "code", modes: v12.modes });
+    expect(preview?.code?.sentence).toBe(v12.code.sentence);
+    expect(preview?.warnings).toEqual(["! m.txt left alone"]);
+    expect(rewindLine(preview!)).toBe("3 files changed +17 -4");
+    expect(rewindChoices(preview)).toEqual(["both", "conversation", "code", "cancel"]);
   });
 
-  it("reads preview data defensively", () => {
-    expect(parseRewindPreview({ files: 2, added: 5, removed: 1 })).toEqual({
-      files: 2,
-      added: 5,
-      removed: 1,
-      text: null,
+  it("offers only the conversation for an untracked prompt, and reads defensively", () => {
+    const conv = parseRewindPreview({
+      ...v12,
+      heading: "conversation",
+      row: null,
+      code: null,
+      modes: ["conversation"],
     });
-    expect(parseRewindPreview({ files: ["a", "b"] })?.files).toBe(2);
-    expect(parseRewindPreview({ text: "No code changes" })?.text).toBe("No code changes");
+    expect(rewindLine(conv!)).toBe("");
+    expect(rewindChoices(conv)).toEqual(["conversation", "cancel"]);
+    expect(rewindChoices(null)).toEqual(["conversation", "cancel"]);
     expect(parseRewindPreview(null)).toBeNull();
-    expect(parseRewindPreview({})).toBeNull();
+    expect(parseRewindPreview({ files: 2 })).toBeNull();
   });
 
   it("lists the branch's prompts oldest first, without pending echoes", () => {
@@ -116,7 +148,12 @@ describe("/diff and /restore", () => {
       removed: 0,
     });
     expect(checkpointsNewestFirst([cp(1), cp(3), cp(2)]).map((c) => c.n)).toEqual([3, 2, 1]);
-    expect(checkpointChange(cp(2))).toBe("2 files changed +1");
+    expect(changeText(2, 1, 0)).toBe("2 files changed +1");
+    expect(changeText(0, 0, 0)).toBe("No code changes");
+    expect(checkpointTitle({ ...cp(2), label: "Add a bucket · 2 files changed" }, "x")).toBe(
+      "2: Add a bucket · 2 files changed",
+    );
+    expect(checkpointTitle(cp(3), "Checkpoint")).toBe("3: Checkpoint · 3 files changed +1");
     expect(agoText(1000, 42_000)).toBe("41s ago");
     expect(agoText(0, 5 * 60_000)).toBe("5m ago");
     expect(agoText(0, 3 * 3600_000)).toBe("3h ago");
@@ -151,10 +188,18 @@ describe("/tasks", () => {
     expect(tailText({ text: "line\u001b[31m red\n" })).toBe("line red\n");
     expect(tailText(null)).toBe("");
   });
+
+  it("tails shells only; agents show their transcript, runs their detail", () => {
+    expect(taskView(task("a", "running"))).toBe("tail");
+    expect(taskView({ ...task("b", "done"), kind: "agent", sessionFile: "/s.jsonl" })).toBe(
+      "transcript",
+    );
+    expect(taskView({ ...task("c", "done"), kind: "workflow", logPath: "/x.log" })).toBe("detail");
+  });
 });
 
 describe("/model", () => {
-  const available = parseModels({
+  const list = parseModelList({
     available: [
       { ref: "anthropic/opus", name: "Opus 5.5" },
       { ref: "openai/gpt", name: "GPT 6" },
@@ -162,11 +207,21 @@ describe("/model", () => {
       { ref: "google/gem" },
       { name: "no ref" },
     ],
+    current: "openai/gpt",
+    thinking: { level: "high", levels: ["off", "low", "high"] },
   });
+  const available = list.available;
 
   it("parses unique refs, falling back to the ref for the name", () => {
     expect(available.map((m) => m.ref)).toEqual(["anthropic/opus", "openai/gpt", "google/gem"]);
     expect(available[2].name).toBe("google/gem");
+    expect(list.current).toBe("openai/gpt");
+    expect(list.thinking).toEqual({ level: "high", levels: ["off", "low", "high"] });
+    expect(parseModelList({ available: [], current: null, thinking: null }).thinking).toBeNull();
+    expect(parseThinking({ level: "low", levels: ["off", "low"] })?.level).toBe("low");
+    expect(
+      parsePinsResult({ pinned: true, pins: { pinned: ["a/b"], recent: ["c/d", 3] } }),
+    ).toEqual({ pinned: ["a/b"], recent: ["c/d"] });
   });
 
   it("groups pinned, then recent (never a pin), then all; drops empty groups", () => {
@@ -185,70 +240,173 @@ describe("/model", () => {
   it("knows the footer's model ref, never 'unknown'", () => {
     expect(footerRef(footer())).toBe("anthropic/claude-opus-5-5");
     expect(
-      footerRef(footer({ model: { provider: "", id: "unknown", name: "", thinking: "" } })),
+      footerRef(footer({ model: { provider: "", id: "unknown", name: "", thinking: null } })),
     ).toBeNull();
   });
 });
 
 describe("footer", () => {
-  it("shows exactly the status line's items forge publishes", () => {
-    expect(footerParts(footer())).toEqual(["Opus 5.5", "high", "ctx 12%/200k", "$0.420"]);
-    expect(footerParts(footer({ cost: null, contextWindow: null }))).toEqual([
+  const text = (f: RemoteFooter | null) => footerParts(f).map((p) => p.text);
+
+  it("shows exactly what the desktop status line shows", () => {
+    expect(text(footer())).toEqual(["Opus 5.5", "high", "ctx 12%/200k", "~$0.420"]);
+    expect(text(footer({ cost: null, model: { ...footer().model!, thinking: null } }))).toEqual([
       "Opus 5.5",
-      "high",
-      "ctx 12%",
+      "ctx 12%/200k",
     ]);
+    expect(text(footer({ model: null }))).toEqual(["ctx 12%/200k", "~$0.420"]);
+    expect(text(footer({ contextWindow: null }))).toEqual(["Opus 5.5", "high", "~$0.420"]);
+    expect(text(footer({ items: ["1 shell", "◷ wakes in 23m"] })).slice(-2)).toEqual([
+      "1 shell",
+      "◷ wakes in 23m",
+    ]);
+    expect(text(null)).toEqual([]);
+  });
+
+  it("adds the compaction hint from 3/4 of the way, with the line's colour", () => {
+    const near = footerParts(
+      footer({ contextPercent: 70, contextTokens: 140_000, contextTone: "warning" }),
+    );
+    expect(near[2]).toEqual({ text: "ctx 70%/200k · compacts at 83%", tone: "warning" });
+    expect(footerParts(footer({ contextTokens: 100_000 }))[2].text).toBe("ctx 12%/200k");
+    expect(footerParts(footer({ compactionPaused: true }))[2]).toEqual({
+      text: "ctx 12%/200k · compaction paused",
+      tone: "warning",
+    });
     expect(
-      footerParts(footer({ model: { provider: "x", id: "unknown", name: "", thinking: "high" } })),
-    ).toEqual(["ctx 12%/200k", "$0.420"]);
-    expect(footerParts(null)).toEqual([]);
+      footerParts(footer({ contextPercent: null, contextTokens: null, compactionPaused: true }))[2]
+        .text,
+    ).toBe("compaction paused");
+  });
+
+  it("words counts and amounts as the line does", () => {
     expect(windowText(1_000_000)).toBe("1.0M");
     expect(windowText(272_000)).toBe("272k");
-    expect(costText(1.234)).toBe("$1.23");
-    expect(costText(12.5)).toBe("$13");
+    expect(windowText(50_000)).toBe("50.0k");
+    expect(costText(0.0421)).toBe("$0.0421");
+    expect(costText(1.234)).toBe("$1.234");
+    expect(costText(12.5)).toBe("$12.50");
+    expect(costText(0)).toBe("$0");
   });
 });
 
 describe("/usage and /cost", () => {
-  it("reads accounts and meters, clamping percent left", () => {
+  const now = 1_790_000_000_000;
+
+  it("reads v1.2 accounts: plan, ratio bars, reset words; never who is signed in", () => {
     const accounts = parseUsage({
+      at: now,
       accounts: [
         {
-          title: "Claude · Max 20x",
+          id: "claude",
+          name: "Claude",
+          plan: "Max 20x",
           meters: [
-            { label: "5-hour", left: 93.7, detail: "Resets in 5h 30m" },
-            { label: "Weekly", left: 140 },
-            { label: "Credits", value: "$12.34 left" },
+            {
+              label: "5-hour",
+              ratio: 0.93,
+              value: "93% left",
+              detail: null,
+              resetsAt: now + 5.5 * 3600_000,
+            },
+            { label: "Weekly", ratio: 1.4, value: "100% left", detail: "Fable", resetsAt: null },
             { nope: 1 },
           ],
+          asOf: now,
+          fetchedAt: now,
+          problem: null,
+          empty: null,
         },
-        { note: "untitled" },
+        {
+          id: "openrouter",
+          name: "OpenRouter",
+          plan: null,
+          meters: [],
+          asOf: null,
+          fetchedAt: now,
+          problem: null,
+          empty: "No key",
+        },
+        { plan: "untitled" },
       ],
     });
-    expect(accounts).toHaveLength(1);
-    expect(accounts[0].meters.map((m) => m.left)).toEqual([93, 100, null]);
-    expect(accounts[0].meters[2].value).toBe("$12.34 left");
+    expect(accounts.map(accountHeading)).toEqual(["Claude · Max 20x", "OpenRouter"]);
+    expect(accounts[0].meters.map((m) => m.ratio)).toEqual([0.93, 1]);
+    expect(meterDetail(accounts[0].meters[0], now)).toBe("Resets in 5h 30m");
+    expect(meterDetail(accounts[0].meters[1], now)).toBe("Fable");
+    expect(accountNote(accounts[0], now)).toBeNull();
+    expect(accountNote(accounts[1], now)).toEqual({ text: "No key", error: false });
     expect(parseUsage(null)).toEqual([]);
+    expect(leftWords(45_000)).toBe("45s");
+    expect(leftWords(3 * 86_400_000 + 21 * 3600_000)).toBe("3d 21h");
   });
 
-  it("shows cost.read rows, its text, or the footer's cost", () => {
-    expect(costRows({ rows: [{ label: "Total", value: "$0.012" }] }, null)).toEqual([
-      { label: "Total", value: "$0.012" },
+  it("counts reset time from forge's snapshot clock, not the phone's", () => {
+    const data = {
+      at: now,
+      accounts: [
+        {
+          id: "claude",
+          name: "Claude",
+          meters: [
+            { label: "5-hour", ratio: 0.9, value: "90% left", resetsAt: now + 5.5 * 3600_000 },
+          ],
+        },
+      ],
+    };
+    expect(usageAt(data)).toBe(now);
+    expect(usageAt(null)).toBeNull();
+    // A phone clock 40 s behind the host would read "5h 31m"; the host's snapshot time reads 5h 30m.
+    const [a] = parseUsage(data);
+    expect(meterDetail(a.meters[0], usageAt(data)!)).toBe("Resets in 5h 30m");
+    expect(meterDetail(a.meters[0], now - 40_000)).toBe("Resets in 5h 31m");
+  });
+
+  it("says why an account has no numbers, as the panel does", () => {
+    const [a] = parseUsage({
+      accounts: [{ id: "codex", name: "ChatGPT", meters: [], problem: "timed out", asOf: null }],
+    });
+    expect(accountNote(a, now)).toEqual({ text: "Couldn't reach ChatGPT: timed out", error: true });
+  });
+
+  it("reads cost.read sections", () => {
+    expect(
+      costSections({
+        sections: [
+          { title: null, rows: [{ label: "File", value: "/s.jsonl", indent: false }] },
+          {
+            title: "Tokens",
+            rows: [
+              { label: "Input", value: "1,200", indent: true },
+              { label: "Total", value: null, indent: false },
+            ],
+          },
+          { title: null, rows: [] },
+        ],
+      }),
+    ).toEqual([
+      { title: null, rows: [{ label: "File", value: "/s.jsonl", indent: false }] },
+      {
+        title: "Tokens",
+        rows: [
+          { label: "Input", value: "1,200", indent: true },
+          { label: "Total", value: null, indent: false },
+        ],
+      },
     ]);
-    expect(costRows({ text: "Session Info\nMessages: 12\nTotal: $0.4" }, null)).toEqual([
-      { label: "Messages", value: "12" },
-      { label: "Total", value: "$0.4" },
-    ]);
-    expect(costRows(null, footer())).toEqual([{ label: "Total", value: "$0.420" }]);
-    expect(costRows(null, footer({ cost: null }))).toEqual([]);
+    expect(costSections(null)).toEqual([]);
   });
 });
 
 describe("/pause", () => {
   const now = new Date(2026, 9, 2, 14, 0, 0);
 
-  it("takes 1–1440 minutes", () => {
-    expect(wakeArgs("in", "30", " CI ", now)).toEqual({ ok: true, args: { in: 30, reason: "CI" } });
+  it("takes 1–1440 minutes and sends seconds (forge reads a number `in` as seconds)", () => {
+    expect(wakeArgs("in", "30", " CI ", now)).toEqual({
+      ok: true,
+      args: { in: 1800, reason: "CI" },
+    });
+    expect(wakeArgs("in", "", "", now)).toEqual({ ok: false, error: "minutes" });
     expect(wakeArgs("in", "0", "", now)).toEqual({ ok: false, error: "minutes" });
     expect(wakeArgs("in", "1441", "", now)).toEqual({ ok: false, error: "minutes" });
     expect(wakeArgs("in", "1.5", "", now)).toEqual({ ok: false, error: "minutes" });
@@ -279,16 +437,30 @@ describe("/pause", () => {
 });
 
 describe("smaller sheets", () => {
-  it("reads export, sync and changelog data", () => {
+  it("reads export, sync and changelog data (v1.2)", () => {
     expect(exportedPath({ path: "/w/notes.md" })).toBe("/w/notes.md");
     expect(exportedPath(null)).toBeNull();
-    expect(exportNeedsOverwrite(null, { exists: true })).toBe(true);
-    expect(exportNeedsOverwrite("Not exported: a.md exists · use another name", null)).toBe(true);
-    expect(exportNeedsOverwrite("Not exported: a.md is a symbolic link", null)).toBe(false);
-    expect(syncText({ text: "ok\nclean" })).toBe("ok\nclean");
-    expect(syncText({ lines: ["a", 1, "b"] })).toBe("a\nb");
-    expect(changelogMarkdown({ markdown: "# 1.0" })).toBe("# 1.0");
-    expect(changelogMarkdown({})).toBe("");
+    expect(exportNeedsOverwrite("exists")).toBe(true);
+    expect(exportNeedsOverwrite("gate")).toBe(false);
+    expect(exportNeedsOverwrite(undefined)).toBe(false);
+    expect(parseSyncStatus({ text: "setup: ok\nclean", level: "info" })).toEqual({
+      text: "setup: ok\nclean",
+      level: "info",
+    });
+    expect(parseSyncStatus({ text: "x", level: "error" })?.level).toBe("error");
+    expect(parseSyncStatus({})).toBeNull();
+    expect(syncDone({ done: true })).toBe(true);
+    expect(syncDone({ done: false })).toBe(false);
+    expect(parseChangelog({ markdown: "# 1.0", truncated: true })).toEqual({
+      markdown: "# 1.0",
+      truncated: true,
+    });
+    expect(parseChangelog({})).toEqual({ markdown: "", truncated: false });
+    const long = `## 2.0\n\n${"a".repeat(30)}\n## 1.0\n\n${"b".repeat(30)}\n`;
+    expect(parseChangelog({ markdown: long, truncated: false }, 50)).toEqual({
+      markdown: `## 2.0\n\n${"a".repeat(30)}`,
+      truncated: true,
+    });
     expect(sessionName("  Fix\nthe login  ")).toBe("Fix the login");
   });
 });

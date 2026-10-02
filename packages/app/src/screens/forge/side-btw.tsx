@@ -14,6 +14,7 @@ import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { Button } from "@/components/ui/button";
 import { connectionRunner } from "@/remote/client";
 import { readBtwHistory } from "@/remote/session-file";
+import type { RemoteBtw } from "@/remote/types";
 import type { BtwExchange } from "@/remote/views";
 import { useChatFeed } from "@/screens/session/use-chat-feed";
 import { connectionStore } from "@/stores/app";
@@ -137,6 +138,7 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
   const [confirmClear, setConfirmClear] = useState(false);
   const sessionFile = row.sessionFile;
   const seed = useRef(params.arg ?? "");
+  const { btw, known, remotePending, remoteError, panelOpen } = btwPanel(channel.state?.btw);
 
   const load = useCallback(async () => {
     const service = connectionStore.getState().getService(hostId);
@@ -163,6 +165,25 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
     },
     [history, kick, run],
   );
+  // forge says the answer is no longer coming (answered or failed): the local echo goes.
+  useEffect(() => {
+    if (known && !remotePending && (remoteError || !btw?.question)) setPending(null);
+  }, [btw?.question, known, remoteError, remotePending]);
+  const closePanel = useCallback(() => void run("btw.close", {}), [run]);
+  const right = useMemo(
+    () =>
+      panelOpen ? (
+        <Button
+          variant="ghost"
+          onPress={closePanel}
+          loading={action.busy === "btw.close"}
+          testID="btw-close"
+        >
+          {t("pi.forge.btw.close")}
+        </Button>
+      ) : null,
+    [action.busy, closePanel, panelOpen, t],
+  );
   useEffect(() => {
     if (!channel.loaded || history === null || !seed.current) return;
     const text = seed.current;
@@ -182,71 +203,39 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
   const askClear = useCallback(() => setConfirmClear(true), []);
   const cancelClear = useCallback(() => setConfirmClear(false), []);
 
-  // Position is the exchange's identity (the history is append-only between clears).
-  const keyed = useMemo(
-    () => (history ?? []).map((exchange, index) => ({ exchange, id: String(index) })),
-    [history],
-  );
-  let body;
-  if (!channel.available || action.unsupported) body = <UpdateForge />;
-  else if (history === null) body = <Loading />;
-  else
-    body = (
-      <ScrollView contentContainerStyle={forgeStyles.scroll} testID="btw-history">
-        {history.length === 0 && !pending ? (
-          <Text style={forgeStyles.intro}>{t("pi.forge.btw.empty")}</Text>
-        ) : null}
-        <TranscriptProviders>
-          {keyed.map(({ exchange: item, id }) => (
-            <View key={id} style={styles.exchange} testID={`btw-item-${id}`}>
-              <Text style={styles.question}>{item.question}</Text>
-              <MarkdownRenderer text={item.answer} />
-              {item.note ? <Text style={forgeStyles.muted}>{item.note}</Text> : null}
-            </View>
-          ))}
-        </TranscriptProviders>
-        {pending ? (
-          <View style={styles.exchange} testID="btw-pending">
-            <Text style={styles.question}>{pending.question}</Text>
-            <MutedSpinner size="small" />
-          </View>
-        ) : null}
-      </ScrollView>
+  const pendingQuestion = shownPending(remotePending, btw?.question ?? null, pending?.question);
+  const body =
+    !channel.available || action.unsupported ? (
+      <UpdateForge />
+    ) : (
+      <BtwBody
+        history={history}
+        pendingQuestion={pendingQuestion}
+        error={remoteError}
+        errorQuestion={btw?.question ?? null}
+      />
     );
   const hasAnswers = (history?.length ?? 0) > 0;
   return (
-    <ForgeFrame title={t("pi.forge.titles.btw")}>
+    <ForgeFrame title={t("pi.forge.titles.btw")} right={right}>
       {body}
       <ErrorLine message={action.error} onDismiss={action.clearError} />
       {channel.available && !action.unsupported ? (
         <>
           {hasAnswers ? (
-            <View style={styles.actions}>
-              <Button
-                variant="ghost"
-                onPress={askClear}
-                loading={action.busy === "btw.clear"}
-                style={styles.fill}
-                testID="btw-clear"
-              >
-                {t("pi.forge.btw.clear")}
-              </Button>
-              <Button
-                variant="secondary"
-                onPress={fork}
-                loading={action.busy === "btw.fork"}
-                style={styles.fill}
-                testID="btw-fork"
-              >
-                {t("pi.forge.btw.fork")}
-              </Button>
-            </View>
+            <BtwActions
+              busy={action.busy}
+              onClear={askClear}
+              onFork={fork}
+              clearLabel={t("pi.forge.btw.clear")}
+              forkLabel={t("pi.forge.btw.fork")}
+            />
           ) : null}
           <View style={styles.composer}>
             <Composer
               placeholder={t("pi.forge.btw.placeholder")}
               onSubmit={ask}
-              busy={action.busy === "btw.ask" || pending !== null}
+              busy={action.busy === "btw.ask" || pendingQuestion !== null}
               testID="btw-composer"
               sendTestID="btw-send"
             />
@@ -264,6 +253,115 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
         testID="btw-clear-sheet"
       />
     </ForgeFrame>
+  );
+}
+
+/** forge's /btw panel (v1.2); undefined on a build without it (then the app's own pending). */
+function btwPanel(btw: RemoteBtw | null | undefined) {
+  const known = btw !== undefined;
+  return {
+    btw: btw ?? null,
+    known,
+    remotePending: known && btw?.pending === true,
+    remoteError: known ? (btw?.error ?? null) : null,
+    panelOpen: known && btw?.open === true,
+  };
+}
+
+/** The question whose answer is still coming: forge's while it says so, else the app's own echo. */
+function shownPending(
+  remotePending: boolean,
+  remoteQuestion: string | null,
+  local: string | undefined,
+): string | null {
+  if (remotePending) return remoteQuestion ?? local ?? "";
+  return local ?? null;
+}
+
+/** The answers since the last clear, then the one still coming, or why the last one failed. */
+function BtwBody({
+  history,
+  pendingQuestion,
+  error,
+  errorQuestion,
+}: {
+  history: BtwExchange[] | null;
+  pendingQuestion: string | null;
+  error: string | null;
+  errorQuestion: string | null;
+}) {
+  const { t } = useTranslation();
+  // Position is the exchange's identity (the history is append-only between clears).
+  const keyed = useMemo(
+    () => (history ?? []).map((exchange, index) => ({ exchange, id: String(index) })),
+    [history],
+  );
+  if (history === null) return <Loading />;
+  const showError = Boolean(error) && !pendingQuestion;
+  return (
+    <ScrollView contentContainerStyle={forgeStyles.scroll} testID="btw-history">
+      {history.length === 0 && !pendingQuestion && !error ? (
+        <Text style={forgeStyles.intro}>{t("pi.forge.btw.empty")}</Text>
+      ) : null}
+      <TranscriptProviders>
+        {keyed.map(({ exchange: item, id }) => (
+          <View key={id} style={styles.exchange} testID={`btw-item-${id}`}>
+            <Text style={styles.question}>{item.question}</Text>
+            <MarkdownRenderer text={item.answer} />
+            {item.note ? <Text style={forgeStyles.muted}>{item.note}</Text> : null}
+          </View>
+        ))}
+      </TranscriptProviders>
+      {pendingQuestion ? (
+        <View style={styles.exchange} testID="btw-pending">
+          <Text style={styles.question}>{pendingQuestion}</Text>
+          <MutedSpinner size="small" />
+        </View>
+      ) : null}
+      {showError ? (
+        <View style={styles.exchange} testID="btw-error">
+          {errorQuestion ? <Text style={styles.question}>{errorQuestion}</Text> : null}
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      ) : null}
+    </ScrollView>
+  );
+}
+
+function BtwActions({
+  busy,
+  onClear,
+  onFork,
+  clearLabel,
+  forkLabel,
+}: {
+  busy: string | null;
+  onClear: () => void;
+  onFork: () => void;
+  clearLabel: string;
+  forkLabel: string;
+}) {
+  return (
+    <View style={styles.actions}>
+      <Button
+        variant="ghost"
+        onPress={onClear}
+        loading={busy === "btw.clear"}
+        style={styles.fill}
+        testID="btw-clear"
+      >
+        {clearLabel}
+      </Button>
+      <Button
+        variant="secondary"
+        onPress={onFork}
+        loading={busy === "btw.fork"}
+        style={styles.fill}
+        testID="btw-fork"
+      >
+        {forkLabel}
+      </Button>
+    </View>
   );
 }
 
@@ -292,6 +390,7 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
   },
   question: { color: theme.colors.foreground, fontSize: theme.fontSize.base, fontWeight: "600" },
+  errorText: { color: theme.colors.statusDanger, fontSize: theme.fontSize.sm },
   actions: {
     flexDirection: "row",
     gap: theme.spacing[3],

@@ -17,9 +17,12 @@ import {
 import {
   footerRef,
   modelGroups,
-  parseModels,
-  THINKING_LEVELS,
+  parseModelList,
+  parsePinsResult,
+  parseThinking,
   type ModelChoice,
+  type ModelList,
+  type ThinkingInfo,
 } from "@/remote/views";
 import { MIN_TOUCH } from "@/styles/touch";
 import type { ForgeViewProps } from "./forge-screen";
@@ -37,18 +40,26 @@ export function ModelView({ channel }: ForgeViewProps) {
   const { t } = useTranslation();
   const action = useForgeAction(channel);
   const run = action.run;
-  const [available, setAvailable] = useState<ModelChoice[] | null>(null);
+  const [list, setList] = useState<ModelList | null>(null);
+  /** The latest thinking answer (thinking.set / model.set), over models.list's. */
+  const [thinking, setThinking] = useState<ThinkingInfo | null | undefined>(undefined);
+  /** pin.toggle's answer, until the state catches up. */
+  const [pinsNow, setPinsNow] = useState<{ pinned: string[]; recent: string[] } | null>(null);
   const ready = channel.available && channel.loaded;
-  const pins = channel.state?.pins;
+  const statePins = channel.state?.pins;
+  const pins = pinsNow ?? statePins;
   const footer = channel.state?.footer;
-  const current = footerRef(footer);
-  const thinking = footer?.model?.thinking ?? "";
+  const current = list?.current ?? footerRef(footer);
+  const levels = thinking === undefined ? (list?.thinking ?? null) : thinking;
+  const available = list?.available ?? null;
+  // The state's pins win once they change after a toggle.
+  useEffect(() => setPinsNow(null), [statePins]);
 
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
     void run("models.list", {}).then((out) => {
-      if (!cancelled && out.ok) setAvailable(parseModels(out.data));
+      if (!cancelled && out.ok) setList(parseModelList(out.data));
       return undefined;
     });
     return () => {
@@ -69,8 +80,22 @@ export function ModelView({ channel }: ForgeViewProps) {
     },
     [run],
   );
-  const togglePin = useCallback((ref: string) => void run("pin.toggle", { ref }), [run]);
-  const setLevel = useCallback((level: string) => void run("thinking.set", { level }), [run]);
+  const togglePin = useCallback(
+    (ref: string) =>
+      void run("pin.toggle", { ref }).then((out) => {
+        if (out.ok) setPinsNow(parsePinsResult(out.data));
+        return undefined;
+      }),
+    [run],
+  );
+  const setLevel = useCallback(
+    (level: string) =>
+      void run("thinking.set", { level }).then((out) => {
+        if (out.ok) setThinking(parseThinking(out.data));
+        return undefined;
+      }),
+    [run],
+  );
 
   let body;
   if (!channel.available || action.unsupported || (channel.loaded && pins === undefined))
@@ -78,36 +103,79 @@ export function ModelView({ channel }: ForgeViewProps) {
   else if (!channel.loaded || available === null) body = action.error ? null : <Loading />;
   else
     body = (
-      <ScrollView testID="model-list" keyboardShouldPersistTaps="handled">
-        <SectionLabel>{t("pi.forge.model.thinking")}</SectionLabel>
-        <View style={styles.levels} accessibilityRole="radiogroup">
-          {THINKING_LEVELS.map((level) => (
-            <LevelChip key={level} level={level} selected={level === thinking} onPick={setLevel} />
-          ))}
-        </View>
-        {groups.map((group) => (
-          <View key={group.key}>
-            <SectionLabel>{t(`pi.forge.model.groups.${group.key}`)}</SectionLabel>
-            {group.models.map((model) => (
-              <ModelRow
-                key={`${group.key}-${model.ref}`}
-                model={model}
-                pinned={pinned.has(model.ref)}
-                selectable={known.has(model.ref)}
-                current={model.ref === current}
-                onPick={pick}
-                onTogglePin={togglePin}
-              />
-            ))}
-          </View>
-        ))}
-      </ScrollView>
+      <ModelList
+        levels={levels}
+        groups={groups}
+        pinned={pinned}
+        known={known}
+        current={current}
+        onLevel={setLevel}
+        onPick={pick}
+        onTogglePin={togglePin}
+      />
     );
   return (
     <ForgeFrame title={t("pi.forge.titles.model")}>
       {body}
       <ErrorLine message={action.error} onDismiss={action.clearError} />
     </ForgeFrame>
+  );
+}
+
+function ModelList({
+  levels,
+  groups,
+  pinned,
+  known,
+  current,
+  onLevel,
+  onPick,
+  onTogglePin,
+}: {
+  levels: ThinkingInfo | null;
+  groups: ReturnType<typeof modelGroups>;
+  pinned: ReadonlySet<string>;
+  known: ReadonlySet<string>;
+  current: string | null;
+  onLevel: (level: string) => void;
+  onPick: (ref: string) => void;
+  onTogglePin: (ref: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <ScrollView testID="model-list" keyboardShouldPersistTaps="handled">
+      {levels && levels.levels.length > 0 ? (
+        <>
+          <SectionLabel>{t("pi.forge.model.thinking")}</SectionLabel>
+          <View style={styles.levels} accessibilityRole="radiogroup">
+            {levels.levels.map((level) => (
+              <LevelChip
+                key={level}
+                level={level}
+                selected={level === levels.level}
+                onPick={onLevel}
+              />
+            ))}
+          </View>
+        </>
+      ) : null}
+      {groups.map((group) => (
+        <View key={group.key}>
+          <SectionLabel>{t(`pi.forge.model.groups.${group.key}`)}</SectionLabel>
+          {group.models.map((model) => (
+            <ModelRow
+              key={`${group.key}-${model.ref}`}
+              model={model}
+              pinned={pinned.has(model.ref)}
+              selectable={known.has(model.ref)}
+              current={model.ref === current}
+              onPick={onPick}
+              onTogglePin={onTogglePin}
+            />
+          ))}
+        </View>
+      ))}
+    </ScrollView>
   );
 }
 

@@ -27,4 +27,4 @@ export {
 } from "./client";
 export * from "./answers";
 export * from "./menu";
-export { hostSkewMs, remoteFor, setHostSkew } from "./for-service";
+export { hostNow, hostSkewMs, remoteFor, setHostSkew } from "./for-service";

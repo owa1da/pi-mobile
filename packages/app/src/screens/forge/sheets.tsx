@@ -12,19 +12,23 @@ import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import type { SessionRow } from "@/host/types";
+import { hostNow } from "@/remote/for-service";
+import { connectionStore } from "@/stores/app";
 import { isRemoteError } from "@/remote/errors";
 import type { NativeTool } from "@/remote/menu";
 import type { RemoteWake } from "@/remote/types";
 import {
   exportedPath,
   exportNeedsOverwrite,
+  parseSyncStatus,
   sessionName,
-  syncText,
+  syncDone,
   wakeArgs,
   wakeWhen,
 } from "@/remote/views";
 import type { RemoteChannel } from "@/screens/session/use-remote-channel";
 import { useForgeAction } from "./parts";
+import { sheetSnapPoints } from "./sheet-layout";
 
 export type SheetTool = Extract<
   NativeTool,
@@ -37,6 +41,7 @@ export interface OpenSheet {
 }
 
 interface SheetsProps {
+  hostId: string;
   row: SessionRow;
   channel: RemoteChannel;
   sheet: OpenSheet | null;
@@ -44,8 +49,6 @@ interface SheetsProps {
   /** /clear and /branch put a new session in this pi process: follow it. */
   onReplaced: (pid: number) => void;
 }
-
-const SNAP = ["55%"];
 
 /**
  * One modal, always mounted (remounting a bottom-sheet modal mid-transition is unreliable); each
@@ -76,6 +79,7 @@ interface SubmitContext {
   onReplaced: (pid: number) => void;
   setFieldError: (error: string | null) => void;
   setResult: (result: string | null) => void;
+  setResultError: (error: boolean) => void;
   setOverwrite: (on: boolean) => void;
 }
 
@@ -98,7 +102,7 @@ const SUBMIT: Record<SheetTool, (c: SubmitContext) => Promise<void>> = {
     }
     const err = out.error;
     if (!isRemoteError(err, "refused")) return;
-    if (exportNeedsOverwrite(err.detail, err.result?.data)) c.setOverwrite(true);
+    if (exportNeedsOverwrite(err.reason)) c.setOverwrite(true);
     else c.setFieldError(err.detail ?? c.t("pi.remote.errors.refused"));
   },
   async rename(c) {
@@ -122,7 +126,10 @@ const SUBMIT: Record<SheetTool, (c: SubmitContext) => Promise<void>> = {
   },
   async sync(c) {
     const out = await c.run("sync.run", {});
-    if (out.ok) c.setResult(syncText(out.data) || c.t("pi.forge.sync.done"));
+    if (!out.ok) return;
+    c.setResultError(false);
+    // done=false: setup still runs on the computer; pi reloads when it finishes.
+    c.setResult(c.t(syncDone(out.data) ? "pi.forge.sync.done" : "pi.forge.sync.running"));
   },
 };
 
@@ -133,6 +140,7 @@ function initialText(sheet: OpenSheet | null, row: SessionRow): string {
 }
 
 function SheetBody({
+  hostId,
   row,
   channel,
   sheet,
@@ -151,6 +159,7 @@ function SheetBody({
   const [mode, setMode] = useState<"in" | "at">("in");
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [resultError, setResultError] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
   const rowRef = useRef(row);
   rowRef.current = row;
@@ -164,6 +173,7 @@ function SheetBody({
     setMode(/[:.]/.test(opened?.arg ?? "") ? "at" : "in");
     setFieldError(null);
     setResult(null);
+    setResultError(false);
     setOverwrite(false);
     clearActionError();
   }, [clearActionError, openId]);
@@ -176,7 +186,10 @@ function SheetBody({
   useEffect(() => {
     if (!open || kind !== "sync" || !channel.available || !channel.loaded) return;
     void run("sync.status", {}).then((out) => {
-      if (out.ok) setResult(syncText(out.data) || t("pi.forge.sync.clean"));
+      if (!out.ok) return undefined;
+      const status = parseSyncStatus(out.data);
+      setResultError(status?.level === "error");
+      setResult(status?.text || t("pi.forge.sync.clean"));
       return undefined;
     });
   }, [channel.available, channel.loaded, kind, open, openId, run, t]);
@@ -194,6 +207,7 @@ function SheetBody({
     onReplaced,
     setFieldError,
     setResult,
+    setResultError,
     setOverwrite,
   };
   const submit = useCallback(() => {
@@ -238,7 +252,7 @@ function SheetBody({
       visible={sheet !== null}
       onClose={onClose}
       footer={footer}
-      snapPoints={SNAP}
+      snapPoints={sheetSnapPoints(kind)}
       testID={kind ? `${kind}-sheet` : undefined}
     >
       <View style={styles.body}>
@@ -255,7 +269,9 @@ function SheetBody({
             onMode={setMode}
             wake={wake ?? null}
             fieldError={fieldError}
+            now={hostNow(connectionStore.getState().getService(hostId))}
             result={result}
+            resultError={resultError}
             overwrite={overwrite}
           />
         )}
@@ -350,7 +366,10 @@ interface ContentProps {
   onMode: (mode: "in" | "at") => void;
   wake: RemoteWake | null;
   fieldError: string | null;
+  /** The host's clock (epoch ms). */
+  now: number;
   result: string | null;
+  resultError: boolean;
   overwrite: boolean;
 }
 
@@ -380,7 +399,11 @@ function SheetContent(props: ContentProps) {
       return props.result === null ? (
         <Text style={styles.text}>{t("pi.forge.sync.checking")}</Text>
       ) : (
-        <Text style={styles.mono} selectable testID="sync-text">
+        <Text
+          style={[styles.mono, props.resultError && styles.monoError]}
+          selectable
+          testID="sync-text"
+        >
           {props.result}
         </Text>
       );
@@ -389,7 +412,7 @@ function SheetContent(props: ContentProps) {
   }
 }
 
-function PauseBody({ text, onText, onReason, mode, onMode, wake, fieldError }: ContentProps) {
+function PauseBody({ text, onText, onReason, mode, onMode, wake, fieldError, now }: ContentProps) {
   const { t } = useTranslation();
   const options = useMemo(
     () => [
@@ -403,7 +426,7 @@ function PauseBody({ text, onText, onReason, mode, onMode, wake, fieldError }: C
     <>
       {wake ? (
         <Text style={styles.text} testID="pause-current">
-          {pendingWake(t, wake)}
+          {pendingWake(t, wake, now)}
         </Text>
       ) : null}
       <SegmentedControl options={options} value={mode} onValueChange={onMode} testID="pause-mode" />
@@ -464,8 +487,9 @@ function ExportBody({ text, onText, fieldError, result, overwrite }: ContentProp
   );
 }
 
-function pendingWake(t: TFunction, wake: RemoteWake): string {
-  const when = wakeWhen(wake.due, Date.now());
+/** `now`: the host's clock, so "in 23m" reads as the CLI says it. */
+function pendingWake(t: TFunction, wake: RemoteWake, now: number): string {
+  const when = wakeWhen(wake.due, now);
   const line = t("pi.forge.pause.pending", { at: when.at, left: when.left });
   return wake.reason ? `${line} · ${wake.reason}` : line;
 }
@@ -479,5 +503,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     lineHeight: 18,
   },
+  monoError: { color: theme.colors.statusDanger },
   error: { color: theme.colors.statusDanger, fontSize: theme.fontSize.sm },
 }));

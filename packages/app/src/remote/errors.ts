@@ -11,6 +11,7 @@ const REASONS: ReadonlySet<string> = new Set<RefusalReason>([
   "gate",
   "not-answerable",
   "not-main",
+  "exists",
 ]);
 
 /** A refused result's `data.reason` (contract v1.1); undefined for older forge builds. */

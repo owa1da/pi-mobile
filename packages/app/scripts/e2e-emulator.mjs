@@ -704,10 +704,15 @@ export const FORGE_DIR =
   process.env.PIM_E2E_FORGE ||
   path.join(os.homedir(), "projects", "pi-mobile-work", "forge-remote");
 
-/** Test-only rig extension: `/pimrig` opens a select then an input and logs what they returned. */
-const RIG = `
+/**
+ * Test-only rig extension: `/pimrig` opens a select then an input and logs what they returned;
+ * `/pimbg` starts a real background shell through forge's own job runner (guards' startJob, as
+ * bash_background does), so /tasks has a live shell offline, without a model turn.
+ */
+const rigSource = (forgeDir) => `
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { jobsDir, startJob } from "${forgeDir}/extensions/_lib/guards/bgjobs.ts";
 export default function (pi) {
   const log = (line) =>
     appendFileSync(join(process.env.PI_CODING_AGENT_DIR, "pimrig.log"), line + "\\n");
@@ -720,8 +725,54 @@ export default function (pi) {
       log("input=" + String(name));
     },
   });
+  pi.registerCommand("pimbg", {
+    description: "pi-mobile test rig: a background shell",
+    handler: async (_args, ctx) => {
+      const session = ctx.sessionManager.getSessionId();
+      const dir = jobsDir(join(process.env.PI_CODING_AGENT_DIR, "forge", "bg"), session);
+      const meta = startJob({
+        dir,
+        name: "ticker",
+        command: "i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done",
+        cwd: ctx.cwd,
+        shell: "/bin/sh",
+        shellArgs: ["-c"],
+        ownerSessionId: session,
+      });
+      log("bg=" + String(meta.name) + " log=" + String(meta.logPath));
+    },
+  });
 }
 `;
+
+/** The real pi's offline models (sandbox models.json): one that thinks, one that does not. */
+const REAL_MODELS = {
+  providers: {
+    fake: {
+      baseUrl: "http://127.0.0.1:9/v1",
+      api: "openai-completions",
+      apiKey: "none",
+      models: [
+        {
+          id: "tiny",
+          name: "Fake Tiny",
+          reasoning: true,
+          input: ["text"],
+          contextWindow: 100000,
+          maxTokens: 4096,
+        },
+        {
+          id: "plain",
+          name: "Fake Plain",
+          reasoning: false,
+          input: ["text"],
+          contextWindow: 50000,
+          maxTokens: 4096,
+        },
+      ],
+    },
+  },
+};
 
 /** The rig's log lines (real pi + forge worktree run). */
 export function rigLog() {
@@ -739,10 +790,21 @@ function startRealPi() {
   if (!fs.existsSync(path.join(FORGE_DIR, "extensions", "remote.ts")))
     throw new Error(`no remote-channel forge at ${FORGE_DIR} (set PIM_E2E_FORGE)`);
   const rig = path.join(ROOT, "pimrig.ts");
-  fs.writeFileSync(rig, RIG);
+  fs.writeFileSync(rig, rigSource(FORGE_DIR));
+  // An offline model (nothing listens on :9), so /model, /btw and the footer have something real
+  // to show; no auth is copied and PI_OFFLINE keeps pi from reaching the network.
+  fs.writeFileSync(path.join(AGENT, "models.json"), JSON.stringify(REAL_MODELS, null, 2));
+  // Two MCP servers that cannot start: `/mcp reconnect` then asks which one (pi's select).
+  fs.writeFileSync(
+    path.join(AGENT, "mcp.json"),
+    JSON.stringify({ mcpServers: { github: { command: "false" }, linear: { command: "false" } } }),
+  );
   const settings = {
     packages: [FORGE_DIR],
     extensions: [rig],
+    defaultProvider: "fake",
+    defaultModel: "tiny",
+    defaultThinkingLevel: "medium",
     theme: "claude",
     tuiMode: "fullscreen",
     quietStartup: true,
@@ -753,6 +815,7 @@ function startRealPi() {
   fs.writeFileSync(path.join(AGENT, "settings.json"), JSON.stringify(settings, null, 2));
   return newWindow("pi-real", path.join(WORK, "api"), [realPi], {
     PATH: `${realNodeDir}:${BIN}:/usr/bin:/bin`,
+    PI_OFFLINE: "1",
   });
 }
 

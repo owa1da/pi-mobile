@@ -204,6 +204,15 @@ describe("bottom sheet visibility tracker", () => {
     expect(context.sheet.events).toEqual([{ type: "present" }, { type: "dismiss" }]);
   });
 
+  it("claims Back while the sheet is still rising and closes it, never the screen under it", () => {
+    const context = setup();
+    context.tracker.attachController(context.sheet);
+    context.tracker.syncDesired({ visible: true });
+
+    expect(context.backPress.press()).toBe(true);
+    expect(context.sheet.events).toEqual([{ type: "present" }, { type: "dismiss" }]);
+  });
+
   it("leaves Back to the navigator before the sheet is on screen and after it closes", () => {
     const context = setup();
     context.tracker.attachController(context.sheet);

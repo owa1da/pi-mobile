@@ -3,7 +3,7 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v10), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v11), --keep (leave the sandbox up),
 //          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
 //          --theme dark|light (default dark: the run's
 //          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import * as A from "./e2e-adb.mjs";
 import * as E from "./e2e-emulator.mjs";
 import { forgeSteps } from "./e2e-forge-steps.mjs";
+import { realForgeSteps } from "./e2e-real-forge-steps.mjs";
 
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = "com.owa1da.pimobile";
@@ -866,6 +867,7 @@ function steps(ctx) {
         await toDashboard();
       },
     ],
+    ...realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil }),
     [
       "Send a prompt from Chat to an idle session (bracketed paste + Enter)",
       async () => {
@@ -1441,7 +1443,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v10"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v11"),
   );
   const apk = option(
     args,

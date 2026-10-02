@@ -43,6 +43,11 @@ interface ComposerProps {
   onPickNative?: (command: RemoteCommand) => boolean;
   /** Text put into the field each time a new object arrives (a rewound prompt), then left to the user. */
   prefill?: { text: string };
+  /**
+   * Called once the prefill is in the field: the owner drops it, so a later remount of the composer
+   * (pi's dialog replaced it, then closed) never puts the same text back.
+   */
+  onPrefillApplied?: () => void;
 }
 
 export function Composer({
@@ -58,6 +63,7 @@ export function Composer({
   commands,
   onPickNative,
   prefill,
+  onPrefillApplied,
 }: ComposerProps) {
   const { t } = useTranslation();
   const inputRef = useRef<EditingTextInputHandle | null>(null);
@@ -79,7 +85,8 @@ export function Composer({
     const value = prefill.text;
     inputRef.current?.replaceText(value, { start: value.length, end: value.length });
     setText(value);
-  }, [prefill]);
+    onPrefillApplied?.();
+  }, [onPrefillApplied, prefill]);
 
   const submit = useCallback(async () => {
     const value = text.trim();

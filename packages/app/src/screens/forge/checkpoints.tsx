@@ -8,11 +8,13 @@ import { FlatList, ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ConfirmSheet } from "@/components/pi/confirm-sheet";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/contexts/toast-context";
 import type { RemoteCheckpoint } from "@/remote/types";
 import {
   agoText,
-  checkpointChange,
+  changeText,
   checkpointsNewestFirst,
+  checkpointTitle,
   diffLines,
   parseCheckpointDiff,
   type CheckpointDiff,
@@ -45,8 +47,8 @@ export function CheckpointsView({ hostId, row, channel }: ForgeViewProps) {
   const renderCheckpoint = useCallback(
     ({ item }: { item: RemoteCheckpoint }) => (
       <ListRow
-        title={`${item.n}: ${item.label || t("pi.forge.checkpoints.untitled")}`}
-        subtitle={`${checkpointChange(item)} · ${agoText(item.at, Date.now())}`}
+        title={checkpointTitle(item, t("pi.forge.checkpoints.untitled"))}
+        subtitle={agoText(item.at, Date.now())}
         pressKey={String(item.n)}
         onPressKey={openDiff}
         testID={`checkpoint-row-${item.n}`}
@@ -79,6 +81,7 @@ export function DiffView({ hostId, row, channel, params }: ForgeViewProps) {
   const run = action.run;
   const [diff, setDiff] = useState<CheckpointDiff | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const toast = useToast();
   const ready = channel.available && channel.loaded;
 
   useEffect(() => {
@@ -97,8 +100,11 @@ export function DiffView({ hostId, row, channel, params }: ForgeViewProps) {
   const restore = useCallback(async () => {
     setConfirm(false);
     const out = await run("checkpoint.restore", { n });
-    if (out.ok) backToSession(hostId, row.sessionId);
-  }, [hostId, n, row.sessionId, run]);
+    if (!out.ok) return;
+    // forge reports what moved ("Restored 2 files… /restore N undoes this."): say it once.
+    if (out.message) toast.show(out.message);
+    backToSession(hostId, row.sessionId);
+  }, [hostId, n, row.sessionId, run, toast]);
   const close = useCallback(() => setConfirm(false), []);
   const ask = useCallback(() => setConfirm(true), []);
 
@@ -111,7 +117,7 @@ export function DiffView({ hostId, row, channel, params }: ForgeViewProps) {
     <ForgeFrame title={t("pi.forge.titles.diff", { n: String(n) })}>
       {checkpoint ? (
         <Text style={forgeStyles.intro} numberOfLines={2}>
-          {`${checkpoint.label || t("pi.forge.checkpoints.untitled")} · ${checkpointChange(checkpoint)}`}
+          {checkpoint.label || changeText(checkpoint.files, checkpoint.added, checkpoint.removed)}
         </Text>
       ) : null}
       <View style={styles.fill}>{body}</View>

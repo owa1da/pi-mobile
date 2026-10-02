@@ -48,16 +48,40 @@ export interface AskQuestion {
 export interface RemoteFooterModel {
   provider: string;
   id: string;
+  /** The status line's short name ("Fake Tiny"). */
   name: string;
-  thinking: string;
+  /** The effort the line shows; null for a model that does not think (the line hides it). */
+  thinking: string | null;
 }
 
+export type ContextTone = "normal" | "warning" | "error";
+
+/** The desktop status line's facts (contract v1.2). */
 export interface RemoteFooter {
+  /** null when no model is set (never pi's "unknown" stand-in). */
   model: RemoteFooterModel | null;
   contextPercent: number | null;
   contextTokens: number | null;
   contextWindow: number | null;
+  /** USD; null where the line shows no amount. */
   cost: number | null;
+  /** Where pi compacts next, in percent of the window; null when unknown or off. */
+  compactAt: number | null;
+  compactionPaused: boolean;
+  /** The context field's colour on the desktop. */
+  contextTone: ContextTone;
+  /** The line's items after the facts, as it says them: "1 shell", "◷ wakes in 23m". */
+  items: string[];
+}
+
+/** The /btw panel on the desktop (contract v1.2). */
+export interface RemoteBtw {
+  open: boolean;
+  /** An answer is still coming. */
+  pending: boolean;
+  question: string | null;
+  /** Why the last answer failed (it wrote no entry). */
+  error: string | null;
 }
 
 export interface RemoteWake {
@@ -90,7 +114,8 @@ export interface RemoteTask {
 
 export interface RemoteCheckpoint {
   n: number;
-  entryId: string;
+  /** The branch prompt it anchors; null when no prompt precedes it. */
+  entryId: string | null;
   label: string;
   at: number;
   files: number;
@@ -129,6 +154,7 @@ export interface RemoteState {
   checkpoints?: RemoteCheckpoint[];
   commands?: RemoteCommand[];
   pins?: RemotePins;
+  btw?: RemoteBtw | null;
 }
 
 // ---------- actions ----------
@@ -153,12 +179,13 @@ export type RemoteAction =
   | "btw.ask"
   | "btw.fork"
   | "btw.clear"
+  | "btw.close"
   | "model.set"
   | "thinking.set"
   | "pin.toggle"
   | "models.list"
   | "usage.refresh"
-  /** Not in the v1 list: forge's /cost rows when a build has it (else the footer's cost). */
+  /** v1.2: the rows /cost shows. */
   | "cost.read"
   | "wake.set"
   | "wake.cancel"
@@ -221,7 +248,9 @@ export type RefusalReason =
   | "skill"
   | "gate"
   | "not-answerable"
-  | "not-main";
+  | "not-main"
+  /** v1.2: the export target exists; resend with `overwrite: true`. */
+  | "exists";
 
 export interface RemoteResult {
   v: number;

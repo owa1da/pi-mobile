@@ -231,7 +231,8 @@ export const en = {
       rewind: {
         intro: "Restore the code and/or conversation to the point before…",
         empty: "No prompts to rewind to yet.",
-        confirmIntro: "Restore to the point before this prompt:",
+        confirmIntro: "Restore the code and/or conversation to the point before this prompt:",
+        confirmIntroConversation: "Restore the conversation to the point before this prompt:",
         choice: {
           both: "Restore code and conversation",
           conversation: "Restore conversation",
@@ -270,6 +271,7 @@ export const en = {
         fork: "Fork into side",
         clearTitle: "Clear earlier history?",
         clearBody: "Earlier questions and answers leave this list.",
+        close: "Close",
       },
       tasks: {
         empty: "No background tasks.",
@@ -279,6 +281,7 @@ export const en = {
         noOutput: "No output yet.",
         steer: "Steer the agent…",
         followUp: "Follow up…",
+        resumeWith: "Message to resume the agent…",
       },
       model: {
         thinking: "Thinking",
@@ -292,7 +295,10 @@ export const en = {
         left: "{{percent}}% left",
         refresh: "Refresh",
       },
-      changelog: { empty: "Nothing new." },
+      changelog: {
+        empty: "Nothing new.",
+        truncated: "Older entries are on your computer: /changelog there shows them all.",
+      },
       pause: {
         submit: "Pause",
         cancelWake: "Cancel wake-up",
@@ -321,7 +327,13 @@ export const en = {
       },
       branch: { submit: "Branch", label: "Name", placeholder: "Optional" },
       clear: { submit: "Clear", body: "pi starts a new session. This one stays in your sessions." },
-      sync: { submit: "Sync", clean: "Up to date", done: "Synced", checking: "Checking…" },
+      sync: {
+        submit: "Sync",
+        clean: "Up to date",
+        done: "Synced",
+        running: "Syncing on your computer. pi reloads when it is done.",
+        checking: "Checking…",
+      },
     },
   },
   common: {

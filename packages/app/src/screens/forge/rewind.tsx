@@ -7,12 +7,14 @@ import { FlatList, ScrollView, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ConfirmSheet } from "@/components/pi/confirm-sheet";
 import { isRemoteError } from "@/remote/errors";
+import { useToast } from "@/contexts/toast-context";
 import {
   parseRewindPreview,
-  REWIND_CHOICES,
+  rewindChoices,
   rewindLine,
   rewindPrompts,
   type RewindMode,
+  type RewindPreview,
   type RewindPrompt,
 } from "@/remote/views";
 import { useChatFeed } from "@/screens/session/use-chat-feed";
@@ -39,6 +41,8 @@ export function RewindView({ hostId, row, channel, active }: ForgeViewProps) {
   const [picked, setPicked] = useState<RewindPrompt | null>(null);
   const action = useForgeAction(channel);
   const [mode, setMode] = useState<RewindMode | null>(null);
+  const toast = useToast();
+  const preview = picked ? previews.byId[picked.entryId] : undefined;
 
   const apply = useCallback(async () => {
     if (!picked || !mode) return;
@@ -46,8 +50,10 @@ export function RewindView({ hostId, row, channel, active }: ForgeViewProps) {
     const out = await action.run("rewind.apply", { entryId: picked.entryId, mode });
     if (!out.ok) return;
     if (mode !== "code") handBack(row.sessionId, picked.text);
+    // forge's report line ("Code restored: … /restore N undoes this."), as the TUI prints it.
+    if (out.message) toast.show(out.message);
     backToSession(hostId, row.sessionId);
-  }, [action, hostId, mode, picked, row.sessionId]);
+  }, [action, hostId, mode, picked, row.sessionId, toast]);
   const cancelSheet = useCallback(() => setMode(null), []);
   const pickChoice = useCallback((choice: string) => {
     if (choice === "cancel") setPicked(null);
@@ -57,18 +63,18 @@ export function RewindView({ hostId, row, channel, active }: ForgeViewProps) {
     (entryId: string) => setPicked(prompts.find((p) => p.entryId === entryId) ?? null),
     [prompts],
   );
-  const lines = previews.lines;
+  const byId = previews.byId;
   const renderPrompt = useCallback(
     ({ item }: { item: RewindPrompt }) => (
       <ListRow
         title={item.text}
-        subtitle={lines[item.entryId] ?? "…"}
+        subtitle={byId[item.entryId] ? rewindLine(byId[item.entryId]) || null : "…"}
         pressKey={item.entryId}
         onPressKey={pickPrompt}
         testID={`rewind-row-${item.entryId}`}
       />
     ),
-    [lines, pickPrompt],
+    [byId, pickPrompt],
   );
   const listHeader = useMemo(
     () => <Text style={forgeStyles.intro}>{t("pi.forge.rewind.intro")}</Text>,
@@ -82,24 +88,13 @@ export function RewindView({ hostId, row, channel, active }: ForgeViewProps) {
   else if (!channel.loaded || feed.loading) body = <Loading />;
   else if (picked)
     body = (
-      <ScrollView contentContainerStyle={forgeStyles.scroll}>
-        <Text style={forgeStyles.intro}>{t("pi.forge.rewind.confirmIntro")}</Text>
-        <View style={styles.quote}>
-          <Text style={styles.quoteText} numberOfLines={6} testID="rewind-quote">
-            {picked.text}
-          </Text>
-        </View>
-        {REWIND_CHOICES.map((choice) => (
-          <ListRow
-            key={choice}
-            title={t(`pi.forge.rewind.choice.${choice}`)}
-            pressKey={choice}
-            onPressKey={pickChoice}
-            testID={`rewind-choice-${choice}`}
-          />
-        ))}
-        <ErrorLine message={action.error} onDismiss={action.clearError} />
-      </ScrollView>
+      <RewindConfirm
+        picked={picked}
+        preview={preview}
+        onChoice={pickChoice}
+        error={action.error}
+        onDismissError={action.clearError}
+      />
     );
   else if (prompts.length === 0)
     body = <Text style={forgeStyles.intro}>{t("pi.forge.rewind.empty")}</Text>;
@@ -131,13 +126,64 @@ export function RewindView({ hostId, row, channel, active }: ForgeViewProps) {
   );
 }
 
+/** The confirm step for one prompt: what goes back (forge's words), then forge's choices. */
+function RewindConfirm({
+  picked,
+  preview,
+  onChoice,
+  error,
+  onDismissError,
+}: {
+  picked: RewindPrompt;
+  preview: RewindPreview | undefined;
+  onChoice: (choice: string) => void;
+  error: string | null;
+  onDismissError: () => void;
+}) {
+  const { t } = useTranslation();
+  const intro =
+    preview?.heading === "code"
+      ? "pi.forge.rewind.confirmIntro"
+      : "pi.forge.rewind.confirmIntroConversation";
+  return (
+    <ScrollView contentContainerStyle={forgeStyles.scroll}>
+      <Text style={forgeStyles.intro}>{t(intro)}</Text>
+      <View style={styles.quote}>
+        <Text style={styles.quoteText} numberOfLines={6} testID="rewind-quote">
+          {preview?.quote || picked.text}
+        </Text>
+      </View>
+      {preview?.code?.sentence ? (
+        <Text style={forgeStyles.intro} testID="rewind-sentence">
+          {preview.code.sentence}
+        </Text>
+      ) : null}
+      {(preview?.warnings ?? []).map((warning) => (
+        <Text key={warning} style={styles.warning} testID="rewind-warning">
+          {warning}
+        </Text>
+      ))}
+      {rewindChoices(preview ?? null).map((choice) => (
+        <ListRow
+          key={choice}
+          title={t(`pi.forge.rewind.choice.${choice}`)}
+          pressKey={choice}
+          onPressKey={onChoice}
+          testID={`rewind-choice-${choice}`}
+        />
+      ))}
+      <ErrorLine message={error} onDismiss={onDismissError} />
+    </ScrollView>
+  );
+}
+
 /** rewind.preview for each prompt, one at a time (each is an inbox round trip), kept per entry. */
 function usePreviews(
   channel: ForgeViewProps["channel"],
   prompts: readonly RewindPrompt[],
   enabled: boolean,
 ) {
-  const [lines, setLines] = useState<Record<string, string>>({});
+  const [byId, setById] = useState<Record<string, RewindPreview>>({});
   const [unsupported, setUnsupported] = useState(false);
   const asked = useRef(new Set<string>());
   const send = channel.send;
@@ -156,8 +202,7 @@ function usePreviews(
         try {
           const result = await send("rewind.preview", { entryId });
           const preview = parseRewindPreview(result.data);
-          if (preview && !cancelled)
-            setLines((prev) => ({ ...prev, [entryId]: rewindLine(preview) }));
+          if (preview && !cancelled) setById((prev) => ({ ...prev, [entryId]: preview }));
         } catch (error) {
           if (isRemoteError(error, "unknown-action")) {
             if (!cancelled) setUnsupported(true);
@@ -171,7 +216,7 @@ function usePreviews(
       cancelled = true;
     };
   }, [enabled, ids, send]);
-  return { lines, unsupported };
+  return { byId, unsupported };
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -183,4 +228,10 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftColor: theme.colors.border,
   },
   quoteText: { color: theme.colors.foreground, fontSize: theme.fontSize.base, lineHeight: 21 },
+  warning: {
+    paddingHorizontal: theme.spacing[4],
+    paddingBottom: theme.spacing[2],
+    color: theme.colors.statusWarning,
+    fontSize: theme.fontSize.sm,
+  },
 }));

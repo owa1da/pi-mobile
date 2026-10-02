@@ -10,7 +10,7 @@ import { ChatView } from "@/components/pi/chat-view";
 import { Composer } from "@/components/pi/composer";
 import { Button } from "@/components/ui/button";
 import type { RemoteTask } from "@/remote/types";
-import { findTask, tailText, taskRows } from "@/remote/views";
+import { findTask, tailText, taskRows, taskRunning, taskView } from "@/remote/views";
 import { useChatFeed } from "@/screens/session/use-chat-feed";
 import { usePoller } from "@/stores/use-polling";
 import type { ForgeViewProps } from "./forge-screen";
@@ -27,8 +27,13 @@ import {
 } from "./parts";
 
 const keyOf = (task: RemoteTask) => `${task.owner}\n${task.key}`;
-const isRunning = (task: RemoteTask) =>
-  /^(running|working|waiting|queued|starting)/i.test(task.status);
+const isRunning = taskRunning;
+
+/** Steer while the agent works; a finished one that can go on resumes with the message. */
+function composerPlaceholder(working: boolean, resumes: boolean): string {
+  if (working) return "pi.forge.tasks.steer";
+  return resumes ? "pi.forge.tasks.resumeWith" : "pi.forge.tasks.followUp";
+}
 
 export function TasksView({ hostId, row, channel }: ForgeViewProps) {
   const { t } = useTranslation();
@@ -71,7 +76,10 @@ export function TaskView({ hostId, channel, active, params }: ForgeViewProps) {
   const task = findTask(channel.state?.tasks, params.owner ?? "", params.key ?? "");
   const action = useForgeAction(channel);
   const run = action.run;
-  const showFooter = Boolean(task && (task.canStop || task.canResume) && !action.unsupported);
+  // An agent resumes with a message (its composer); a run resumes with a button; both stop here.
+  const showFooter = Boolean(
+    task && !action.unsupported && (task.canStop || (task.canResume && task.kind !== "agent")),
+  );
   return (
     <ForgeFrame title={task?.name ?? t("pi.forge.titles.task")}>
       {task ? (
@@ -117,10 +125,10 @@ function TaskBody({
   if (unavailable) return <UpdateForge />;
   if (!ready) return <Loading />;
   if (!task) return <Text style={forgeStyles.intro}>{t("pi.forge.tasks.gone")}</Text>;
-  if (task.kind === "agent" && task.sessionFile)
+  const view = taskView(task);
+  if (view === "transcript")
     return <AgentTranscript hostId={hostId} task={task} active={active} run={run} busy={busy} />;
-  if (task.kind === "shell" || task.logPath)
-    return <TailView task={task} active={active} run={run} />;
+  if (view === "tail") return <TailView task={task} active={active} run={run} />;
   return <Text style={forgeStyles.intro}>{task.detail ?? ""}</Text>;
 }
 
@@ -138,8 +146,7 @@ function TaskFooter({
     void run("task.stop", { owner: task.owner, key: task.key });
   }, [run, task.key, task.owner]);
   const resume = useCallback(() => {
-    if (task.kind === "agent") void run("agent.resume", { key: task.key });
-    else void run("task.resume", { runId: runIdOf(task) });
+    void run("task.resume", { runId: runIdOf(task) });
   }, [run, task]);
   return (
     <View style={forgeStyles.footer}>
@@ -157,7 +164,7 @@ function TaskFooter({
         <Button
           variant="default"
           onPress={resume}
-          loading={busy === "task.resume" || busy === "agent.resume"}
+          loading={busy === "task.resume"}
           style={styles.fill}
           testID="task-resume"
         >
@@ -224,6 +231,8 @@ function AgentTranscript({
 }) {
   const { t } = useTranslation();
   const working = isRunning(task);
+  // A finished agent that can go on: the message resumes it (agent.resume {key, text}).
+  const resumes = !working && task.canResume;
   const source = useMemo(
     () => ({
       sessionFile: task.sessionFile ?? undefined,
@@ -235,11 +244,13 @@ function AgentTranscript({
   const key = task.key;
   const send = useCallback(
     async (text: string) => {
-      const out = await run("agent.send", { key, text, mode: working ? "steer" : "followUp" });
+      const out = resumes
+        ? await run("agent.resume", { key, text })
+        : await run("agent.send", { key, text, mode: working ? "steer" : "followUp" });
       if (out.ok) feed.boost();
       return out.ok;
     },
-    [feed, key, run, working],
+    [feed, key, resumes, run, working],
   );
   return (
     <View style={styles.fill}>
@@ -247,7 +258,7 @@ function AgentTranscript({
         <ChatView rows={feed.rows} truncated={feed.truncated} loading={feed.loading} />
       </TranscriptProviders>
       <Composer
-        placeholder={t(working ? "pi.forge.tasks.steer" : "pi.forge.tasks.followUp")}
+        placeholder={t(composerPlaceholder(working, resumes))}
         onSubmit={send}
         busy={busy}
         testID="agent-composer"

@@ -1,15 +1,18 @@
-// Pure view models for the native forge screens: they read an action's `data` defensively (a
-// forge build may send more or less than the contract names), group rows as forge's TUI does,
-// and format the few numbers the CLI shows. No React, no I/O.
+// Pure view models for the native forge screens: they read an action's `data` defensively (the
+// shapes of contract v1.2, as forge builds them), group rows as forge's TUI does, and word the few
+// numbers the CLI shows the way the CLI words them. No React, no I/O.
 
 import { cleanLine } from "@/host/procs";
 import { multiline } from "./parse";
-import type { RemoteCheckpoint, RemoteFooter, RemoteTask } from "./types";
+import type { ContextTone, RemoteCheckpoint, RemoteFooter, RemoteTask } from "./types";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown, max = 500): string => (typeof v === "string" ? cleanLine(v, max) : "");
+const strOrNull = (v: unknown, max = 500): string | null => str(v, max) || null;
+/** The CLI's separator between the parts of one line. */
+export const SEP = " · ";
 
 // ---------- /rewind ----------
 
@@ -23,40 +26,72 @@ export const REWIND_CHOICES: readonly (RewindMode | "cancel")[] = [
   "cancel",
 ];
 
+/** `rewind.preview` data (v1.2): the confirm step /rewind shows for one prompt. */
 export interface RewindPreview {
-  files: number;
-  added: number;
-  removed: number;
-  /** forge's own line when it sent one ("4 files changed +21 -2", "No code changes", "! …"). */
-  text: string | null;
+  entryId: string;
+  quote: string;
+  at: number | null;
+  /** "code": the panel's heading names the code too; "conversation": only the conversation. */
+  heading: "code" | "conversation";
+  /** The list row's change words ("3 files changed +17 -4", "No code changes", "! a.txt left alone"). */
+  row: string | null;
+  code: {
+    files: string[];
+    added: number;
+    removed: number;
+    counted: boolean;
+    /** "The code will be restored +4 -1 in a.ts and b.ts." */
+    sentence: string;
+  } | null;
+  /** The choices forge offers, in the CLI's order. */
+  modes: RewindMode[];
+  warnings: string[];
 }
 
-/** `rewind.preview` data → counts (or forge's own line). */
+const MODES: readonly RewindMode[] = ["both", "conversation", "code"];
+
+/** Without a modes list: every choice when forge counted code, else the conversation alone. */
+function defaultModes(hasCode: boolean): RewindMode[] {
+  return hasCode ? [...MODES] : ["conversation"];
+}
+
 export function parseRewindPreview(data: unknown): RewindPreview | null {
-  if (!isObj(data)) return null;
-  const text = str(data.text ?? data.summary ?? data.line) || null;
-  const files = num(data.files) ?? (Array.isArray(data.files) ? data.files.length : null);
-  if (files === null && !text) return null;
+  if (!isObj(data) || typeof data.entryId !== "string" || !data.entryId) return null;
+  const code = isObj(data.code)
+    ? {
+        files: Array.isArray(data.code.files)
+          ? data.code.files.map((f) => str(f, 200)).filter(Boolean)
+          : [],
+        added: num(data.code.added) ?? 0,
+        removed: num(data.code.removed) ?? 0,
+        counted: data.code.counted === true,
+        sentence: str(data.code.sentence),
+      }
+    : null;
+  const listed = Array.isArray(data.modes)
+    ? MODES.filter((m) => (data.modes as unknown[]).includes(m))
+    : [];
   return {
-    files: files ?? 0,
-    added: num(data.added) ?? 0,
-    removed: num(data.removed) ?? 0,
-    text,
+    entryId: data.entryId,
+    quote: multiline(data.quote) ?? "",
+    at: num(data.at),
+    heading: data.heading === "code" ? "code" : "conversation",
+    row: strOrNull(data.row),
+    code,
+    modes: listed.length > 0 ? listed : defaultModes(code !== null),
+    warnings: Array.isArray(data.warnings) ? data.warnings.map((w) => str(w)).filter(Boolean) : [],
   };
 }
 
-/** The line under a prompt, as `/rewind` words it. */
+/** The line under a prompt in the list: forge's own row words; nothing for an untracked prompt. */
 export function rewindLine(preview: RewindPreview): string {
-  if (preview.text) return preview.text;
-  if (preview.files <= 0) return "No code changes";
-  const counts = [
-    preview.added ? `+${preview.added}` : "",
-    preview.removed ? `-${preview.removed}` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const files = preview.files === 1 ? "1 file changed" : `${preview.files} files changed`;
-  return counts ? `${files} ${counts}` : files;
+  return preview.row ?? "";
+}
+
+/** The choices to show for a preview: forge's modes, then cancel. */
+export function rewindChoices(preview: RewindPreview | null): (RewindMode | "cancel")[] {
+  const modes = preview?.modes ?? ["conversation"];
+  return [...REWIND_CHOICES.filter((c) => c !== "cancel" && modes.includes(c)), "cancel"];
 }
 
 export interface RewindPrompt {
@@ -125,9 +160,17 @@ export function checkpointsNewestFirst(list: readonly RemoteCheckpoint[]): Remot
   return [...list].sort((a, b) => b.n - a.n);
 }
 
-/** "2 files changed +21 -2" / "No code changes" for a checkpoint row. */
-export function checkpointChange(cp: RemoteCheckpoint): string {
-  return rewindLine({ files: cp.files, added: cp.added, removed: cp.removed, text: null });
+/** "2 files changed +21 -2" / "No code changes": a change summary in the CLI's words. */
+export function changeText(files: number, added: number, removed: number): string {
+  if (files <= 0) return "No code changes";
+  const counts = [added ? `+${added}` : "", removed ? `-${removed}` : ""].filter(Boolean).join(" ");
+  const what = files === 1 ? "1 file changed" : `${files} files changed`;
+  return counts ? `${what} ${counts}` : what;
+}
+
+/** A checkpoint row's title: forge's Tab-list row (prompt · change words), else its counts. */
+export function checkpointTitle(cp: RemoteCheckpoint, untitled: string): string {
+  return `${cp.n}: ${cp.label || `${untitled}${SEP}${changeText(cp.files, cp.added, cp.removed)}`}`;
 }
 
 /** "41s ago", "5m ago", "3h ago", "2d ago". */
@@ -141,11 +184,15 @@ export function agoText(at: number, now: number): string {
 
 // ---------- /tasks ----------
 
+const RUNNING = /^(running|working|waiting|queued|starting)/i;
+
 /** Running first (as forge's panel), then the rest, each in forge's order. */
 export function taskRows(tasks: readonly RemoteTask[]): RemoteTask[] {
-  const running = (t: RemoteTask) => /^(running|working|waiting|queued|starting)/i.test(t.status);
+  const running = (t: RemoteTask) => RUNNING.test(t.status);
   return [...tasks.filter(running), ...tasks.filter((t) => !running(t))];
 }
+
+export const taskRunning = (task: RemoteTask): boolean => RUNNING.test(task.status);
 
 /** The task a route names (owner + key). */
 export function findTask(
@@ -162,6 +209,13 @@ export function tailText(data: unknown): string {
   return multiline(data.text, 256 * 1024) ?? "";
 }
 
+/** What a task's screen shows: a shell's log (task.tail), an agent's transcript, else its detail. */
+export function taskView(task: RemoteTask): "tail" | "transcript" | "detail" {
+  if (task.kind === "shell") return "tail";
+  if (task.kind === "agent" && task.sessionFile) return "transcript";
+  return "detail";
+}
+
 // ---------- /model ----------
 
 export interface ModelChoice {
@@ -174,19 +228,53 @@ export interface ModelGroup {
   models: ModelChoice[];
 }
 
-/** `models.list` data → its models (unique refs, forge's order). */
-export function parseModels(data: unknown): ModelChoice[] {
+export interface ThinkingInfo {
+  level: string;
+  levels: string[];
+}
+
+export interface ModelList {
+  available: ModelChoice[];
+  current: string | null;
+  /** null: the current model does not think (no levels to pick). */
+  thinking: ThinkingInfo | null;
+}
+
+/** `thinking.set` data (and `models.list`'s `thinking`) → level and levels. */
+export function parseThinking(data: unknown): ThinkingInfo | null {
+  if (!isObj(data)) return null;
+  const level = str(data.level, 40);
+  const levels = Array.isArray(data.levels)
+    ? data.levels.map((l) => str(l, 40)).filter(Boolean)
+    : [];
+  if (!level && levels.length === 0) return null;
+  return { level, levels };
+}
+
+/** `models.list` data → its models (unique refs, forge's order), the current one and thinking. */
+export function parseModelList(data: unknown): ModelList {
   const list = isObj(data) && Array.isArray(data.available) ? data.available : [];
-  const out: ModelChoice[] = [];
+  const available: ModelChoice[] = [];
   const seen = new Set<string>();
   for (const raw of list) {
     if (!isObj(raw)) continue;
     const ref = str(raw.ref, 200);
     if (!ref || seen.has(ref)) continue;
     seen.add(ref);
-    out.push({ ref, name: str(raw.name, 120) || ref });
+    available.push({ ref, name: str(raw.name, 120) || ref });
   }
-  return out;
+  return {
+    available,
+    current: isObj(data) ? strOrNull(data.current, 200) : null,
+    thinking: isObj(data) ? parseThinking(data.thinking) : null,
+  };
+}
+
+/** `pin.toggle` data → the pins in effect after it. */
+export function parsePinsResult(data: unknown): { pinned: string[]; recent: string[] } | null {
+  if (!isObj(data) || !isObj(data.pins)) return null;
+  const refs = (v: unknown) => (Array.isArray(v) ? v.map((r) => str(r, 200)).filter(Boolean) : []);
+  return { pinned: refs(data.pins.pinned), recent: refs(data.pins.recent) };
 }
 
 /**
@@ -214,9 +302,6 @@ export function modelGroups(
   return groups.filter((g) => g.models.length > 0);
 }
 
-/** pi's thinking levels, lowest first. */
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-
 /** `provider/id` of the footer's model. */
 export function footerRef(footer: RemoteFooter | null | undefined): string | null {
   const model = footer?.model;
@@ -224,43 +309,65 @@ export function footerRef(footer: RemoteFooter | null | undefined): string | nul
   return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
-// ---------- footer ----------
+// ---------- footer (the desktop status line) ----------
 
-/** 200000 → "200k", 1000000 → "1.0M" (the status line's context window). */
-export function windowText(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`;
-  return String(tokens);
+/** 999 → "999", 50000 → "50.0k", 200000 → "200k", 1000000 → "1.0M" (the line's counts). */
+export function windowText(n: number): string {
+  const abs = Math.abs(n);
+  if (abs < 999.5) return String(Math.round(n));
+  if (abs < 999_500) return `${abs < 99_950 ? (n / 1000).toFixed(1) : Math.round(n / 1000)}k`;
+  return `${abs < 9_950_000 ? (n / 1_000_000).toFixed(1) : Math.round(n / 1_000_000)}M`;
 }
 
-/** "$0.123", "$1.23", "$12" (the status line's amount). */
+/** "$0.0420", "$0.420", "$12.34": the line's amount (formatCost), without its "~". */
 export function costText(cost: number): string {
-  if (cost >= 10) return `$${cost.toFixed(0)}`;
-  if (cost >= 1) return `$${cost.toFixed(2)}`;
-  return `$${cost.toFixed(3)}`;
+  if (!Number.isFinite(cost) || cost <= 0) return "$0";
+  if (cost < 0.1) return `$${cost.toFixed(4)}`;
+  if (cost < 10) return `$${cost.toFixed(3)}`;
+  return `$${cost.toFixed(2)}`;
+}
+
+/** Where the line starts to say "compacts at N%": from 3/4 of the way to the point. */
+const HINT_SHARE = 0.75;
+
+export interface FooterPart {
+  text: string;
+  /** Set on the context field: its colour on the desktop. */
+  tone?: ContextTone;
+}
+
+function contextPart(footer: RemoteFooter): FooterPart | null {
+  const window = footer.contextWindow;
+  if (!window || window <= 0) return null;
+  if (footer.contextPercent === null || footer.contextTokens === null)
+    return footer.compactionPaused ? { text: "compaction paused", tone: "warning" } : null;
+  const percent = Math.max(0, Math.round(footer.contextPercent));
+  let text = `ctx ${percent}%/${windowText(window)}`;
+  if (footer.compactionPaused) text += `${SEP}compaction paused`;
+  else if (footer.compactAt !== null) {
+    const point = (footer.compactAt / 100) * window;
+    if (footer.contextTokens >= HINT_SHARE * point)
+      text += `${SEP}compacts at ${footer.compactAt}%`;
+  }
+  return { text, tone: footer.compactionPaused ? "warning" : footer.contextTone };
 }
 
 /**
- * The status line's items forge publishes, in its order: model · effort · ctx N%/window · cost.
- * Absent items are left out; an "unknown" model is never shown.
+ * What the desktop status line shows, in its order: model · effort · ctx N%/window (· compacts at,
+ * coloured as there) · ~$cost · its items ("1 shell", "◷ wakes in 23m"). Absent fields are left out.
  */
-export function footerParts(
-  footer: RemoteFooter | null | undefined,
-  /** The app's short name for the model, when forge sent no display name. */
-  fallbackName?: string,
-): string[] {
+export function footerParts(footer: RemoteFooter | null | undefined): FooterPart[] {
   if (!footer) return [];
-  const parts: string[] = [];
+  const parts: FooterPart[] = [];
   const model = footer.model;
   if (model && model.id && model.id !== "unknown") {
-    parts.push(model.name || fallbackName || model.id);
-    if (model.thinking) parts.push(model.thinking);
+    parts.push({ text: model.name || model.id });
+    if (model.thinking) parts.push({ text: model.thinking });
   }
-  if (footer.contextPercent !== null) {
-    const window = footer.contextWindow ? `/${windowText(footer.contextWindow)}` : "";
-    parts.push(`ctx ${Math.round(footer.contextPercent)}%${window}`);
-  }
-  if (footer.cost !== null) parts.push(costText(footer.cost));
+  const context = contextPart(footer);
+  if (context) parts.push(context);
+  if (footer.cost !== null) parts.push({ text: `~${costText(footer.cost)}` });
+  for (const item of footer.items) parts.push({ text: item });
   return parts;
 }
 
@@ -268,70 +375,158 @@ export function footerParts(
 
 export interface UsageMeter {
   label: string;
-  /** Percent left, 0–100, or null when the meter has only a value. */
-  left: number | null;
-  value: string | null;
+  /** Allowance left, 0–1; null: a plain value with no bar. */
+  ratio: number | null;
+  value: string;
   detail: string | null;
+  resetsAt: number | null;
 }
 
 export interface UsageAccount {
-  title: string;
-  note: string | null;
+  id: string;
+  name: string;
+  plan: string | null;
   meters: UsageMeter[];
+  asOf: number | null;
+  problem: string | null;
+  empty: string | null;
 }
 
 function parseMeter(raw: unknown): UsageMeter | null {
   if (!isObj(raw)) return null;
   const label = str(raw.label, 80);
   if (!label) return null;
-  const left = num(raw.left ?? raw.percentLeft);
+  const ratio = num(raw.ratio);
   return {
     label,
-    left: left === null ? null : Math.max(0, Math.min(100, Math.floor(left))),
-    value: str(raw.value, 120) || null,
-    detail: str(raw.detail ?? raw.resets, 160) || null,
+    ratio: ratio === null ? null : Math.max(0, Math.min(1, ratio)),
+    value: str(raw.value, 120),
+    detail: strOrNull(raw.detail, 200),
+    resetsAt: num(raw.resetsAt),
   };
 }
 
-/** `usage.refresh` data → one block per account, as the /usage panel draws them. */
+/** `usage.refresh` data (or the `usage` state) → one block per account, in the panel's order. */
 export function parseUsage(data: unknown): UsageAccount[] {
   const list = isObj(data) && Array.isArray(data.accounts) ? data.accounts : [];
   const out: UsageAccount[] = [];
   for (const raw of list) {
     if (!isObj(raw)) continue;
-    const title = str(raw.title ?? raw.name, 160);
-    if (!title) continue;
+    const name = str(raw.name, 80);
+    if (!name) continue;
     const meters = Array.isArray(raw.meters)
       ? raw.meters.map(parseMeter).filter((m): m is UsageMeter => m !== null)
       : [];
-    out.push({ title, note: str(raw.note, 300) || null, meters });
+    out.push({
+      id: str(raw.id, 40) || name,
+      name,
+      plan: strOrNull(raw.plan, 60),
+      meters,
+      asOf: num(raw.asOf),
+      problem: strOrNull(raw.problem, 200),
+      empty: strOrNull(raw.empty, 200),
+    });
   }
   return out;
 }
 
-export interface CostRow {
-  label: string;
-  value: string;
+/** `usage.refresh` data → when forge built the snapshot (host clock, epoch ms), if it says. */
+export function usageAt(data: unknown): number | null {
+  return isObj(data) ? num(data.at) : null;
 }
 
-/** `cost.read` data → label/value rows (pi's Session Info); else the footer's cost alone. */
-export function costRows(data: unknown, footer: RemoteFooter | null | undefined): CostRow[] {
-  const rows: CostRow[] = [];
-  if (isObj(data) && Array.isArray(data.rows)) {
-    for (const raw of data.rows) {
-      if (!isObj(raw)) continue;
-      const label = str(raw.label, 80);
-      if (label) rows.push({ label, value: str(raw.value, 300) });
-    }
-  } else if (isObj(data) && typeof data.text === "string") {
-    for (const line of data.text.split("\n")) {
-      const match = /^\s*([^:]{1,60}):\s*(.*)$/.exec(cleanLine(line, 400));
-      if (match) rows.push({ label: match[1].trim(), value: match[2].trim() });
-    }
+/** "45s", "30m", "2h 13m", "3d 21h" (the CLI's time-left words). */
+export function leftWords(ms: number): string {
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const total = Math.ceil(seconds / 60);
+  if (total < 60) return `${total}m`;
+  if (total > 24 * 60) {
+    const days = Math.floor(total / (24 * 60));
+    const hours = Math.floor((total % (24 * 60)) / 60);
+    return hours === 0 ? `${days}d` : `${days}d ${hours}h`;
   }
-  if (rows.length === 0 && footer?.cost !== null && footer?.cost !== undefined)
-    rows.push({ label: "Total", value: costText(footer.cost) });
-  return rows;
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+/** The meter's grey line, as the panel draws it: its detail · "Resets in 5h 30m". */
+export function meterDetail(meter: UsageMeter, now: number): string {
+  let reset: string | null = null;
+  if (meter.resetsAt !== null)
+    reset = meter.resetsAt <= now ? "Resets now" : `Resets in ${leftWords(meter.resetsAt - now)}`;
+  return [meter.detail, reset].filter(Boolean).join(SEP);
+}
+
+/** "Claude · Max 20x": the account heading (never who is signed in). */
+export function accountHeading(account: UsageAccount): string {
+  return account.plan ? `${account.name}${SEP}${account.plan}` : account.name;
+}
+
+const UNREACHED = new Set(["timed out", "no connection"]);
+const OLD_READING_MS = 120_000;
+
+function shortAge(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86_400)}d`;
+}
+
+/** The note under a heading, as the panel says it; `error` when nothing could be shown. */
+export function accountNote(
+  account: UsageAccount,
+  now: number,
+): { text: string; error: boolean } | null {
+  const age = account.asOf !== null ? `As of ${shortAge(now - account.asOf)} ago` : null;
+  if (account.problem) {
+    if (account.meters.length === 0) {
+      const text = UNREACHED.has(account.problem)
+        ? `Couldn't reach ${account.name}: ${account.problem}`
+        : account.problem.charAt(0).toUpperCase() + account.problem.slice(1);
+      return { text, error: true };
+    }
+    return {
+      text: `${age ?? "Last known"}${SEP}couldn't refresh: ${account.problem}`,
+      error: false,
+    };
+  }
+  if (account.meters.length === 0)
+    return { text: account.empty ?? "Nothing to show", error: false };
+  if (age && account.asOf !== null && now - account.asOf >= OLD_READING_MS)
+    return { text: age, error: false };
+  return null;
+}
+
+export interface CostRow {
+  label: string;
+  value: string | null;
+  indent: boolean;
+}
+
+export interface CostSection {
+  title: string | null;
+  rows: CostRow[];
+}
+
+/** `cost.read` data → pi's Session Info sections, as /cost shows them. */
+export function costSections(data: unknown): CostSection[] {
+  const list = isObj(data) && Array.isArray(data.sections) ? data.sections : [];
+  const out: CostSection[] = [];
+  for (const raw of list) {
+    if (!isObj(raw)) continue;
+    const rows: CostRow[] = [];
+    for (const r of Array.isArray(raw.rows) ? raw.rows : []) {
+      if (!isObj(r)) continue;
+      const label = str(r.label, 200);
+      if (label) rows.push({ label, value: strOrNull(r.value), indent: r.indent === true });
+    }
+    const title = strOrNull(raw.title, 200);
+    if (title || rows.length > 0) out.push({ title, rows });
+  }
+  return out;
 }
 
 // ---------- /pause ----------
@@ -339,8 +534,8 @@ export function costRows(data: unknown, footer: RemoteFooter | null | undefined)
 export type WakeArgs = { in: number; reason?: string } | { at: number; reason?: string };
 
 /**
- * The /pause sheet's fields → `wake.set` args. Minutes: 1–1440 (forge clamps the same).
- * "14:30" / "2:30pm": the next time the phone's clock reads it, sent as epoch ms.
+ * The /pause sheet's fields → `wake.set` args. Minutes: 1–1440, sent as seconds (forge reads a
+ * number `in` as seconds). "14:30" / "2:30pm": the next time the phone's clock reads it, as epoch ms.
  */
 export function wakeArgs(
   mode: "in" | "at",
@@ -351,9 +546,9 @@ export function wakeArgs(
   const why = reason.trim() ? { reason: reason.trim().slice(0, 500) } : {};
   if (mode === "in") {
     const minutes = Number(value.trim());
-    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440)
+    if (!value.trim() || !Number.isInteger(minutes) || minutes < 1 || minutes > 1440)
       return { ok: false, error: "minutes" };
-    return { ok: true, args: { in: minutes, ...why } };
+    return { ok: true, args: { in: minutes * 60, ...why } };
   }
   const match = /^(\d{1,2})[:.](\d{2})\s*(am|pm)?$/i.exec(value.trim());
   if (!match) return { ok: false, error: "time" };
@@ -388,27 +583,46 @@ export function exportedPath(data: unknown): string | null {
   return isObj(data) ? str(data.path, 1000) || null : null;
 }
 
-/** forge refused an export because the file exists (it asks "Overwrite existing file?"). */
-export function exportNeedsOverwrite(message: string | null, data: unknown): boolean {
-  if (isObj(data) && (data.exists === true || data.overwrite === true)) return true;
-  return /\bexists\b/i.test(message ?? "") && !/symbolic link/i.test(message ?? "");
+/** forge refused an export because the file exists (v1.2: reason "exists"). */
+export function exportNeedsOverwrite(reason: string | undefined): boolean {
+  return reason === "exists";
 }
 
-/** `sync.status` / `sync.run` data → its text (setup's report or summary). */
-export function syncText(data: unknown): string {
-  if (!isObj(data)) return "";
-  const text = data.text ?? data.summary ?? data.status;
-  if (typeof text === "string") return multiline(text, 8000) ?? "";
-  if (Array.isArray(data.lines))
-    return data.lines.filter((l): l is string => typeof l === "string").join("\n");
-  return "";
+export interface SyncStatus {
+  text: string;
+  level: "info" | "error";
 }
 
-/** `changelog.read` data → its markdown. */
-export function changelogMarkdown(data: unknown): string {
-  return isObj(data) && typeof data.markdown === "string"
-    ? (multiline(data.markdown, 200_000) ?? "")
-    : "";
+/** `sync.status` data → setup's report and its level. */
+export function parseSyncStatus(data: unknown): SyncStatus | null {
+  if (!isObj(data) || typeof data.text !== "string") return null;
+  return {
+    text: multiline(data.text, 64 * 1024) ?? "",
+    level: data.level === "error" ? "error" : "info",
+  };
+}
+
+/** `sync.run` data → whether the sync finished (false: still running; pi reloads after it). */
+export function syncDone(data: unknown): boolean {
+  return isObj(data) && data.done === true;
+}
+
+/** The newest part of the changelog a phone renders at once (forge sends up to 512 KiB). */
+export const CHANGELOG_SHOWN = 48_000;
+
+/**
+ * `changelog.read` data → its markdown, and whether it was cut (by forge, or here at a release
+ * heading so the newest releases render whole).
+ */
+export function parseChangelog(
+  data: unknown,
+  max = CHANGELOG_SHOWN,
+): { markdown: string; truncated: boolean } {
+  if (!isObj(data) || typeof data.markdown !== "string") return { markdown: "", truncated: false };
+  const text = multiline(data.markdown, 600_000) ?? "";
+  if (text.length <= max) return { markdown: text, truncated: data.truncated === true };
+  const cut = text.lastIndexOf("\n## ", max);
+  return { markdown: text.slice(0, cut > 0 ? cut : max).trimEnd(), truncated: true };
 }
 
 /** A session name for /rename and /branch: one line, at most 200 characters. */
