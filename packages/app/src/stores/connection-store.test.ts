@@ -43,10 +43,13 @@ class FakeConnection implements SshConnection {
 
 type Step = "ok" | Error;
 
-function fakeClient(fingerprint: () => string, steps: Step[]) {
+function fakeClient(fingerprint: () => string, steps: Step[], gateFirst?: Promise<void>) {
   const connections: FakeConnection[] = [];
+  let calls = 0;
   const client: SshClient = {
     async connect(_target: SshTarget, options: SshConnectOptions) {
+      calls += 1;
+      if (calls === 1 && gateFirst) await gateFirst;
       const accepted = await options.verifyHostKey({
         algorithm: "ssh-ed25519",
         fingerprint: fingerprint(),
@@ -64,7 +67,12 @@ function fakeClient(fingerprint: () => string, steps: Step[]) {
 }
 
 function setup(
-  options: { pinned?: string; steps?: Step[]; probe?: () => Promise<HostEnvironment> } = {},
+  options: {
+    pinned?: string;
+    steps?: Step[];
+    probe?: () => Promise<HostEnvironment>;
+    gateFirst?: Promise<void>;
+  } = {},
 ) {
   let presented = "SHA256:aaaa";
   const host: SavedHost = {
@@ -78,7 +86,11 @@ function setup(
     createdAt: 0,
     ...(options.pinned ? { hostKeyFingerprint: options.pinned } : {}),
   };
-  const { client, connections } = fakeClient(() => presented, options.steps ?? []);
+  const { client, connections } = fakeClient(
+    () => presented,
+    options.steps ?? [],
+    options.gateFirst,
+  );
   const pinHostKey = vi.fn((_id: string, fp: string) => {
     host.hostKeyFingerprint = fp;
     return Promise.resolve();
@@ -156,6 +168,43 @@ describe("connection store", () => {
     expect(replaced).not.toBeNull();
     expect(s.pinHostKey).toHaveBeenCalledWith("h1", "SHA256:bbbb");
     expect(status(s)).toBe("connected");
+  });
+
+  it("surfaces a host key that could not be pinned instead of connecting", async () => {
+    const s = setup();
+    s.pinHostKey.mockImplementationOnce(() => Promise.reject(new Error("keystore locked")));
+    const pending = s.store.getState().connect("h1");
+    await vi.advanceTimersByTimeAsync(0);
+    s.store.getState().answerPrompt(true);
+    expect(await pending).toBeNull();
+    expect(status(s)).toBe("failed");
+    expect(s.store.getState().hosts.h1?.failure).toMatchObject({ kind: "unknown" });
+    expect(s.store.getState().hosts.h1?.failure?.message).toContain("keystore locked");
+    expect(s.connections).toHaveLength(0);
+    expect(s.probe).not.toHaveBeenCalled();
+  });
+
+  it("Replace pinned key during a connect in flight cancels it and reconnects with the new key", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const s = setup({ pinned: "SHA256:aaaa", gateFirst: gate });
+    s.present("SHA256:bbbb");
+    const first = s.store.getState().connect("h1");
+    await vi.advanceTimersByTimeAsync(0);
+    const second = s.store.getState().connect("h1", { replaceKeyWith: "SHA256:bbbb" });
+    expect(second).not.toBe(first);
+    expect(await second).not.toBeNull();
+    expect(s.pinHostKey).toHaveBeenCalledWith("h1", "SHA256:bbbb");
+    expect(status(s)).toBe("connected");
+    release();
+    expect(await first).toBeNull();
+    // The cancelled attempt neither fails the host nor replaces the live connection.
+    expect(status(s)).toBe("connected");
+    expect(s.store.getState().hosts.h1?.failure).toBeUndefined();
+    expect(s.connections.filter((c) => c.connected)).toHaveLength(1);
+    expect(s.probe).toHaveBeenCalledTimes(1);
   });
 
   it("maps auth failure and missing pi to failed states without retrying", async () => {

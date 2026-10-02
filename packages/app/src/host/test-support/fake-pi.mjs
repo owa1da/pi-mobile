@@ -171,6 +171,7 @@ function setState(next, wait = null) {
   stateSince = Date.now();
   waitingFor = wait;
   writeRecord();
+  render();
 }
 
 function quit() {
@@ -243,11 +244,27 @@ function submit(text, pasted) {
 process.on("SIGUSR1", () => setState("idle"));
 process.on("SIGUSR2", () => setState("waiting", { kind: "select", title: WAIT_TITLE }));
 
+// pi-tui draws its prompt editor between two rules of "─" (the host service reads this layout from
+// capture-pane to find drafts); the fake draws the same frame around its current input line.
+let draftLine = "";
+let drawn = false;
+function render() {
+  if (!drawn) return;
+  const cols = Math.max(20, (process.stdout.columns || 80) - 1);
+  const rule = "─".repeat(cols);
+  const body = state === "waiting" ? `[dialog] ${WAIT_TITLE}` : draftLine.replace(/\n/g, "\r\n");
+  const editor = state === "waiting" ? body : `${rule}\r\n${body}\r\n${rule}`;
+  process.stdout.write(
+    `\x1b[H\x1b[2Jfake pi ${sessionId}\r\n\r\n${editor}\r\n  fake · ${state}\r\n`,
+  );
+}
+
 const delay = Number(process.env.FAKE_PI_DELAY_MS ?? 300);
 setTimeout(() => {
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdout.write("\x1b[?2004h");
-  process.stdout.write(`fake pi ${sessionId}\r\n`);
+  drawn = true;
+  render();
   writeRecord();
   log({
     kind: "start",
@@ -275,6 +292,8 @@ setTimeout(() => {
     }
     buf += decoder.write(chunk);
     for (;;) {
+      draftLine = paste !== null ? line + paste : line;
+      render();
       if (paste !== null) {
         const end = buf.indexOf("\x1b[201~");
         if (end < 0) {
@@ -330,6 +349,9 @@ setTimeout(() => {
         submit(text, wasPasted);
       } else if (ch === "\x03") {
         quit();
+      } else if (ch === "\x15") {
+        line = "";
+        pasted = false;
       } else line += ch;
     }
   });

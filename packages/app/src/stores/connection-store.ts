@@ -86,8 +86,9 @@ interface Attempt {
   gen: number;
   interactive: boolean;
   replaceWith?: string;
-  /** Set by verify: why the key was refused, or that the user declined. */
-  keyOutcome?: "mismatch" | "unverified" | "declined";
+  /** Set by verify: why the key was refused, that the user declined, or that pinning it failed. */
+  keyOutcome?: "mismatch" | "unverified" | "declined" | "pin-failed";
+  pinError?: string;
   presented?: string;
   pinned?: string;
 }
@@ -163,8 +164,15 @@ export function createConnectionStore<S extends ProbeableService>(
         attempt.keyOutcome = "declined";
         return false;
       }
-      // Like OpenSSH's known_hosts: the key is pinned once accepted, before authentication.
-      await deps.pinHostKey(attempt.hostId, key.fingerprint).catch(() => undefined);
+      // Like OpenSSH's known_hosts: the key is pinned once accepted, before authentication. A key
+      // that could not be saved is not trusted: the next connect would ask again or see a mismatch.
+      try {
+        await deps.pinHostKey(attempt.hostId, key.fingerprint);
+      } catch (error) {
+        attempt.keyOutcome = "pin-failed";
+        attempt.pinError = error instanceof Error ? error.message : String(error);
+        return false;
+      }
       return true;
     };
 
@@ -173,6 +181,11 @@ export function createConnectionStore<S extends ProbeableService>(
         return { kind: "host-key-mismatch", pinned: attempt.pinned, presented: attempt.presented };
       if (attempt.keyOutcome === "unverified") return { kind: "host-key-unverified" };
       if (attempt.keyOutcome === "declined") return null;
+      if (attempt.keyOutcome === "pin-failed")
+        return {
+          kind: "unknown",
+          message: `The host key could not be saved: ${attempt.pinError ?? "unknown error"}`,
+        };
       return classifyConnectionError(error);
     };
 
@@ -257,8 +270,8 @@ export function createConnectionStore<S extends ProbeableService>(
           },
         );
       } catch (error) {
-        if (get().prompt?.hostId === hostId) settlePrompt(false);
         if (isStale(attempt)) return null;
+        if (get().prompt?.hostId === hostId) settlePrompt(false);
         fail(attempt, failureFor(attempt, error));
         return null;
       }
@@ -299,7 +312,16 @@ export function createConnectionStore<S extends ProbeableService>(
           if (service) return Promise.resolve(service);
         }
         clearRetry(hostId);
-        if (options.replaceKeyWith && !inflight.has(hostId)) dropLive(hostId);
+        if (options.replaceKeyWith) {
+          // A deliberate replacement supersedes a connect in flight (which would otherwise be
+          // joined and the replacement dropped): cancel it, then connect with the new key.
+          if (inflight.has(hostId)) {
+            generation.set(hostId, genOf(hostId) + 1);
+            inflight.delete(hostId);
+            if (get().prompt?.hostId === hostId) settlePrompt(false);
+          }
+          dropLive(hostId);
+        }
         patch(hostId, { attempt: 0 });
         return start(hostId, { interactive: true, replaceWith: options.replaceKeyWith });
       },

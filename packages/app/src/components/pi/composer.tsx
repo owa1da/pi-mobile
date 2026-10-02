@@ -48,18 +48,25 @@ export function Composer({
   const { t } = useTranslation();
   const inputRef = useRef<EditingTextInputHandle | null>(null);
   const [text, setText] = useState("");
+  // `busy` arrives a render late: a second tap in the same frame must not submit twice.
+  const submittingRef = useRef(false);
   const hasText = text.trim().length > 0;
   const showStop = canStop && !hasText && Boolean(onStop);
 
   const submit = useCallback(async () => {
     const value = text.trim();
-    if (!value || busy) return;
+    if (!value || busy || submittingRef.current) return;
+    submittingRef.current = true;
     inputRef.current?.reset();
     setText("");
-    const sent = await onSubmit(value);
-    if (!sent) {
-      inputRef.current?.replaceText(value);
-      setText(value);
+    try {
+      const sent = await onSubmit(value);
+      if (!sent) {
+        inputRef.current?.replaceText(value);
+        setText(value);
+      }
+    } finally {
+      submittingRef.current = false;
     }
   }, [busy, onSubmit, text]);
 

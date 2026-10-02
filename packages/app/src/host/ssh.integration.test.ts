@@ -15,6 +15,14 @@ import { createSandbox, type Sandbox } from "./test-support/sandbox";
 import type { SessionRow } from "./types";
 
 const hasSshd = fs.existsSync("/usr/sbin/sshd");
+// A missing sshd must not pass silently: it is skipped only when explicitly allowed.
+const allowNoSshd = process.env.PIM_ALLOW_NO_SSHD === "1";
+
+describe("sshd for the SSH integration test", () => {
+  it.skipIf(allowNoSshd)("is installed (set PIM_ALLOW_NO_SSHD=1 to skip the SSH test)", () => {
+    expect(hasSshd, "/usr/sbin/sshd is missing; set PIM_ALLOW_NO_SSHD=1 to skip").toBe(true);
+  });
+});
 
 describe.skipIf(!hasSshd)("host service over real SSH", () => {
   let sshd: IsolatedSshd;

@@ -209,9 +209,12 @@ function ChatPaneBody({
   const feed = useChatFeed(hostId, row, active);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<FriendlyError | null>(null);
+  const sendingRef = useRef(false);
 
   const send = useCallback(
     async (text: string): Promise<boolean> => {
+      // One send at a time: a pending send (maybe a resume) is never doubled by a second tap.
+      if (sendingRef.current) return false;
       const service = connectionStore.getState().getService(hostId);
       if (!service) {
         setSendError({ key: "pi.session.errors.connection", terminal: false });
@@ -219,6 +222,7 @@ function ChatPaneBody({
       }
       setSendError(null);
       const pendingId = feed.addPending(text);
+      sendingRef.current = true;
       setSending(true);
       try {
         await service.sendPrompt(row, text);
@@ -226,11 +230,19 @@ function ChatPaneBody({
         void refreshSessions(hostId);
         return true;
       } catch (error) {
+        // Never re-echo or resend: when the outcome is unknown, the chat refresh shows whether it
+        // arrived; the text goes back into the composer only for the user to decide.
         feed.removePending(pendingId);
-        setSendError(friendlyHostError(error));
+        const friendly = friendlyHostError(error);
+        setSendError(friendly);
+        if (friendly.outcomeUnknown) {
+          feed.boost();
+          void refreshSessions(hostId);
+        }
         connectionStore.getState().reportFailure(hostId, error);
         return false;
       } finally {
+        sendingRef.current = false;
         setSending(false);
       }
     },
@@ -319,10 +331,13 @@ function TerminalPane({
   const toast = useToast();
   const [attempt, setAttempt] = useState(0);
   const [resuming, setResuming] = useState(false);
+  const resumingRef = useRef(false);
   const reconnect = useCallback(() => setAttempt((value) => value + 1), []);
   const resume = useCallback(async () => {
+    if (resumingRef.current) return;
     const service = connectionStore.getState().getService(hostId);
     if (!service) return;
+    resumingRef.current = true;
     setResuming(true);
     try {
       await service.resumeSession(row);
@@ -330,7 +345,9 @@ function TerminalPane({
     } catch (error) {
       const friendly = friendlyHostError(error);
       toast.error(friendly.detail ?? t(friendly.key));
+      if (friendly.outcomeUnknown) void refreshSessions(hostId);
     } finally {
+      resumingRef.current = false;
       setResuming(false);
     }
   }, [hostId, row, t, toast]);

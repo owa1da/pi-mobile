@@ -1,11 +1,18 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
   attachCleanupScript,
+  attachScript,
+  paneFrameScript,
   parseStartedLine,
   shQuote,
   startScript,
+  tmuxCommandArgv,
+  wrapWithHostTimeout,
   tmuxArg,
   tmuxFormatLiteral,
   tq,
@@ -20,6 +27,7 @@ import {
   utf8Decode,
   utf8Encode,
 } from "./encoding";
+import { parseTmuxVersion, terminalSupport } from "./service";
 
 const HOSTILE = [
   "",
@@ -155,5 +163,167 @@ describe("tmux format output without a UTF-8 client", () => {
       expect(script).not.toContain("\t");
       expect(script).not.toContain("\\t");
     }
+  });
+});
+
+describe("pi editor frame detection (real pi 1.0.0 layouts)", () => {
+  const RULE = "─".repeat(60);
+  const FOOTER = "  /tmp/work · Dead 1 · ctx 4%/128k";
+  const screens: Record<string, { lines: string[]; expect: string }> = {
+    empty: { lines: ["※ tmux extended-keys is off", "", RULE, " ", RULE, FOOTER], expect: "EMPTY" },
+    "empty, transcript above": {
+      lines: ["❯ one", "  two", "  ⎿  API Error: Connection error.", RULE, "", RULE, FOOTER],
+      expect: "EMPTY",
+    },
+    draft: { lines: ["", RULE, "hello draft ", RULE, FOOTER], expect: "DRAFT" },
+    "multi-line draft": {
+      lines: [RULE, "alpha", "beta", "", RULE, FOOTER],
+      expect: "DRAFT",
+    },
+    "long draft (scroll rule)": {
+      lines: [`${"─".repeat(20)} ↑ 3 more ${"─".repeat(20)}`, "line 4", "line 5", RULE, FOOTER],
+      expect: "DRAFT",
+    },
+    "paste marker": { lines: [RULE, "[paste #1 +40 lines]", RULE, FOOTER], expect: "DRAFT" },
+    "no editor (dialog/page)": {
+      lines: ["Sessions", "  ✻ fix the tests", "  ✶ docs", "enter open · esc back"],
+      expect: "NOFRAME",
+    },
+    "blank screen (not drawn yet)": { lines: ["", "", ""], expect: "NOFRAME" },
+  };
+  it.each(Object.keys(screens))("%s", (name) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pim-frame-"));
+    try {
+      const screen = screens[name]!;
+      fs.writeFileSync(path.join(dir, "screen"), `${screen.lines.join("\n")}\n`);
+      const fake = path.join(dir, "tmux");
+      fs.writeFileSync(fake, `#!/bin/sh\ncat ${shQuote(path.join(dir, "screen"))}\n`, {
+        mode: 0o755,
+      });
+      const out = execFileSync(
+        "/bin/sh",
+        ["-c", paneFrameScript({ tmux: fake, socket: "/nope", pane: "%1" })],
+        { encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin" } },
+      );
+      expect(out.trim()).toBe(screen.expect);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tmux command argv", () => {
+  it("never hands tmux a one-element argv (it would run it through $SHELL -c)", () => {
+    expect(tmuxCommandArgv(["/opt/my tools/pi"])).toEqual([
+      "/bin/sh",
+      "-c",
+      'exec "$0"',
+      "/opt/my tools/pi",
+    ]);
+    expect(tmuxCommandArgv(["/usr/bin/node", "/x/cli.js"])).toEqual(["/usr/bin/node", "/x/cli.js"]);
+    // The wrapper execs the one program as-is, a path with spaces included.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pim argv "));
+    try {
+      const prog = path.join(dir, "say hi");
+      fs.writeFileSync(prog, '#!/bin/sh\necho "pid=$$ arg0-ok"\n', { mode: 0o755 });
+      const [cmd, ...rest] = tmuxCommandArgv([prog]);
+      expect(execFileSync(cmd!, rest, { encoding: "utf8" })).toMatch(/^pid=\d+ arg0-ok\n$/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("escapes # in a $HOME fallback cwd and in the window name", () => {
+    const script = startScript({
+      nonce: "N",
+      tmux: "tmux",
+      socket: "/tmp/s",
+      cwd: "/gone",
+      cwdFallbackHome: true,
+      windowName: "a#b",
+      env: [],
+      argv: ["pi", "x"],
+    });
+    expect(script).toContain("sed 's/#/##/g'");
+    expect(script).toContain("'a##b'");
+  });
+
+  it("refuses a resume while a live record names the session, and forwards the server env", () => {
+    const script = startScript({
+      nonce: "N",
+      tmux: "tmux",
+      socket: "/tmp/s",
+      cwd: "/tmp",
+      cwdFallbackHome: false,
+      windowName: "pi",
+      env: [],
+      serverEnv: ["PATH=/a:/b", "LANG=C.UTF-8"],
+      argv: ["pi", "--session", "/f.jsonl"],
+      refuseLive: { procsDir: "/p", sessionId: "abc-1" },
+    });
+    expect(script).toContain("ERR live");
+    expect(script).toContain("env 'PATH=/a:/b' 'LANG=C.UTF-8' \"$T\"");
+    expect(script).toContain("set-environment -g 'LANG' 'C.UTF-8'");
+    expect(script).toContain("set-environment -g 'PATH' '/a:/b'");
+    expect(script).not.toContain("sleep 0.5");
+  });
+});
+
+describe("wrapWithHostTimeout", () => {
+  it("runs the script with stdin, under timeout when the host has one", () => {
+    const out = execFileSync(
+      "/bin/sh",
+      ["-c", wrapWithHostTimeout("printf 'x:'; cat; exit 0", 10)],
+      { encoding: "utf8", input: "IN" },
+    ).toString();
+    expect(out).toBe("x:IN");
+    let status: number | null = 0;
+    try {
+      execFileSync("/bin/sh", ["-c", wrapWithHostTimeout("exit 3", 10)], { stdio: "ignore" });
+    } catch (error) {
+      status = (error as { status: number | null }).status;
+    }
+    expect(status).toBe(3);
+  });
+
+  it("kills a script that outlives the host timeout (exit 124)", () => {
+    const started = Date.now();
+    let status: number | null = 0;
+    try {
+      execFileSync("/bin/sh", ["-c", wrapWithHostTimeout("sleep 20; echo late", 1)], {
+        encoding: "utf8",
+      });
+    } catch (error) {
+      status = (error as { status: number | null }).status;
+    }
+    expect(status).toBe(124);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe("tmux version gate", () => {
+  it("treats an unparseable version as old and needs 3.2 for the terminal", () => {
+    expect(parseTmuxVersion("tmux 3.6")).toEqual([3, 6]);
+    expect(parseTmuxVersion("tmux next-3.7")).toEqual([3, 7]);
+    expect(parseTmuxVersion("tmux 3.3a")).toEqual([3, 3]);
+    expect(parseTmuxVersion("tmux master")).toBeUndefined();
+    expect(terminalSupport(undefined)).toEqual({ ok: false, keepLast: false });
+    expect(terminalSupport([3, 1])).toEqual({ ok: false, keepLast: false });
+    expect(terminalSupport([3, 2])).toEqual({ ok: true, keepLast: false });
+    expect(terminalSupport([3, 6])).toEqual({ ok: true, keepLast: true });
+  });
+
+  it("attach kills its own phone session when the chain fails before attaching", () => {
+    const script = attachScript({
+      tmux: "tmux",
+      socket: "/s",
+      pane: "%1",
+      sessionName: "pim-1-abc",
+      keepLast: true,
+      ignoreSize: true,
+    });
+    expect(script).not.toMatch(/^exec /m);
+    expect(script).toMatch(/RC=\$\?\ncleanup\nexit \$RC/);
+    expect(script).toContain('kill-session -t "=$NAME"');
   });
 });

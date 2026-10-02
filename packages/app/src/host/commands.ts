@@ -38,6 +38,23 @@ export function wrapForAnyShell(script: string): string {
   return `sh -c 'eval "$(printf %s ${base64EncodeText(script)} | base64 -d)"'`;
 }
 
+/**
+ * wrapForAnyShell, with the script run under the host's `timeout` (coreutils/busybox) when it has
+ * one: a mutating script (send, start, abort) is killed on the host before the phone's exec
+ * timeout fires, so a timed-out send can never paste late. Exit 124/137 = killed by the timeout.
+ */
+export function wrapWithHostTimeout(script: string, seconds: number): string {
+  const s = Math.max(1, Math.floor(seconds));
+  const inner = `S=$(printf %s ${base64EncodeText(script)} | base64 -d)
+if command -v timeout >/dev/null 2>&1; then
+  if timeout -k 2 1 true >/dev/null 2>&1; then exec timeout -k 2 ${s} sh -c "$S"; fi
+  exec timeout ${s} sh -c "$S"
+fi
+eval "$S"
+`;
+  return wrapForAnyShell(inner);
+}
+
 export function makeNonce(): string {
   let out = "";
   for (let i = 0; i < 16; i++) out += Math.floor(Math.random() * 16).toString(16);
@@ -148,6 +165,8 @@ out lpath "$LPATH"
 out env_PI_CODING_AGENT_DIR "$LAD"
 out env_PI_CODING_AGENT_SESSION_DIR "$(getv PI_CODING_AGENT_SESSION_DIR)"
 out env_PI_SKIP_VERSION_CHECK "$(getv PI_SKIP_VERSION_CHECK)"
+if [ -n "$ENVOUT" ]; then LOCS=$(printf '%s\\n' "$ENVOUT" | sed -n "/^$N-ENV\\$/,\\$p"); else LOCS=$(env); fi
+printf '%s\\n' "$LOCS" | grep -E '^(LANG|LC_[A-Z_]+)=' | while IFS= read -r l; do out loc "$l"; done
 `;
 }
 
@@ -267,6 +286,78 @@ export interface TmuxTarget {
   socket: string;
 }
 
+const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * pi's prompt editor as tmux's `capture-pane -p` shows it (pi-tui's Editor, verified on pi 1.0.0
+ * with forge, fullscreen and inline): a rule of `─` above and below the input lines, the footer
+ * under it. Empty editor: one blank line between the rules (the cursor is an inverse space, a
+ * blank cell in plain capture). A draft: its lines (or a `[paste #1 …]` marker) between them. A
+ * long draft puts `↑ N more` into a rule; the rule still holds a run of `─`.
+ * `frame <pane>` prints EMPTY, DRAFT or NOFRAME (no editor on screen: a dialog, the sessions
+ * page, or pi has not drawn yet). The last two rule lines on the screen frame the editor; anything
+ * else in between counts as a draft, so an unknown layout refuses rather than glues.
+ * pi-tui enables bracketed paste (`?2004h`) before its first render and tmux applies pane output
+ * in order, so a drawn editor also means tmux will bracket a paste (tmux 3.6 has no format for it).
+ */
+const FRAME_FN = `
+frame() {
+  "$T" -S "$S" capture-pane -p -t "$1" 2>/dev/null | awk -v R='────────' '
+    index($0, R) { n++; prev = last; last = NR }
+    { line[NR] = $0 }
+    END {
+      if (n < 2) { print "NOFRAME"; exit }
+      for (i = prev + 1; i < last; i++) { t = line[i]; gsub(/[[:space:]]/, "", t); if (t != "") { print "DRAFT"; exit } }
+      print "EMPTY"
+    }'
+}
+`;
+
+/** Prints EMPTY, DRAFT or NOFRAME for a pane (frame() alone; tests and diagnostics). */
+export function paneFrameScript(input: TmuxTarget & { pane: string }): string {
+  return `T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}
+${FRAME_FN}
+frame ${shQuote(input.pane)}
+`;
+}
+
+/** `livepid <procs dir> <sessionId>`: the pid of an alive live record of this host naming the session. */
+const LIVEPID_FN = `
+livepid() {
+  _h=$(uname -n 2>/dev/null || hostname); _b=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+  for _f in "$1"/*.json; do
+    [ -f "$_f" ] || continue
+    _p=\${_f##*/}; _p=\${_p%.json}
+    case "$_p" in ''|*[!0-9]*) continue;; esac
+    grep -qF "\\"sessionId\\":\\"$2\\"" "$_f" 2>/dev/null || continue
+    grep -qF "\\"host\\":\\"$_h\\"" "$_f" 2>/dev/null || continue
+    if [ -n "$_b" ] && grep -qF '"bootId":"' "$_f" && ! grep -qF "\\"bootId\\":\\"$_b\\"" "$_f"; then continue; fi
+    if alive "$_p" "$_f"; then printf '%s\\n' "$_p"; return 0; fi
+  done
+  return 1
+}
+`;
+
+/** `deliver <pane> <pid>`: stdin (base64) as one bracketed paste, then Enter. */
+const DELIVER_FN = `
+deliver() {
+  _B="pim-$$-$2"
+  if base64 -d | "$T" -S "$S" load-buffer -b "$_B" - && "$T" -S "$S" paste-buffer -p -r -d -b "$_B" -t "$1" && sleep 0.15 && "$T" -S "$S" send-keys -t "$1" Enter; then return 0; fi
+  "$T" -S "$S" delete-buffer -b "$_B" 2>/dev/null
+  return 1
+}
+`;
+
+/**
+ * tmux runs a one-element command through `$SHELL -c` (a path with spaces would split, and the
+ * user's shell may be fish): give it an argv of more than one element, which tmux execs directly.
+ * `exec` keeps the pane pid the program's pid.
+ */
+export function tmuxCommandArgv(argv: string[]): string[] {
+  if (argv.length !== 1) return argv;
+  return ["/bin/sh", "-c", 'exec "$0"', argv[0]!];
+}
+
 export interface StartScriptInput extends TmuxTarget {
   nonce: string;
   cwd: string;
@@ -275,23 +366,64 @@ export interface StartScriptInput extends TmuxTarget {
   windowName: string;
   /** NAME=value pairs for `-e`. */
   env: string[];
-  /** PATH for a tmux server this call starts (none existed): the login shell's. */
-  serverPath?: string;
+  /**
+   * NAME=value pairs (the login shell's PATH, LANG and LC_*) for a tmux server this call starts
+   * (none existed): its environment at start and its global environment, so later windows get them too.
+   */
+  serverEnv?: string[];
   /** node + cli + args, as argv. */
   argv: string[];
-  /** Wait for the new pi's registry record (procsDir/<pid>.json), optionally naming this session. */
-  waitReady?: { procsDir: string; sessionId?: string; timeoutMs: number };
+  /** A resume: refuse (`ERR live <pid>`) while an alive live record names this session. */
+  refuseLive?: { procsDir: string; sessionId: string };
+  /**
+   * Wait for the new pi's registry record (procsDir/<pid>.json), optionally naming this session,
+   * then (unless soft) for its empty prompt editor. soft: report `NOTREADY` instead of an error.
+   */
+  waitReady?: { procsDir: string; sessionId?: string; timeoutMs: number; soft?: boolean };
   /** Paste stdin (base64) into the new pane once ready, then Enter. */
   pasteStdin?: boolean;
   /** Refuse (ERR file) unless this file exists (a resumed session's file). */
   requireFile?: string;
 }
 
+function setEnvLine(pair: string): string {
+  const eq = pair.indexOf("=");
+  if (eq <= 0) return "";
+  return `"$T" -S "$S" set-environment -g ${tq(pair.slice(0, eq))} ${tq(pair.slice(eq + 1))} 2>/dev/null`;
+}
+
+function waitBlock(wait: NonNullable<StartScriptInput["waitReady"]>): string {
+  const sid = wait.sessionId && SAFE_ID.test(wait.sessionId) ? wait.sessionId : "";
+  return `
+PANE=$(printf '%s' "$OUT" | cut -d' ' -f2); PID=$(printf '%s' "$OUT" | cut -d' ' -f3)
+R=${shQuote(wait.procsDir)}/$PID.json; SID=${shQuote(sid)}; SOFT=${wait.soft ? 1 : 0}
+i=0; MAX=${Math.max(1, Math.ceil(wait.timeoutMs / 100))}; reg=0; ready=0; fr=
+while [ "$i" -lt "$MAX" ]; do
+  if [ "$reg" = 0 ] && [ -f "$R" ] && { [ -z "$SID" ] || grep -qF "\\"sessionId\\":\\"$SID\\"" "$R"; }; then reg=1; fi
+  if [ "$reg" = 1 ]; then
+    if [ "$SOFT" = 1 ]; then ready=1; break; fi
+    fr=$(frame "$PANE"); if [ "$fr" = EMPTY ]; then ready=1; break; fi
+  fi
+  kill -0 "$PID" 2>/dev/null || break
+  sleep 0.1; i=$((i + 1))
+done
+if [ "$ready" != 1 ]; then
+  if ! kill -0 "$PID" 2>/dev/null; then printf '%s ERR died\\n' "$N"
+  elif [ "$SOFT" = 1 ]; then printf '%s NOTREADY\\n' "$N"
+  elif [ "$fr" = DRAFT ]; then printf '%s ERR draft\\n' "$N"
+  else printf '%s ERR timeout\\n' "$N"; fi
+  exit 0
+fi
+alive "$PID" "$R" || { printf '%s ERR died\\n' "$N"; exit 0; }
+printf '%s READY\\n' "$N"
+`;
+}
+
 /**
- * Output: `<nonce> OK <window> <pane> <pid> <session>` (then `<nonce> READY`/`<nonce> PASTED`),
- * or `<nonce> ERR <reason>` with reason file|cwd|tmux|timeout|died|paste. The OK fields are
- * space-separated with the free-form session name last: tmux prints control characters such as
- * tabs as `_` in format output when the client is not UTF-8 (no LANG over SSH, no -u).
+ * Output: `<nonce> OK <window> <pane> <pid> <session>` (then `<nonce> READY|NOTREADY`/`<nonce> PASTED`),
+ * or `<nonce> ERR <reason>` with reason live <pid>|file|cwd|tmux|timeout|died|draft|paste. The OK
+ * fields are space-separated with the free-form session name last: tmux prints control characters
+ * such as tabs as `_` in format output when the client is not UTF-8 (no LANG over SSH, no -u).
  */
 export function startScript(input: StartScriptInput): string {
   const fmt = "#{window_id} #{pane_id} #{pane_pid} #{session_name}";
@@ -306,54 +438,44 @@ export function startScript(input: StartScriptInput): string {
     tq(tmuxFormatLiteral(input.windowName)),
     ...input.env.flatMap((pair) => ["-e", tq(pair)]),
   ].join(" ");
-  const argv = input.argv.map(tq).join(" ");
-  const serverEnv = input.serverPath ? `-e ${tq(`PATH=${input.serverPath}`)}` : "";
+  const argv = tmuxCommandArgv(input.argv).map(tq).join(" ");
+  const serverEnv = input.serverEnv ?? [];
+  const serverPrefix = serverEnv.length > 0 ? `env ${serverEnv.map(shQuote).join(" ")} ` : "";
+  const serverE = serverEnv.map((pair) => `-e ${tq(pair)}`).join(" ");
+  const setEnv = serverEnv.map(setEnvLine).filter(Boolean).join("\n  ");
   const wait = input.waitReady;
-  const sid = wait?.sessionId && /^[A-Za-z0-9._-]+$/.test(wait.sessionId) ? wait.sessionId : "";
+  const refuse =
+    input.refuseLive && SAFE_ID.test(input.refuseLive.sessionId) ? input.refuseLive : undefined;
   return `
 N=${shQuote(input.nonce)}; T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}; CW=${shQuote(input.cwd)}
 CWT=${tq(tmuxFormatLiteral(input.cwd))}; RF=${shQuote(input.requireFile ?? "")}
-${ALIVE_FN}
+${ALIVE_FN}${wait ? FRAME_FN : ""}${input.pasteStdin ? DELIVER_FN : ""}${refuse ? LIVEPID_FN : ""}
+${
+  refuse
+    ? `if LP=$(livepid ${shQuote(refuse.procsDir)} ${shQuote(refuse.sessionId)}); then printf '%s ERR live %s\\n' "$N" "$LP"; exit 0; fi`
+    : ""
+}
 if [ -n "$RF" ] && [ ! -f "$RF" ]; then printf '%s ERR file\\n' "$N"; exit 0; fi
 if [ ! -d "$CW" ]; then
-  if [ ${input.cwdFallbackHome ? 1 : 0} = 1 ]; then CW=$HOME; CWT=$HOME; else printf '%s ERR cwd\\n' "$N"; exit 0; fi
+  if [ ${input.cwdFallbackHome ? 1 : 0} = 1 ]; then
+    CW=$HOME; CWT=$(printf '%s' "$HOME" | sed 's/#/##/g')
+    case "$CWT" in *';') CWT="\${CWT%;}\\;";; esac
+  else printf '%s ERR cwd\\n' "$N"; exit 0; fi
 fi
 SD=\${S%/*}; [ -n "$SD" ] && [ ! -d "$SD" ] && (umask 077; mkdir -p "$SD")
 TGT=$("$T" -S "$S" list-sessions -F '#{session_last_attached} #{session_id} #{session_name}' 2>/dev/null | grep -v ' pim-' | sort -rn | head -n 1 | cut -d' ' -f2)
 if [ -n "$TGT" ]; then
   OUT=$("$T" -S "$S" new-window ${common} -t "$TGT:" -- ${argv} 2>&1) || { printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0; }
 else
-  OUT=$("$T" -S "$S" new-session ${common} ${serverEnv} -s pi -- ${argv} 2>&1) || { printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0; }
+  OUT=$(${serverPrefix}"$T" -S "$S" new-session ${common} ${serverE} -s pi -- ${argv} 2>&1) || { printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0; }
+  ${setEnv}
 fi
 printf '%s OK %s\\n' "$N" "$OUT"
-${
-  wait
-    ? `
-PANE=$(printf '%s' "$OUT" | cut -d' ' -f2); PID=$(printf '%s' "$OUT" | cut -d' ' -f3)
-R=${shQuote(wait.procsDir)}/$PID.json; SID=${shQuote(sid)}
-i=0; MAX=${Math.ceil(wait.timeoutMs / 250)}; ok=0
-while [ "$i" -lt "$MAX" ]; do
-  if [ -f "$R" ] && { [ -z "$SID" ] || grep -q "\\"sessionId\\":\\"$SID\\"" "$R"; }; then ok=1; break; fi
-  kill -0 "$PID" 2>/dev/null || break
-  sleep 0.25; i=$((i + 1))
-done
-if [ "$ok" != 1 ]; then
-  if kill -0 "$PID" 2>/dev/null; then printf '%s ERR timeout\\n' "$N"; else printf '%s ERR died\\n' "$N"; fi
-  exit 0
-fi
-sleep 0.5
-alive "$PID" "$R" || { printf '%s ERR died\\n' "$N"; exit 0; }
-printf '%s READY\\n' "$N"
-${
-  input.pasteStdin
-    ? `B="pim-$$-$PID"
-if base64 -d | "$T" -S "$S" load-buffer -b "$B" - && "$T" -S "$S" paste-buffer -p -r -d -b "$B" -t "$PANE" && sleep 0.15 && "$T" -S "$S" send-keys -t "$PANE" Enter; then
-  printf '%s PASTED\\n' "$N"
-else printf '%s ERR paste\\n' "$N"; fi`
-    : ""
-}`
-    : ""
-}
+${wait ? waitBlock(wait) : ""}${
+    wait && input.pasteStdin
+      ? `if deliver "$PANE" "$PID"; then printf '%s PASTED\\n' "$N"; else printf '%s ERR paste\\n' "$N"; fi`
+      : ""
+  }
 `;
 }
 
@@ -363,17 +485,26 @@ export interface PaneScriptInput extends TmuxTarget {
   pid: number;
   sessionId?: string;
   procsDir: string;
+  /** A pi that was just started (a joined resume): wait this long for its record and editor. */
+  waitMs?: number;
 }
 
 /** Shared guard: the record exists, is this process and session, and names the pane. */
 function paneGuard(input: PaneScriptInput): string {
-  const sid = input.sessionId && /^[A-Za-z0-9._-]+$/.test(input.sessionId) ? input.sessionId : "";
+  const sid = input.sessionId && SAFE_ID.test(input.sessionId) ? input.sessionId : "";
+  const waitTicks = Math.ceil((input.waitMs ?? 0) / 100);
   return `
 N=${shQuote(input.nonce)}; T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}; P=${shQuote(input.pane)}
 PID=${Math.floor(input.pid)}; R=${shQuote(input.procsDir)}/$PID.json; SID=${shQuote(sid)}
 ${ALIVE_FN}
+i=0
+while [ "$i" -lt ${waitTicks} ]; do
+  if [ -f "$R" ] && { [ -z "$SID" ] || grep -qF "\\"sessionId\\":\\"$SID\\"" "$R"; }; then break; fi
+  kill -0 "$PID" 2>/dev/null || break
+  sleep 0.1; i=$((i + 1))
+done
 if [ ! -f "$R" ] || ! alive "$PID" "$R"; then printf '%s CLOSED\\n' "$N"; exit 0; fi
-if [ -n "$SID" ] && ! grep -q "\\"sessionId\\":\\"$SID\\"" "$R"; then printf '%s CLOSED\\n' "$N"; exit 0; fi
+if [ -n "$SID" ] && ! grep -qF "\\"sessionId\\":\\"$SID\\"" "$R"; then printf '%s CLOSED\\n' "$N"; exit 0; fi
 RP=$(sed -n 's/.*"tmux":{"socket":"\\([^"\\\\]*\\)","pane":"\\(%[0-9]*\\)".*/\\1\t\\2/p' "$R" | head -n 1)
 if [ -n "$RP" ]; then S=\${RP%%\t*}; P=\${RP#*\t}; fi
 case "$P" in %[0-9]*) ;; *) printf '%s NOTMUX\\n' "$N"; exit 0;; esac
@@ -382,15 +513,32 @@ case "$INFO" in "$P "*) ;; *) printf '%s GONE\\n' "$N"; exit 0;; esac
 `;
 }
 
-/** Output: `<nonce> OK|CLOSED|NOTMUX|GONE|WAITING|BUSY|ERR`. stdin: base64 of the prompt. */
+/**
+ * Output: `<nonce> OK|CLOSED|NOTMUX|GONE|WAITING|BUSY|DRAFT|NOPROMPT|ERR`. stdin: base64 of the prompt.
+ * Never touches a draft: a non-empty editor is refused (DRAFT), and so is a screen without pi's
+ * editor (NOPROMPT), after a short wait for pi to clear or draw it.
+ */
 export function sendScript(input: PaneScriptInput): string {
-  return `${paneGuard(input)}
-if grep -q '"state":"waiting"' "$R"; then printf '%s WAITING\\n' "$N"; exit 0; fi
-[ "\${INFO#* }" = 0 ] || { printf '%s BUSY\\n' "$N"; exit 0; }
-B="pim-$$-$PID"
-if base64 -d | "$T" -S "$S" load-buffer -b "$B" - && "$T" -S "$S" paste-buffer -p -r -d -b "$B" -t "$P" && sleep 0.15 && "$T" -S "$S" send-keys -t "$P" Enter; then
-  printf '%s OK\\n' "$N"
-else printf '%s ERR\\n' "$N"; fi
+  const frameTicks = Math.max(20, Math.ceil((input.waitMs ?? 0) / 100));
+  return `${paneGuard(input)}${FRAME_FN}${DELIVER_FN}
+gate() {
+  if grep -q '"state":"waiting"' "$R"; then echo WAITING; return; fi
+  _I=$("$T" -S "$S" display-message -p -t "$P" '#{pane_id} #{pane_in_mode}' 2>/dev/null)
+  case "$_I" in "$P "*) ;; *) echo GONE; return;; esac
+  if [ "\${_I#* }" != 0 ]; then echo BUSY; return; fi
+  frame "$P"
+}
+i=0; G=$(gate)
+while [ "$G" != EMPTY ] && [ "$i" -lt ${frameTicks} ]; do
+  case "$G" in WAITING|GONE|BUSY) break;; DRAFT) [ "$i" -ge 5 ] && break;; esac
+  sleep 0.1; i=$((i + 1)); G=$(gate)
+done
+case "$G" in
+  EMPTY) ;;
+  NOFRAME) printf '%s NOPROMPT\\n' "$N"; exit 0;;
+  *) printf '%s %s\\n' "$N" "$G"; exit 0;;
+esac
+if deliver "$P" "$PID"; then printf '%s OK\\n' "$N"; else printf '%s ERR\\n' "$N"; fi
 `;
 }
 
@@ -408,14 +556,21 @@ export interface AttachScriptInput extends TmuxTarget {
   sessionName: string;
   /** tmux >= 3.4: keep-last (never destroy the group's last session); else on. */
   keepLast: boolean;
-  /** tmux >= 3.2: attach with -f ignore-size. */
+  /** tmux >= 3.2: attach with -f ignore-size (the service refuses older tmux). */
   ignoreSize: boolean;
 }
+
+/** Kill the phone's session only while another session in its group still holds the windows. */
+const KILL_PHONE_SESSION = `if "$T" -S "$S" list-sessions -F '#{session_group_size} #{session_name}' 2>/dev/null | awk -v n="$NAME" '$2 == n && NF == 2 && $1 > 1 { f = 1 } END { exit !f }'; then
+    "$T" -S "$S" kill-session -t "=$NAME" 2>/dev/null
+  fi`;
 
 /**
  * A phone-private session grouped with the pane's session, showing the pane's window, attached
  * with ignore-size so a desktop client keeps its size; destroyed when the phone detaches.
- * Never touches the user's session's current window or clients.
+ * If any step of the chain fails before the attach (or the attach itself fails), destroy-unattached
+ * never fires: the script kills the phone session itself afterwards. Never touches the user's
+ * session's current window or clients.
  */
 export function attachScript(input: AttachScriptInput): string {
   const name = input.sessionName;
@@ -425,7 +580,15 @@ T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}; P=${shQuote(input.pane)}; 
 W=$("$T" -S "$S" display-message -p -t "$P" '#{pane_id} #{session_id} #{window_id}' 2>/dev/null)
 case "$W" in "$P "*) ;; *) echo "pi-mobile: this session's tmux pane is gone" >&2; exit 1;; esac
 set -- $W
-exec "$T" -u -S "$S" new-session -d -s "$NAME" -t "$2" \\; set-option -t "$NAME" destroy-unattached ${input.keepLast ? "keep-last" : "on"} \\; select-window -t "$NAME:$3" \\; attach-session ${flags}-t "$NAME"
+cleanup() {
+  ${KILL_PHONE_SESSION}
+}
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 143' TERM
+"$T" -u -S "$S" new-session -d -s "$NAME" -t "$2" \\; set-option -t "$NAME" destroy-unattached ${input.keepLast ? "keep-last" : "on"} \\; select-window -t "$NAME:$3" \\; attach-session ${flags}-t "$NAME"
+RC=$?
+cleanup
+exit $RC
 `;
 }
 
@@ -443,9 +606,7 @@ export function attachCleanupScript(input: TmuxTarget & { sessionName: string })
   return `
 T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}; NAME=${shQuote(input.sessionName)}
 case "$NAME" in pim-*) ;; *) exit 0;; esac
-if "$T" -S "$S" list-sessions -F '#{session_group_size} #{session_name}' 2>/dev/null | awk -v n="$NAME" '$2 == n && NF == 2 && $1 > 1 { f = 1 } END { exit !f }'; then
-  "$T" -S "$S" kill-session -t "=$NAME" 2>/dev/null
-fi
+${KILL_PHONE_SESSION}
 exit 0
 `;
 }

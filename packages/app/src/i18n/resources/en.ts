@@ -142,6 +142,13 @@ export const en = {
       errors: {
         "waiting-for-input": "pi is showing a dialog. Answer it in the terminal first.",
         "pane-busy": "The pane is in copy mode. Press q in the terminal to leave it.",
+        "pane-busy-draft":
+          "There's an unsent draft in this session's terminal. Send or clear it there first.",
+        "pane-busy-no-prompt":
+          "pi is not showing its prompt (a dialog or page is open). Check the terminal first.",
+        "outcome-unknown":
+          "The host did not confirm in time, so the message may or may not have been sent. Check the chat before sending again.",
+        "tmux-old": "Terminal view needs tmux 3.2 or newer",
         "prompt-too-large": "That message is too large to send (over 1 MiB).",
         "session-live": "This session is already open in another pi.",
         "session-closed": "This session is closed and could not be resumed.",

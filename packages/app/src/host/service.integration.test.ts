@@ -6,8 +6,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createSandbox, type Sandbox } from "./test-support/sandbox";
-import type { PiHostService } from "./service";
+import { SSH_ERROR_CODES, SshError } from "@/ssh/errors";
+import type { SshConnection } from "@/ssh/types";
+
+import { makeNonce, startScript, wrapForAnyShell } from "./commands";
+import { HostOutcomeUnknownError, PaneBusyError } from "./errors";
+import { createSandbox, FAKE_PI, type FakeEvent, type Sandbox } from "./test-support/sandbox";
+import { createHostService, TERMINAL_TMUX_MESSAGE, type PiHostService } from "./service";
 import { HostError, type SessionRow } from "./types";
 
 const hex = (s: string) => Buffer.from(s, "utf8").toString("hex");
@@ -435,5 +440,339 @@ describe("host service on an isolated tmux server", () => {
     );
     shell2.close();
     expect(sb.tmux("list-sessions", "-F", "#{session_name}").trim()).toBe("pi");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 5 fixes: one pi per session, drafts, sanitizing, timeouts, server env, tmux gate, argv.
+// ---------------------------------------------------------------------------
+
+function startsOf(sb: Sandbox, sessionId: string): FakeEvent[] {
+  const dir = path.join(sb.agentDir, "fake-pi");
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(".log"))
+    .flatMap((f) => sb.events(Number(f.replace(/\.log$/, ""))))
+    .filter((e) => e.kind === "start" && e.sessionId === sessionId);
+}
+
+function allSubmits(sb: Sandbox): Array<string | undefined> {
+  const dir = path.join(sb.agentDir, "fake-pi");
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(".log"))
+    .flatMap((f) => sb.events(Number(f.replace(/\.log$/, ""))))
+    .filter((e) => e.kind === "submit")
+    .map((e) => e.text);
+}
+
+async function closedSession(sb: Sandbox, svc: PiHostService, prompt: string): Promise<SessionRow> {
+  const started = await svc.startSession({ prompt, cwd: sb.home });
+  const live = await rowFor(
+    sb,
+    svc,
+    (r) => r.pid === started.pid && r.messages >= 2 && r.state === "idle",
+    `idle ${prompt}`,
+  );
+  await svc.sendPrompt(live, "/quit");
+  return rowFor(sb, svc, (r) => r.sessionId === live.sessionId && !r.live, `closed ${prompt}`);
+}
+
+describe("wave 5 fixes on an isolated tmux server", () => {
+  let sb: Sandbox;
+  let svc: PiHostService;
+
+  beforeAll(() => {
+    sb = createSandbox();
+    svc = sb.service();
+  });
+  afterAll(() => sb?.cleanup());
+
+  it("a concurrent resume and send start exactly one pi and deliver the prompt once", async () => {
+    const closed = await closedSession(sb, svc, "race one");
+    const before = startsOf(sb, closed.sessionId).length;
+    const [started] = await Promise.all([
+      svc.resumeSession(closed),
+      svc.sendPrompt(closed, "joined prompt\nsecond line"),
+    ]);
+    await sb.waitFor(
+      () => allSubmits(sb).includes("joined prompt\nsecond line"),
+      10_000,
+      "joined submit",
+    );
+    await new Promise((r) => setTimeout(r, 800));
+    expect(startsOf(sb, closed.sessionId).length - before).toBe(1);
+    expect(allSubmits(sb).filter((t) => t === "joined prompt\nsecond line")).toHaveLength(1);
+    expect(sb.events(started.pid).some((e) => e.kind === "submit")).toBe(true);
+  });
+
+  it("two concurrent sends to a closed session share one resume and each arrive once", async () => {
+    const closed = await closedSession(sb, svc, "race two");
+    const before = startsOf(sb, closed.sessionId).length;
+    await Promise.all([svc.sendPrompt(closed, "send A"), svc.sendPrompt(closed, "send B")]);
+    await sb.waitFor(
+      () => allSubmits(sb).includes("send A") && allSubmits(sb).includes("send B"),
+      10_000,
+      "both submits",
+    );
+    await new Promise((r) => setTimeout(r, 800));
+    expect(startsOf(sb, closed.sessionId).length - before).toBe(1);
+    expect(allSubmits(sb).filter((t) => t === "send A")).toHaveLength(1);
+    expect(allSubmits(sb).filter((t) => t === "send B")).toHaveLength(1);
+  });
+
+  it("the host refuses a resume while an alive live record names the session (ERR live)", async () => {
+    const started = await svc.startSession({ prompt: "already open", cwd: sb.home });
+    const live = await rowFor(sb, svc, (r) => r.pid === started.pid && r.messages >= 2, "live");
+    const env = await svc.probe();
+    const windowsBefore = sb.tmux("list-windows", "-a", "-F", "#{window_id}");
+    const nonce = makeNonce();
+    const res = await sb.connection.exec(
+      wrapForAnyShell(
+        startScript({
+          nonce,
+          tmux: env.tmuxPath,
+          socket: env.tmuxSocket,
+          cwd: sb.home,
+          cwdFallbackHome: true,
+          windowName: "pi-resume",
+          env: [],
+          argv: [
+            ...(env.piKind === "node" ? [env.nodePath] : []),
+            env.piCliPath,
+            "--session",
+            live.sessionFile!,
+          ],
+          refuseLive: { procsDir: env.procsDir, sessionId: live.sessionId },
+        }),
+      ),
+    );
+    expect(res.stdout).toContain(`${nonce} ERR live ${started.pid}`);
+    expect(sb.tmux("list-windows", "-a", "-F", "#{window_id}")).toBe(windowsBefore);
+  });
+
+  it("never glues onto an unsent draft: refuses (pane-busy draft), then sends once it is cleared", async () => {
+    const started = await svc.startSession({ prompt: "draft host", cwd: sb.home });
+    const row = await rowFor(
+      sb,
+      svc,
+      (r) => r.pid === started.pid && r.state === "idle" && r.messages >= 2,
+      "idle",
+    );
+    sb.tmux("send-keys", "-t", started.pane, "-l", "half typed");
+    await sb.waitFor(
+      () => sb.tmux("capture-pane", "-p", "-t", started.pane).includes("half typed"),
+      5000,
+      "draft drawn",
+    );
+    await expect(svc.sendPrompt(row, "from phone")).rejects.toSatisfy(
+      (e: unknown) => e instanceof PaneBusyError && e.reason === "draft" && e.code === "pane-busy",
+    );
+    // The draft is untouched.
+    expect(sb.tmux("capture-pane", "-p", "-t", started.pane)).toContain("half typed");
+    expect(submitTexts(sb, started.pid)).not.toContain("from phone");
+    sb.tmux("send-keys", "-t", started.pane, "C-u");
+    await svc.sendPrompt(row, "from phone");
+    const texts = await sb.waitFor(
+      () => {
+        const t = submitTexts(sb, started.pid);
+        return t.includes("from phone") ? t : undefined;
+      },
+      5000,
+      "submit after clear",
+    );
+    expect(texts.filter((t) => t?.includes("half typed"))).toHaveLength(0);
+  });
+
+  it("strips control sequences: an ESC[201~ mid-prompt cannot end the paste", async () => {
+    const started = await svc.startSession({ cwd: sb.home });
+    const row = await rowFor(sb, svc, (r) => r.pid === started.pid, "row");
+    await svc.sendPrompt(row, "a\x1b[201~b\r\nc\x07d");
+    const submit = await sb.waitForEvent(started.pid, (e) => e.kind === "submit", 5000, "submit");
+    expect(submit).toMatchObject({ text: "a[201~b\ncd", pasted: true });
+    const input = sb
+      .events(started.pid)
+      .filter((e) => e.kind === "input")
+      .map((e) => e.hex)
+      .join("");
+    expect(input).toBe(`${hex("\x1b[200~")}${hex("a[201~b\ncd")}${hex("\x1b[201~")}0d`);
+  });
+
+  it("reports a send whose result never came back as outcome-unknown", async () => {
+    const started = await svc.startSession({ prompt: "timeouts", cwd: sb.home });
+    const row = await rowFor(sb, svc, (r) => r.pid === started.pid && r.messages >= 2, "row");
+    let mode: "timeout" | "killed" | "pass" = "pass";
+    const conn: SshConnection = {
+      exec: (command, options) => {
+        if (mode === "timeout")
+          return Promise.reject(
+            new SshError(SSH_ERROR_CODES.TIMEOUT, "Command timed out after 30000ms"),
+          );
+        if (mode === "killed") return Promise.resolve({ stdout: "", stderr: "", exitCode: 124 });
+        return sb.connection.exec(command, options);
+      },
+      openShell: (o) => sb.connection.openShell(o),
+      onClose: (l) => sb.connection.onClose(l),
+      isConnected: () => true,
+      close: () => undefined,
+    };
+    const wrapped = createHostService(conn, {
+      agentDir: sb.agentDir,
+      tmuxSocket: sb.socket,
+      useLoginShell: false,
+    });
+    await wrapped.probe();
+    mode = "timeout";
+    await expect(wrapped.sendPrompt(row, "maybe")).rejects.toBeInstanceOf(HostOutcomeUnknownError);
+    mode = "killed";
+    await expect(wrapped.sendPrompt(row, "maybe")).rejects.toBeInstanceOf(HostOutcomeUnknownError);
+    // Reads are not mutating: a timed-out listing is an ordinary failure.
+    mode = "timeout";
+    await expect(wrapped.listSessions()).rejects.not.toBeInstanceOf(HostOutcomeUnknownError);
+  });
+
+  it("attach leaves no orphan pim-* session when the chain fails (no terminal)", async () => {
+    const started = await svc.startSession({ prompt: "orphan", cwd: sb.home });
+    const row = await rowFor(sb, svc, (r) => r.pid === started.pid, "row");
+    const att = svc.terminalFor(row);
+    const res = await sb.connection.exec(att.command); // no pty: attach-session fails
+    expect(res.exitCode).not.toBe(0);
+    expect(sb.tmux("list-sessions", "-F", "#{session_name}")).not.toContain("pim-");
+  });
+
+  it("refuses the terminal on tmux below 3.2 or an unparseable version", async () => {
+    const real = fs.realpathSync(path.join(sb.bin, "tmux"));
+    for (const version of ["tmux master", "tmux 3.1c"]) {
+      const odd = createSandbox();
+      try {
+        fs.rmSync(path.join(odd.bin, "tmux"));
+        fs.writeFileSync(
+          path.join(odd.bin, "tmux"),
+          `#!/bin/sh\nif [ "$1" = -V ]; then echo '${version}'; exit 0; fi\nexec '${real}' "$@"\n`,
+          { mode: 0o755 },
+        );
+        const oddSvc = odd.service();
+        const env = await oddSvc.probe();
+        expect(env.tmuxVersion).toEqual(version === "tmux master" ? undefined : [3, 1]);
+        const fakeRow = {
+          ...(await closedRowStub()),
+          live: true,
+          tmux: { socket: odd.socket, pane: "%1" },
+        };
+        expect(() => oddSvc.terminalFor(fakeRow)).toThrow(TERMINAL_TMUX_MESSAGE);
+        try {
+          oddSvc.terminalFor(fakeRow);
+        } catch (error) {
+          expect((error as HostError).code).toBe("tmux-missing");
+        }
+      } finally {
+        odd.cleanup();
+      }
+    }
+  });
+});
+
+async function closedRowStub(): Promise<SessionRow> {
+  return {
+    key: "s",
+    sessionId: "s",
+    section: "completed",
+    live: false,
+    title: "t",
+    cwd: "/",
+    state: "idle",
+    since: 0,
+    messages: 1,
+  };
+}
+
+describe("tmux server environment, argv and # in paths", () => {
+  it("a tmux server the app starts gets the login shell's LANG/LC_* and PATH globally", async () => {
+    const sb = createSandbox();
+    try {
+      fs.writeFileSync(path.join(sb.home, ".profile"), "export LC_TIME=C.UTF-8\n");
+      const svc = sb.service({ useLoginShell: true });
+      const env = await svc.probe();
+      expect(env.serverEnv).toEqual(expect.arrayContaining(["LC_TIME=C.UTF-8", "LANG=C.UTF-8"]));
+      const started = await svc.startSession({ prompt: "env", cwd: sb.home });
+      expect(started.tmuxSession).toBe("pi");
+      const global = sb.tmux("show-environment", "-g");
+      expect(global).toContain("LC_TIME=C.UTF-8\n");
+      expect(global).toContain("LANG=C.UTF-8\n");
+      expect(global).toMatch(
+        new RegExp(`^PATH=${sb.bin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m"),
+      );
+      // A later window (not started by the app) sees them too.
+      sb.tmux(
+        "new-window",
+        "-d",
+        "-t",
+        "pi:",
+        "sh",
+        "-c",
+        'env > "$HOME/later-env.tmp" && mv "$HOME/later-env.tmp" "$HOME/later-env"; sleep 5',
+      );
+      await sb.waitFor(() => fs.existsSync(path.join(sb.home, "later-env")), 5000, "later env");
+      expect(fs.readFileSync(path.join(sb.home, "later-env"), "utf8")).toContain("LC_TIME=C.UTF-8");
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  it("runs a one-element pi command whose path has spaces (no $SHELL -c split)", async () => {
+    const sb = createSandbox();
+    try {
+      const toolDir = path.join(sb.dir, "my tools");
+      fs.mkdirSync(toolDir);
+      const wrapper = path.join(toolDir, "pi");
+      fs.writeFileSync(wrapper, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_PI}' "$@"\n`, {
+        mode: 0o755,
+      });
+      fs.rmSync(path.join(sb.bin, "pi"));
+      fs.symlinkSync(wrapper, path.join(sb.bin, "pi"));
+      // With a one-element argv tmux would run `$SHELL -c '<path>'`, splitting at the space.
+      const svc = sb.service();
+      const env = await svc.probe();
+      expect(env.piKind).toBe("exec");
+      expect(env.piCliPath).toBe(wrapper);
+      const started = await svc.startSession({ cwd: sb.home });
+      await sb.waitForEvent(started.pid, (e) => e.kind === "start", 10_000, "start");
+      await rowFor(sb, svc, (r) => r.pid === started.pid, "row");
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  it("resumes into a $HOME containing # when the session's folder is gone", async () => {
+    const sb = createSandbox();
+    try {
+      const svc = sb.service();
+      const work = path.join(sb.dir, "work");
+      fs.mkdirSync(work);
+      const started = await svc.startSession({ prompt: "hash home", cwd: work });
+      const live = await rowFor(
+        sb,
+        svc,
+        (r) => r.pid === started.pid && r.messages >= 2 && r.state === "idle",
+        "row",
+      );
+      await svc.sendPrompt(live, "/quit");
+      const closed = await rowFor(
+        sb,
+        svc,
+        (r) => r.sessionId === live.sessionId && !r.live,
+        "closed",
+      );
+      fs.rmSync(work, { recursive: true });
+      const hashHome = path.join(sb.dir, "ho#me #{pane_id}");
+      fs.mkdirSync(hashHome);
+      sb.env.HOME = hashHome;
+      const again = await svc.resumeSession(closed);
+      const start = await sb.waitForEvent(again.pid, (e) => e.kind === "start", 10_000, "start");
+      expect(start.cwd).toBe(hashHome);
+    } finally {
+      sb.cleanup();
+    }
   });
 });
