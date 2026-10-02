@@ -42,10 +42,9 @@ describe("Theme catalog", () => {
 });
 
 describe("Pure black theme", () => {
-  it("uses a pure black application and terminal background", () => {
+  it("uses a pure black application background", () => {
     expect(darkPureBlackTheme.colors.surface0).toBe("#000000");
     expect(darkPureBlackTheme.colors.background).toBe("#000000");
-    expect(darkPureBlackTheme.colors.terminal.background).toBe("#000000");
   });
 
   it("uses Paseo's muted green accent", () => {
@@ -59,11 +58,6 @@ describe("Pure black theme", () => {
     expect(darkPureBlackTheme.colors.surfaceSidebarSelected).toBe(
       darkPureBlackTheme.colors.surface2,
     );
-  });
-
-  it("keeps ANSI black output readable on its zero-luminance terminal background", () => {
-    expect(darkPureBlackTheme.colors.terminal.black).toBe("#595959");
-    expect(darkPureBlackTheme.colors.terminal.brightBlack).toBe("#8a8a8a");
   });
 });
 
@@ -81,16 +75,12 @@ describe("Sidebar interaction surfaces", () => {
 });
 
 describe("Built-in light theme", () => {
-  it("preserves its authored aliases and terminal contrast through the semantic builder", () => {
+  it("preserves its authored aliases through the semantic builder", () => {
     expect(lightTheme.colors).toMatchObject({
       primary: "#18181b",
       primaryForeground: "#fafafa",
       destructiveForeground: "#ffffff",
       successForeground: "#ffffff",
-      terminal: {
-        black: "#1a1a1e",
-        brightBlack: "#3f3f46",
-      },
     });
   });
 });

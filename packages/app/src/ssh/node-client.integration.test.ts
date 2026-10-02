@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SSH_ERROR_CODES, isSshError } from "./errors";
 import { createNodeSshClient } from "./node-client";
 import { startIsolatedSshd, type IsolatedSshd } from "./test-support/isolated-sshd";
-import type { SshConnection, SshHostKey, SshShell } from "./types";
+import type { SshConnection, SshHostKey } from "./types";
 
 const client = createNodeSshClient();
 let sshd: IsolatedSshd;
@@ -29,23 +29,6 @@ async function connect(): Promise<{ conn: SshConnection; seen: SshHostKey[] }> {
     },
   });
   return { conn, seen };
-}
-
-function collect(shell: SshShell): { text: () => string } {
-  const decoder = new TextDecoder();
-  let text = "";
-  shell.onData((bytes) => {
-    text += decoder.decode(bytes, { stream: true });
-  });
-  return { text: () => text };
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error("waitFor timed out");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
 }
 
 beforeAll(async () => {
@@ -144,46 +127,6 @@ describe("node ssh client against isolated sshd", () => {
     }
   });
 
-  it("shell with command gets a pty, sees resizes and reports the exit code", async () => {
-    const { conn } = await connect();
-    try {
-      const shell = await conn.openShell({
-        cols: 100,
-        rows: 30,
-        command:
-          'while read line; do [ "$line" = q ] && exit 3; stty size; echo "TERM=$TERM"; done',
-      });
-      const out = collect(shell);
-      const closed = new Promise<number | null>((resolve) => shell.onClose(resolve));
-      shell.write("x\n");
-      await waitFor(() => out.text().includes("30 100"));
-      expect(out.text()).toContain("TERM=xterm-256color");
-      shell.resize(132, 43);
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      shell.write(new TextEncoder().encode("y\n"));
-      await waitFor(() => out.text().includes("43 132"));
-      shell.write("q\n");
-      expect(await closed).toBe(3);
-    } finally {
-      conn.close();
-    }
-  });
-
-  it("login shell streams output and can be closed", async () => {
-    const { conn } = await connect();
-    try {
-      const shell = await conn.openShell({ cols: 80, rows: 24, term: "xterm" });
-      const out = collect(shell);
-      shell.write("echo MARK-$((40+2))\n");
-      await waitFor(() => out.text().includes("MARK-42"));
-      const closed = new Promise<number | null>((resolve) => shell.onClose(resolve));
-      shell.write("exit 0\n");
-      expect(await closed).toBe(0);
-    } finally {
-      conn.close();
-    }
-  });
-
   it("generateKeyPair output is a valid OpenSSH key that ssh-keygen and sshd accept", async () => {
     const pair = await client.generateKeyPair("pi-mobile test");
     expect(pair.privateKey).toMatch(/^-----BEGIN OPENSSH PRIVATE KEY-----\n/);
@@ -219,8 +162,6 @@ describe("node ssh client against isolated sshd", () => {
         },
         { verifyHostKey: async () => true },
       );
-      const shell = await conn.openShell({ cols: 80, rows: 24, command: "sleep 30" });
-      const shellClosed = new Promise<number | null>((resolve) => shell.onClose(resolve));
       const connClosed = new Promise<Error | undefined>((resolve) => conn.onClose(resolve));
       // Kill the session processes for this sshd only (children of its listener).
       execFileSync("pkill", [
@@ -232,7 +173,6 @@ describe("node ssh client against isolated sshd", () => {
       ]);
       await local.stop();
       await connClosed;
-      expect(await shellClosed).toBeNull();
       expect(conn.isConnected()).toBe(false);
     } finally {
       await local.stop();

@@ -4,7 +4,7 @@
 import { HostError } from "./types";
 
 export const DRAFT_MESSAGE =
-  "There's an unsent draft in this session's terminal. Send or clear it there first.";
+  "This session has an unsent draft on your computer. Send or clear it there first.";
 
 export type PaneBusyReason = "copy-mode" | "draft" | "no-prompt";
 

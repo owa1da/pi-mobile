@@ -5,8 +5,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  attachCleanupScript,
-  attachScript,
   paneFrameScript,
   parseStartedLine,
   shQuote,
@@ -27,7 +25,7 @@ import {
   utf8Decode,
   utf8Encode,
 } from "./encoding";
-import { parseTmuxVersion, terminalSupport } from "./service";
+import { parseTmuxVersion } from "./service";
 
 const HOSTILE = [
   "",
@@ -145,7 +143,7 @@ describe("tmux format output without a UTF-8 client", () => {
     expect(parseStartedLine("pi_@10_%10_1490580")).toBeUndefined();
   });
 
-  it("uses no tab separators in the start and attach-cleanup scripts", () => {
+  it("uses no tab separators in the start script", () => {
     const start = startScript({
       nonce: "N",
       tmux: "tmux",
@@ -158,11 +156,8 @@ describe("tmux format output without a UTF-8 client", () => {
       waitReady: { procsDir: "/tmp/p", timeoutMs: 1000 },
       pasteStdin: true,
     });
-    const cleanup = attachCleanupScript({ tmux: "tmux", socket: "/tmp/s", sessionName: "pim-1-a" });
-    for (const script of [start, cleanup]) {
-      expect(script).not.toContain("\t");
-      expect(script).not.toContain("\\t");
-    }
+    expect(start).not.toContain("\t");
+    expect(start).not.toContain("\\t");
   });
 });
 
@@ -302,28 +297,10 @@ describe("wrapWithHostTimeout", () => {
 });
 
 describe("tmux version gate", () => {
-  it("treats an unparseable version as old and needs 3.2 for the terminal", () => {
+  it("parses tmux versions and treats an unparseable one as unknown", () => {
     expect(parseTmuxVersion("tmux 3.6")).toEqual([3, 6]);
     expect(parseTmuxVersion("tmux next-3.7")).toEqual([3, 7]);
     expect(parseTmuxVersion("tmux 3.3a")).toEqual([3, 3]);
     expect(parseTmuxVersion("tmux master")).toBeUndefined();
-    expect(terminalSupport(undefined)).toEqual({ ok: false, keepLast: false });
-    expect(terminalSupport([3, 1])).toEqual({ ok: false, keepLast: false });
-    expect(terminalSupport([3, 2])).toEqual({ ok: true, keepLast: false });
-    expect(terminalSupport([3, 6])).toEqual({ ok: true, keepLast: true });
-  });
-
-  it("attach kills its own phone session when the chain fails before attaching", () => {
-    const script = attachScript({
-      tmux: "tmux",
-      socket: "/s",
-      pane: "%1",
-      sessionName: "pim-1-abc",
-      keepLast: true,
-      ignoreSize: true,
-    });
-    expect(script).not.toMatch(/^exec /m);
-    expect(script).toMatch(/RC=\$\?\ncleanup\nexit \$RC/);
-    expect(script).toContain('kill-session -t "=$NAME"');
   });
 });

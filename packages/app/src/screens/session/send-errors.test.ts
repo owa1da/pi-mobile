@@ -14,10 +14,11 @@ function lookup(key: string): unknown {
 }
 
 describe("friendlyHostError", () => {
-  it("shows the draft refusal with Open terminal", () => {
+  it("shows the draft refusal without mentioning a terminal", () => {
     const friendly = friendlyHostError(new PaneBusyError("draft", DRAFT_MESSAGE));
-    expect(friendly).toEqual({ key: "pi.session.errors.pane-busy-draft", terminal: true });
+    expect(friendly).toEqual({ key: "pi.session.errors.pane-busy-draft" });
     expect(lookup(friendly.key)).toBe(DRAFT_MESSAGE);
+    expect(DRAFT_MESSAGE).not.toMatch(/terminal/i);
   });
 
   it("tells copy mode and a missing prompt apart", () => {
@@ -26,7 +27,6 @@ describe("friendlyHostError", () => {
     );
     expect(friendlyHostError(new PaneBusyError("no-prompt", "x"))).toMatchObject({
       key: "pi.session.errors.pane-busy-no-prompt",
-      terminal: true,
     });
   });
 
@@ -39,11 +39,7 @@ describe("friendlyHostError", () => {
     expect(typeof lookup(friendly.key)).toBe("string");
   });
 
-  it("explains an old tmux for the terminal", () => {
-    const friendly = friendlyHostError(
-      new HostError("tmux-missing", "Terminal view needs tmux 3.2 or newer"),
-    );
-    expect(lookup(friendly.key)).toBe("Terminal view needs tmux 3.2 or newer");
+  it("explains a missing tmux", () => {
     expect(friendlyHostError(new HostError("tmux-missing", "tmux is not installed")).key).toBe(
       "pi.session.errors.tmux-missing",
     );

@@ -236,27 +236,8 @@ export interface LightThemeConfig {
   primary: string;
   primaryForeground: string;
   destructive: string;
-  terminalBlack: string;
-  terminalBrightBlack: string;
   ring: string;
 }
-
-const lightTerminalAnsi = {
-  red: "#dc2626",
-  green: "#16a34a",
-  yellow: "#ca8a04",
-  blue: "#2563eb",
-  magenta: "#9333ea",
-  cyan: "#0891b2",
-  white: "#ffffff",
-  brightRed: "#ef4444",
-  brightGreen: "#22c55e",
-  brightYellow: "#f59e0b",
-  brightBlue: "#3b82f6",
-  brightMagenta: "#a855f7",
-  brightCyan: "#06b6d4",
-  brightWhite: "#fafafa",
-} as const;
 
 export function buildLightSemanticColors(tint: LightThemeConfig) {
   return {
@@ -305,18 +286,6 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     ...lightStatusColors,
     ...lightStatusTints,
     ...lightStatusDotColors,
-
-    terminal: {
-      background: tint.surface0,
-      foreground: tint.foreground,
-      cursor: tint.foreground,
-      cursorAccent: tint.surface0,
-      selectionBackground: "rgba(0, 0, 0, 0.15)",
-      selectionForeground: tint.foreground,
-      black: tint.terminalBlack,
-      ...lightTerminalAnsi,
-      brightBlack: tint.terminalBrightBlack,
-    },
   };
 }
 
@@ -341,8 +310,6 @@ const lightSemanticColors = buildLightSemanticColors({
   primary: "#18181b",
   primaryForeground: "#fafafa",
   destructive: "#b04138",
-  terminalBlack: "#1a1a1e",
-  terminalBrightBlack: "#3f3f46",
   ring: "#18181b",
 });
 
@@ -366,28 +333,9 @@ export interface DarkThemeConfig {
   accentBright: string;
   accentForeground?: string;
   destructive: string;
-  terminalBlack: string;
-  terminalBrightBlack: string;
   foreground?: string;
   ring?: string;
 }
-
-const darkTerminalAnsi = {
-  red: "#e07070",
-  green: "#5dba80",
-  yellow: "#d4a44a",
-  blue: "#6a9de0",
-  magenta: "#b07ad0",
-  cyan: "#4aabb8",
-  white: "#d4d4d8",
-  brightRed: "#e89090",
-  brightGreen: "#7ecf9a",
-  brightYellow: "#e0be6e",
-  brightBlue: "#8ab4e8",
-  brightMagenta: "#c49ae0",
-  brightCyan: "#6ec2cc",
-  brightWhite: "#f0f0f2",
-} as const;
 
 export function buildDarkSemanticColors(tint: DarkThemeConfig) {
   const foreground = tint.foreground ?? "#fafafa";
@@ -439,18 +387,6 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     ...darkStatusColors,
     ...darkStatusTints,
     ...darkStatusDotColors,
-
-    terminal: {
-      background: tint.surface0,
-      foreground,
-      cursor: foreground,
-      cursorAccent: tint.surface0,
-      selectionBackground: "rgba(255, 255, 255, 0.2)",
-      selectionForeground: foreground,
-      black: tint.terminalBlack,
-      ...darkTerminalAnsi,
-      brightBlack: tint.terminalBrightBlack,
-    },
   };
 }
 
@@ -474,8 +410,6 @@ const paseoDarkColors = buildDarkSemanticColors({
   accent: "#20744A",
   accentBright: "#7ccba0",
   destructive: "#c64f43", // warm red, hue ~7 — reads as red (not pink) against the green tint
-  terminalBlack: "#141716",
-  terminalBrightBlack: "#434645",
 });
 
 // Zinc — neutral gray, no tint
@@ -495,8 +429,6 @@ const zincDarkColors = buildDarkSemanticColors({
   accentBright: "#fafafa",
   accentForeground: "#18181b", // monochrome zinc accent is near-white — needs dark text
   destructive: "#c44a4a", // neutral red, hue 0 — clearly red without screaming
-  terminalBlack: "#131316",
-  terminalBrightBlack: "#3f3f46",
 });
 
 // Midnight — subtle blue tint
@@ -515,8 +447,6 @@ const midnightDarkColors = buildDarkSemanticColors({
   accent: "#3b6fcf",
   accentBright: "#7eaaeb",
   destructive: "#c44a52", // red with a hint of cool lean against the blue tint
-  terminalBlack: "#121420",
-  terminalBrightBlack: "#3c3e4c",
 });
 
 // Claude — warm neutral with subtle orange undertone
@@ -535,8 +465,6 @@ const claudeDarkColors = buildDarkSemanticColors({
   accent: "#d97757",
   accentBright: "#e89a7f",
   destructive: "#cf513e", // warm orange-red, hue ~10 — sits with the Claude orange accent
-  terminalBlack: "#1a1918",
-  terminalBrightBlack: "#4a4745",
 });
 
 // Ghostty — blue-tinted dark based on Ghostty default background
@@ -555,8 +483,6 @@ const ghosttyDarkColors = buildDarkSemanticColors({
   accent: "#89b4fa",
   accentBright: "#b4d0fc",
   destructive: "#c44a55", // red with slight cool lean against the slate-blue surfaces
-  terminalBlack: "#21252d",
-  terminalBrightBlack: "#4a4f5e",
 });
 
 export const SPACING = {
@@ -733,8 +659,6 @@ const pureBlackDarkColors = buildDarkSemanticColors({
   accent: "#20744A",
   accentBright: "#7ccba0",
   destructive: "#c44a4a",
-  terminalBlack: "#595959",
-  terminalBrightBlack: "#8a8a8a",
 });
 
 export const darkPureBlackTheme = buildDarkTheme(pureBlackDarkColors);

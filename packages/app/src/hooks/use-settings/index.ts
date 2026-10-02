@@ -17,7 +17,6 @@ export const APP_SETTINGS_KEY = "@pi-mobile:app-settings";
 export const APP_SETTINGS_QUERY_KEY = ["app-settings"];
 
 export const DEFAULT_THEME_PREFERENCE = "auto" satisfies ThemePreference;
-export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const DEFAULT_UI_BASE_FONT_SIZE = isNative ? 15 : FONT_SIZE.base;
 export const DEFAULT_CONTENT_FONT_SIZE = isNative ? 16 : FONT_SIZE.content;
 export const DEFAULT_CODE_FONT_SIZE = 12;
@@ -28,7 +27,6 @@ const FONT_SIZE_BOUNDS = {
   contentFontSize: { min: 10, max: 21 },
   codeFontSize: { min: 9, max: 22 },
 } as const;
-const TERMINAL_SCROLLBACK_BOUNDS = { min: 0, max: 1_000_000 };
 const MAX_FONT_FAMILY_LENGTH = 200;
 
 export type { AppLanguage };
@@ -36,7 +34,6 @@ export type { AppLanguage };
 export interface AppSettings {
   theme: ThemePreference;
   language: AppLanguage;
-  terminalScrollbackLines: number;
   uiFontFamily: string; // "" = platform default UI stack
   monoFontFamily: string; // "" = platform default mono stack
   uiBaseFontSize: number;
@@ -54,7 +51,6 @@ export type AppSettingsUpdate =
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: DEFAULT_THEME_PREFERENCE,
   language: "system",
-  terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
   uiFontFamily: "",
   monoFontFamily: "",
   uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
@@ -97,9 +93,6 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
         ? (input.theme as ThemePreference)
         : d.theme,
     language: parseAppLanguage(input.language) ?? d.language,
-    terminalScrollbackLines:
-      parseClampedNumber(input.terminalScrollbackLines, TERMINAL_SCROLLBACK_BOUNDS) ??
-      d.terminalScrollbackLines,
     uiFontFamily: sanitizeFontFamily(input.uiFontFamily) ?? d.uiFontFamily,
     monoFontFamily: sanitizeFontFamily(input.monoFontFamily) ?? d.monoFontFamily,
     uiBaseFontSize:

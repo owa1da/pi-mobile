@@ -19,7 +19,6 @@ class FakeConnection implements SshConnection {
   closed = 0;
   private listeners: Array<(error?: Error) => void> = [];
   exec = vi.fn();
-  openShell = vi.fn();
   onClose(listener: (error?: Error) => void) {
     this.listeners.push(listener);
     return () => {

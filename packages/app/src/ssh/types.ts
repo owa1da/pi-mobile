@@ -39,26 +39,8 @@ export interface SshExecOptions {
   timeoutMs?: number;
 }
 
-export interface SshShellOptions {
-  cols: number;
-  rows: number;
-  /** Default "xterm-256color". */
-  term?: string;
-  /** Command to run instead of a login shell (sent as an exec request with a pty). */
-  command?: string;
-}
-
-export interface SshShell {
-  write(data: string | Uint8Array): void;
-  resize(cols: number, rows: number): void;
-  onData(listener: (bytes: Uint8Array) => void): () => void;
-  onClose(listener: (exitCode: number | null) => void): () => void;
-  close(): void;
-}
-
 export interface SshConnection {
   exec(command: string, options?: SshExecOptions): Promise<SshExecResult>;
-  openShell(options: SshShellOptions): Promise<SshShell>;
   onClose(listener: (error?: Error) => void): () => void;
   isConnected(): boolean;
   close(): void;

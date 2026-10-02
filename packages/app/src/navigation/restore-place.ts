@@ -1,15 +1,13 @@
 // Keep the user's place across the reload that follows a system font-size change: the route
-// (hosts → dashboard → session) and the session's Chat/Terminal tab. Only ids and the tab are
-// stored (no secrets, no host details); the record is read once at startup and then deleted.
+// (hosts → dashboard → session). Only ids are stored (no secrets, no host details); the record is
+// read once at startup and then deleted.
 
 import type { SavedHost } from "@/host/types";
-
-export type SessionTab = "chat" | "terminal";
 
 export type Place =
   | { kind: "hosts" }
   | { kind: "dashboard"; hostId: string }
-  | { kind: "session"; hostId: string; sessionId: string; tab: SessionTab };
+  | { kind: "session"; hostId: string; sessionId: string };
 
 export interface SavedPlace {
   v: 1;
@@ -21,7 +19,7 @@ export type RestoreStep =
   | { pathname: "/h/[hostId]"; params: { hostId: string } }
   | {
       pathname: "/h/[hostId]/s/[sessionId]";
-      params: { hostId: string; sessionId: string; tab: SessionTab; restored: "1" };
+      params: { hostId: string; sessionId: string; restored: "1" };
     };
 
 export interface PlaceStorage {
@@ -59,8 +57,7 @@ function parsePlaceBody(value: unknown): Place | null {
   if (!isId(place.hostId)) return null;
   if (place.kind === "dashboard") return { kind: "dashboard", hostId: place.hostId };
   if (place.kind !== "session" || !isId(place.sessionId)) return null;
-  const tab: SessionTab = place.tab === "terminal" ? "terminal" : "chat";
-  return { kind: "session", hostId: place.hostId, sessionId: place.sessionId, tab };
+  return { kind: "session", hostId: place.hostId, sessionId: place.sessionId };
 }
 
 /** A saved place, or null when the record is missing, malformed, from another version or stale. */
@@ -97,7 +94,7 @@ export function restoreSteps(
     dashboard,
     {
       pathname: "/h/[hostId]/s/[sessionId]",
-      params: { hostId: host.id, sessionId: place.sessionId, tab: place.tab, restored: "1" },
+      params: { hostId: host.id, sessionId: place.sessionId, restored: "1" },
     },
   ];
 }

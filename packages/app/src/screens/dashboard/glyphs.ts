@@ -46,15 +46,14 @@ export function rowStateWord(row: Pick<SessionRow, "section" | "live">): RowStat
   return row.live ? "completed" : "closed";
 }
 
-/** title, state, status, age — empty parts dropped, comma-joined for TalkBack/VoiceOver. */
+/** title, state, model, age — empty parts dropped, comma-joined for TalkBack/VoiceOver. */
 export function rowAccessibilityLabel(parts: {
   title: string;
   state: string;
-  status?: string;
-  meta?: string;
+  model?: string;
   age?: string;
 }): string {
-  return [parts.title, parts.state, parts.status, parts.meta, parts.age]
+  return [parts.title, parts.state, parts.model, parts.age]
     .map((part) => part?.trim())
     .filter(Boolean)
     .join(", ");

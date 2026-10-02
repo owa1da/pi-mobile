@@ -1,6 +1,6 @@
 apply plugin: 'com.android.library'
 
-group = 'sh.pimobile.systembars'
+group = 'sh.pimobile.fontscale'
 version = '0.1.0'
 
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
@@ -11,7 +11,7 @@ useExpoPublishing()
 useDefaultAndroidSdkVersions()
 
 android {
-  namespace "sh.pimobile.systembars"
+  namespace "sh.pimobile.fontscale"
 }
 
 dependencies {

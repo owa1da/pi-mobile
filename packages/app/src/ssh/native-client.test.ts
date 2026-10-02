@@ -3,9 +3,7 @@ import type {
   PiSshConnectOptions,
   PiSshEventMap,
   PiSshNativeModule,
-  PiSshOpenShellOptions,
 } from "../../modules/pi-ssh/src/PiSsh.types";
-import { base64ToBytes, bytesToBase64, utf8Encode } from "./base64";
 import { SSH_ERROR_CODES, isSshError } from "./errors";
 import { createNativeSshClient } from "./native-client";
 import type { SshTarget } from "./types";
@@ -19,11 +17,7 @@ function flush(): Promise<void> {
 class FakeNative implements PiSshNativeModule {
   listeners = new Map<string, Set<Listener>>();
   connectCalls: PiSshConnectOptions[] = [];
-  shellCalls: PiSshOpenShellOptions[] = [];
   hostKeyResponses: { requestId: string; accept: boolean }[] = [];
-  writes: { shellId: string; base64: string }[] = [];
-  resizes: [string, number, number][] = [];
-  closedShells: string[] = [];
   disconnected: string[] = [];
   connected = new Set<string>();
   /** Behaviour of connect: emit a host key event then resolve/reject based on the response. */
@@ -69,20 +63,6 @@ class FakeNative implements PiSshNativeModule {
     return this.execImpl(connectionId, command, stdin, timeoutMs);
   }
 
-  async openShell(options: PiSshOpenShellOptions): Promise<string> {
-    this.shellCalls.push(options);
-    return options.shellId;
-  }
-
-  write(shellId: string, base64: string): void {
-    this.writes.push({ shellId, base64 });
-  }
-  resize(shellId: string, cols: number, rows: number): void {
-    this.resizes.push([shellId, cols, rows]);
-  }
-  closeShell(shellId: string): void {
-    this.closedShells.push(shellId);
-  }
   isConnected(connectionId: string): boolean {
     return this.connected.has(connectionId);
   }
@@ -136,27 +116,6 @@ function setup() {
   const client = createNativeSshClient(native, { createId: (prefix) => `${prefix}${++n}` });
   return { native, client };
 }
-
-describe("base64 helpers", () => {
-  it("round-trips arbitrary bytes and matches Buffer", () => {
-    for (const len of [0, 1, 2, 3, 4, 5, 100, 4099, 70_000]) {
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) bytes[i] = (i * 131 + 7) & 0xff;
-      const b64 = bytesToBase64(bytes);
-      expect(b64).toBe(Buffer.from(bytes).toString("base64"));
-      expect(Array.from(base64ToBytes(b64))).toEqual(Array.from(bytes));
-    }
-  });
-
-  it("tolerates whitespace and rejects garbage", () => {
-    expect(Array.from(base64ToBytes("aGVs\nbG8=\n"))).toEqual(Array.from(Buffer.from("hello")));
-    expect(() => base64ToBytes("ab$c")).toThrow();
-  });
-
-  it("encodes UTF-8 including astral characters", () => {
-    expect(Array.from(utf8Encode("aé€😀"))).toEqual(Array.from(Buffer.from("aé€😀", "utf8")));
-  });
-});
 
 describe("native ssh client", () => {
   it("passes target and options to native connect and asks verifyHostKey once", async () => {
@@ -286,100 +245,18 @@ describe("native ssh client", () => {
     expect(isSshError(error, SSH_ERROR_CODES.TIMEOUT)).toBe(true);
   });
 
-  it("routes shell data by id, buffers early output, and decodes base64", async () => {
+  it("connection loss notifies onClose with an error, then unsubscribes", async () => {
     const { native, client } = setup();
     const conn = await client.connect(target, { verifyHostKey: async () => true });
-    const shell = await conn.openShell({ cols: 80.7, rows: 24, command: "tmux attach" });
-    expect(native.shellCalls[0]).toEqual({
-      connectionId: "c1",
-      shellId: "sh2",
-      cols: 80,
-      rows: 24,
-      term: "xterm-256color",
-      command: "tmux attach",
-    });
-    const other = await conn.openShell({ cols: 10, rows: 5, term: "vt100" });
-    expect(native.shellCalls[1]).not.toHaveProperty("command");
-
-    // Output before any listener is buffered.
-    native.emit("onShellData", { shellId: "sh2", data: bytesToBase64(utf8Encode("early ")) });
-    const received: string[] = [];
-    const otherReceived: string[] = [];
-    const decoder = new TextDecoder();
-    shell.onData((bytes) => received.push(decoder.decode(bytes)));
-    other.onData((bytes) => otherReceived.push(decoder.decode(bytes)));
-    native.emit("onShellData", { shellId: "sh2", data: bytesToBase64(utf8Encode("late")) });
-    await flush();
-    expect(received.join("")).toBe("early late");
-    expect(otherReceived).toEqual([]);
-    native.emit("onShellData", { shellId: "sh3", data: bytesToBase64(utf8Encode("x")) });
-    expect(otherReceived).toEqual(["x"]);
-    native.emit("onShellData", { shellId: "unknown", data: "AAAA" });
-  });
-
-  it("write encodes strings as UTF-8 base64, resize forwards integers", async () => {
-    const { native, client } = setup();
-    const conn = await client.connect(target, { verifyHostKey: async () => true });
-    const shell = await conn.openShell({ cols: 80, rows: 24 });
-    shell.write("ü\r");
-    shell.write(new Uint8Array([0x1b, 0x5b, 0x41]));
-    shell.write("");
-    expect(native.writes.map((w) => Array.from(base64ToBytes(w.base64)))).toEqual([
-      [0xc3, 0xbc, 0x0d],
-      [0x1b, 0x5b, 0x41],
-    ]);
-    shell.resize(100.9, 40);
-    shell.resize(0, 10);
-    expect(native.resizes).toEqual([["sh2", 100, 40]]);
-  });
-
-  it("delivers shell close with exit code, also to late listeners, and stops writes", async () => {
-    const { native, client } = setup();
-    const conn = await client.connect(target, { verifyHostKey: async () => true });
-    const shell = await conn.openShell({ cols: 80, rows: 24 });
-    const codes: (number | null)[] = [];
-    shell.onClose((code) => codes.push(code));
-    native.emit("onShellClose", { shellId: "sh2", connectionId: "c1", exitCode: 3 });
-    expect(codes).toEqual([3]);
-    shell.onClose((code) => codes.push(code));
-    await flush();
-    expect(codes).toEqual([3, 3]);
-    shell.write("ignored");
-    expect(native.writes).toEqual([]);
-  });
-
-  it("close() on a shell tells native and reports null exit", async () => {
-    const { native, client } = setup();
-    const conn = await client.connect(target, { verifyHostKey: async () => true });
-    const shell = await conn.openShell({ cols: 80, rows: 24 });
-    const codes: (number | null)[] = [];
-    shell.onClose((code) => codes.push(code));
-    shell.close();
-    shell.close();
-    expect(native.closedShells).toEqual(["sh2"]);
-    expect(codes).toEqual([null]);
-    // A late native close event for the same shell is ignored.
-    native.emit("onShellClose", { shellId: "sh2", connectionId: "c1", exitCode: 0 });
-    expect(codes).toEqual([null]);
-  });
-
-  it("connection loss closes shells first, then notifies onClose with an error, then unsubscribes", async () => {
-    const { native, client } = setup();
-    const conn = await client.connect(target, { verifyHostKey: async () => true });
-    const shell = await conn.openShell({ cols: 80, rows: 24 });
     const order: string[] = [];
-    shell.onClose((code) => order.push(`shell:${code}`));
     conn.onClose((error) => order.push(`conn:${(error as { code?: string } | undefined)?.code}`));
     native.connected.delete("c1");
     native.emit("onConnectionClose", { connectionId: "c1", reason: "lost" });
-    expect(order).toEqual(["shell:null", `conn:${SSH_ERROR_CODES.CONNECTION_CLOSED}`]);
+    expect(order).toEqual([`conn:${SSH_ERROR_CODES.CONNECTION_CLOSED}`]);
     expect(conn.isConnected()).toBe(false);
     expect(native.listenerCount()).toBe(0);
     const error = await conn.exec("x").catch((e: unknown) => e);
     expect(isSshError(error, SSH_ERROR_CODES.NOT_CONNECTED)).toBe(true);
-    await expect(conn.openShell({ cols: 1, rows: 1 })).rejects.toMatchObject({
-      code: SSH_ERROR_CODES.NOT_CONNECTED,
-    });
   });
 
   it("close() disconnects natively, notifies without error once, and late onClose still fires", async () => {
@@ -404,21 +281,9 @@ describe("native ssh client", () => {
     const a = await client.connect(target, { verifyHostKey: async () => true });
     const b = await client.connect(target, { verifyHostKey: async () => true });
     a.close();
-    expect(native.listenerCount()).toBe(4);
+    expect(native.listenerCount()).toBe(2);
     b.close();
     expect(native.listenerCount()).toBe(0);
-  });
-
-  it("unsubscribed listeners stop receiving data", async () => {
-    const { native, client } = setup();
-    const conn = await client.connect(target, { verifyHostKey: async () => true });
-    const shell = await conn.openShell({ cols: 80, rows: 24 });
-    const listener = vi.fn();
-    const off = shell.onData(listener);
-    native.emit("onShellData", { shellId: "sh2", data: "YQ==" });
-    off();
-    native.emit("onShellData", { shellId: "sh2", data: "Yg==" });
-    expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it("generateKeyPair passes through and maps errors", async () => {

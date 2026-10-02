@@ -89,12 +89,11 @@ interface SessionsListProps {
   hostId: string;
   hostLabel: string;
   snapshot: SessionsSnapshot;
-  homeDir?: string;
   /** The counts line; scrolls with the list, as on forge's page. */
   summary: string;
 }
 
-function SessionsList({ hostId, hostLabel, snapshot, homeDir, summary }: SessionsListProps) {
+function SessionsList({ hostId, hostLabel, snapshot, summary }: SessionsListProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -115,10 +114,8 @@ function SessionsList({ hostId, hostLabel, snapshot, homeDir, summary }: Session
   const hostNow = snapshot.hostNow;
 
   const renderItem = useCallback<SectionListRenderItem<SessionRowData, DashboardSection>>(
-    ({ item }) => (
-      <SessionRow row={item} hostNow={hostNow} homeDir={homeDir} onPress={onPressRow} />
-    ),
-    [homeDir, hostNow, onPressRow],
+    ({ item }) => <SessionRow row={item} hostNow={hostNow} onPress={onPressRow} />,
+    [hostNow, onPressRow],
   );
   const renderSectionHeader = useCallback(
     ({ section }: { section: SectionListData<SessionRowData, DashboardSection> }) => (
@@ -225,7 +222,6 @@ export function DashboardScreen() {
         hostId={hostId}
         hostLabel={host?.label ?? ""}
         snapshot={snapshot}
-        homeDir={connection.env?.homeDir}
         summary={summary}
       />
     );

@@ -13,7 +13,6 @@
         "src/**/*.test.{ts,tsx}",
         "src/**/*.native.{ts,tsx}",
         "src/**/*.{ios,android,web}.{ts,tsx}",
-        "src/terminal/webview/terminal-emulator-webview-entry.ts",
         "plugins/*.js",
         "scripts/**/*.mjs",
         "vitest.config.{ts,js}",

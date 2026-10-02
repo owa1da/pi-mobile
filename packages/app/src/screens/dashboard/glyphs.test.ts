@@ -54,14 +54,13 @@ describe("rowAccessibilityLabel", () => {
       rowAccessibilityLabel({
         title: "Deploy staging",
         state: "needs input",
-        status: "pi is asking: Allow bash?",
-        meta: "",
+        model: "Opus 5.5",
         age: "40s",
       }),
-    ).toBe("Deploy staging, needs input, pi is asking: Allow bash?, 40s");
+    ).toBe("Deploy staging, needs input, Opus 5.5, 40s");
   });
 
-  it("always carries the state even with no status", () => {
+  it("always carries the state even with no model", () => {
     expect(rowAccessibilityLabel({ title: "Refactor", state: "working", age: "2m" })).toBe(
       "Refactor, working, 2m",
     );

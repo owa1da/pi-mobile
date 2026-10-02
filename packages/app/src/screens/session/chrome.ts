@@ -3,21 +3,6 @@
 import type { SessionRow } from "@/host/types";
 import type { ConnectionStatus } from "@/stores/connection-store";
 
-export type SessionTab = "chat" | "terminal";
-
-/**
- * The landscape terminal collapses its chrome (header, sub-bar, system bars) only on the Terminal
- * tab of a handheld held in landscape. Tablets and portrait keep everything.
- */
-export function shouldCollapseTerminalChrome(input: {
-  tab: SessionTab;
-  handheld: boolean;
-  width: number;
-  height: number;
-}): boolean {
-  return input.tab === "terminal" && input.handheld && input.width > input.height;
-}
-
 export type SubBarStatus =
   | { kind: "state"; key: `pi.session.state.${SessionRow["state"]}` }
   /** An optimistic send is in flight: the spinner in the composer and this word agree. */

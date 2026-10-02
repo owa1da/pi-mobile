@@ -4,9 +4,8 @@
 
 import { createHash } from "node:crypto";
 import ssh2 from "ssh2";
-import type { ClientChannel, ConnectConfig } from "ssh2";
+import type { ConnectConfig } from "ssh2";
 import { SSH_ERROR_CODES, SshError } from "./errors";
-import { ShellEvents } from "./shell-events";
 import type {
   SshClient,
   SshConnectOptions,
@@ -14,8 +13,6 @@ import type {
   SshExecOptions,
   SshExecResult,
   SshHostKey,
-  SshShell,
-  SshShellOptions,
   SshTarget,
 } from "./types";
 
@@ -75,7 +72,6 @@ export function createNodeSshClient(clientOptions: NodeSshClientOptions = {}): S
         let closed = false;
         let closeError: Error | undefined;
         const closeListeners = new Set<(error?: Error) => void>();
-        const openShells = new Set<() => void>();
 
         const fail = (error: SshError) => {
           if (settled) return;
@@ -222,7 +218,6 @@ export function createNodeSshClient(clientOptions: NodeSshClientOptions = {}): S
         function markClosed(error?: Error): void {
           if (closed) return;
           closed = true;
-          for (const finishShell of Array.from(openShells)) finishShell();
           onceListener(closeListeners, error);
         }
 
@@ -302,77 +297,6 @@ export function createNodeSshClient(clientOptions: NodeSshClientOptions = {}): S
                   stream.end();
                 }
               });
-            });
-          },
-
-          openShell(shellOptions: SshShellOptions): Promise<SshShell> {
-            try {
-              requireOpen();
-            } catch (error) {
-              return Promise.reject(error);
-            }
-            const pty = {
-              rows: Math.max(1, Math.floor(shellOptions.rows)),
-              cols: Math.max(1, Math.floor(shellOptions.cols)),
-              height: Math.max(1, Math.floor(shellOptions.rows)) * 16,
-              width: Math.max(1, Math.floor(shellOptions.cols)) * 8,
-              term: shellOptions.term ?? "xterm-256color",
-            };
-            return new Promise<SshShell>((resolveShell, rejectShell) => {
-              const onStream = (error: Error | undefined, stream: ClientChannel) => {
-                if (error) {
-                  rejectShell(
-                    new SshError(
-                      closed ? SSH_ERROR_CODES.CONNECTION_CLOSED : SSH_ERROR_CODES.SHELL_FAILED,
-                      error.message,
-                      { cause: error },
-                    ),
-                  );
-                  return;
-                }
-                const events = new ShellEvents();
-                let exitCode: number | null = null;
-                const finishShell = () => {
-                  openShells.delete(finishShell);
-                  events.pushClose(exitCode);
-                };
-                openShells.add(finishShell);
-                stream.on("data", (chunk: Buffer) => events.pushData(new Uint8Array(chunk)));
-                stream.stderr.on("data", (chunk: Buffer) => events.pushData(new Uint8Array(chunk)));
-                stream.on("exit", (code: number | null) => {
-                  exitCode = typeof code === "number" ? code : null;
-                });
-                stream.on("close", finishShell);
-                stream.on("error", () => {});
-                resolveShell({
-                  write(data: string | Uint8Array): void {
-                    if (events.isClosed) return;
-                    stream.write(
-                      typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data),
-                    );
-                  },
-                  resize(cols: number, rows: number): void {
-                    if (events.isClosed) return;
-                    const c = Math.floor(cols);
-                    const r = Math.floor(rows);
-                    if (!(c > 0) || !(r > 0)) return;
-                    stream.setWindow(r, c, r * 16, c * 8);
-                  },
-                  onData: (listener) => events.onData(listener),
-                  onClose: (listener) => events.onClose(listener),
-                  close(): void {
-                    if (events.isClosed) return;
-                    exitCode = null;
-                    finishShell();
-                    stream.close();
-                  },
-                });
-              };
-              if (shellOptions.command !== undefined) {
-                client.exec(shellOptions.command, { pty }, onStream);
-              } else {
-                client.shell(pty, onStream);
-              }
             });
           },
 

@@ -1,5 +1,5 @@
 // Rasterizes assets/brand/pi-mark.svg into every app icon, splash, notification icon and favicon.
-// No dependencies: the mark is rounded rects and polygons only (asserted), drawn with 4×4 supersampling and
+// No dependencies: the mark is rects and polygons only (asserted), drawn with 4×4 supersampling and
 // written as PNG through node:zlib. Run from packages/app: `node scripts/build-brand-assets.mjs`.
 
 import fs from "node:fs";
@@ -182,20 +182,20 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-// scale = glyph grid (100 units) as a fraction of the canvas. The glyph's bounds are 64×51
-// units, so 0.9 fills ~58% of a legacy icon; adaptive and maskable icons keep the whole glyph
-// inside the 61% safe circle (0.62 → diagonal ≈ 51% of the canvas).
+// scale = glyph grid (100 units) as a fraction of the canvas. The glyph's bounds are 64×64
+// units (the pi agent logo's 4×4 block grid), so 0.8 fills ~51% of a legacy icon; adaptive and
+// maskable icons keep the whole glyph inside the 61% safe circle (0.62 → diagonal ≈ 56%).
 const OUTPUTS = [
-  { file: "assets/images/icon.png", size: 1024, scale: 0.9, fg: ACCENT_BRIGHT, background: BLACK },
+  { file: "assets/images/icon.png", size: 1024, scale: 0.8, fg: ACCENT_BRIGHT, background: BLACK },
   { file: "assets/images/android-icon-foreground.png", size: 1024, scale: 0.62, fg: ACCENT_BRIGHT },
   { file: "assets/images/splash-icon.png", size: 200, scale: 1, fg: ACCENT },
   { file: "assets/images/splash-icon-dark.png", size: 200, scale: 1, fg: ACCENT_BRIGHT },
   { file: "assets/images/notification-icon.png", size: 96, scale: 0.9, fg: WHITE },
-  { file: "assets/images/favicon.png", size: 48, scale: 1, fg: ACCENT_BRIGHT, background: BLACK },
+  { file: "assets/images/favicon.png", size: 48, scale: 1.1, fg: ACCENT_BRIGHT, background: BLACK },
   {
     file: "public/apple-touch-icon.png",
     size: 180,
-    scale: 0.9,
+    scale: 0.8,
     fg: ACCENT_BRIGHT,
     background: BLACK,
   },

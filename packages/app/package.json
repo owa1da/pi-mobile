@@ -5,7 +5,7 @@
   "main": "index.ts",
   "scripts": {
     "start": "cross-env APP_VARIANT=development expo start",
-    "eas-build-post-install": "npm --prefix ../.. run build:highlight && npm run build:terminal-webview",
+    "eas-build-post-install": "npm --prefix ../.. run build:highlight",
     "prebuild": "npm --prefix ../.. run build:highlight",
     "android": "npm run android:development",
     "android:development": "npm run prebuild && cross-env APP_VARIANT=development expo prebuild --platform android --clean --non-interactive && cross-env APP_VARIANT=development expo run:android --variant=debug",
@@ -16,8 +16,7 @@
     "lint": "expo lint",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run --project unit",
-    "test:integration": "vitest run --project integration",
-    "build:terminal-webview": "node ./scripts/build-terminal-webview-html.mjs"
+    "test:integration": "vitest run --project integration"
   },
   "dependencies": {
     "@getpaseo/highlight": "*",
@@ -27,15 +26,6 @@
     "@react-native-masked-view/masked-view": "^0.3.2",
     "@react-navigation/native-stack": "^7.14.4",
     "@tanstack/react-query": "^5.90.11",
-    "@xterm/addon-clipboard": "^0.3.0-beta.213",
-    "@xterm/addon-fit": "^0.12.0-beta.213",
-    "@xterm/addon-image": "^0.10.0-beta.213",
-    "@xterm/addon-ligatures": "^0.11.0-beta.213",
-    "@xterm/addon-search": "^0.17.0-beta.213",
-    "@xterm/addon-unicode11": "^0.10.0-beta.213",
-    "@xterm/addon-web-links": "^0.13.0-beta.213",
-    "@xterm/addon-webgl": "^0.20.0-beta.212",
-    "@xterm/xterm": "^6.1.0-beta.213",
     "buffer": "^6.0.3",
     "expo": "^54.0.18",
     "expo-build-properties": "^1.0.9",
@@ -68,7 +58,6 @@
     "react-native-uitextview": "^2.2.0",
     "react-native-unistyles": "^3.2.4",
     "react-native-web": "~0.21.0",
-    "react-native-webview": "^13.16.0",
     "react-native-worklets": "~0.8.3",
     "zod": "^4.4.3",
     "zustand": "^5.0.9"
@@ -82,8 +71,6 @@
     "@types/react": "~19.2.0",
     "@types/react-dom": "~19.2.0",
     "@types/ssh2": "^1.15.6",
-    "@xterm/headless": "^6.1.0-beta.213",
-    "esbuild": "0.28.1",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
     "expo-gradle-jvmargs": "^1.1.2",

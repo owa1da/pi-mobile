@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { HostError, type ChatItem } from "@/host/types";
 import { SshError } from "@/ssh/errors";
 import { toChatRows, toolDetail, toolStatus } from "./chat-rows";
-import { applyStickyCtrl, ctrlChar, encodeKey } from "./key-encoding";
 import { friendlyHostError } from "./send-errors";
 
 describe("toolDetail: pi tool names → ToolCall details", () => {
@@ -113,51 +112,14 @@ describe("toChatRows", () => {
   });
 });
 
-describe("key bar encoding", () => {
-  it("encodes Esc, Tab, Enter and arrows", () => {
-    expect(encodeKey("Escape")).toBe("\x1b");
-    expect(encodeKey("Tab")).toBe("\t");
-    expect(encodeKey("Tab", { shift: true })).toBe("\x1b[Z");
-    expect(encodeKey("Enter")).toBe("\r");
-    expect(encodeKey("ArrowUp")).toBe("\x1b[A");
-    expect(encodeKey("ArrowLeft", {}, { applicationCursor: true })).toBe("\x1bOD");
-    expect(encodeKey("ArrowRight", { ctrl: true })).toBe("\x1b[1;5C");
-    expect(encodeKey("Delete")).toBe("\x1b[3~");
-  });
-
-  it("encodes Ctrl+letter and Ctrl+symbol as control bytes", () => {
-    expect(encodeKey("c", { ctrl: true })).toBe("\x03");
-    expect(encodeKey("C", { ctrl: true })).toBe("\x03");
-    expect(ctrlChar("[")).toBe("\x1b");
-    expect(ctrlChar(" ")).toBe("\x00");
-    expect(encodeKey("x", { alt: true })).toBe("\x1bx");
-    expect(encodeKey("F13")).toBeNull();
-  });
-
-  it("applies the sticky Ctrl to soft-keyboard input once", () => {
-    expect(applyStickyCtrl("c", true)).toEqual({ send: "\x03", consumed: true });
-    expect(applyStickyCtrl("dx", true)).toEqual({ send: "\x04x", consumed: true });
-    expect(applyStickyCtrl("c", false)).toEqual({ send: "c", consumed: false });
-  });
-
-  it("leaves Ctrl armed for terminal reports xterm sends through onData (ESC-prefixed)", () => {
-    // tmux asks for the color scheme (mode 2031); xterm answers right after a re-render.
-    expect(applyStickyCtrl("\x1b[?997;1n", true)).toEqual({
-      send: "\x1b[?997;1n",
-      consumed: false,
-    });
-    expect(applyStickyCtrl("\x1bP>|xterm.js(6.1.0)\x1b\\", true).consumed).toBe(false);
-    expect(applyStickyCtrl("a", true)).toEqual({ send: "\x01", consumed: true });
-  });
-});
-
 describe("friendlyHostError", () => {
   it("maps HostError codes to friendly keys", () => {
     expect(friendlyHostError(new HostError("waiting-for-input", "x"))).toEqual({
       key: "pi.session.errors.waiting-for-input",
-      terminal: true,
     });
-    expect(friendlyHostError(new HostError("pane-busy", "x")).terminal).toBe(true);
+    expect(friendlyHostError(new HostError("pane-busy", "x")).key).toBe(
+      "pi.session.errors.pane-busy",
+    );
     expect(friendlyHostError(new HostError("prompt-too-large", "x")).key).toBe(
       "pi.session.errors.prompt-too-large",
     );
@@ -167,7 +129,6 @@ describe("friendlyHostError", () => {
     expect(friendlyHostError(new HostError("command-failed", "tmux died"))).toEqual({
       key: "pi.session.errors.command-failed",
       detail: "tmux died",
-      terminal: false,
     });
   });
 

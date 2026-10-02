@@ -3,7 +3,7 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v7), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v8), --keep (leave the sandbox up),
 //          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
 //          --theme dark|light (default dark: the run's
 //          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
@@ -61,55 +61,6 @@ const inputHex = (name, n) =>
   eventsSince(name, n)
     .filter((e) => e.kind === "input")
     .map((e) => e.hex);
-const clientSize = () => E.tmux("list-clients", "-F", "#{client_width}x#{client_height}").trim();
-const pimSessions = () => E.sessionsList().filter((line) => line.startsWith("pim-"));
-
-/** The pty size the app last sent (TerminalView logs `[terminal] pty COLSxROWS` per resize). */
-function lastPtySize() {
-  const lines = A.adb("logcat", "-d", "-s", "ReactNativeJS:I")
-    .split("\n")
-    .filter((line) => line.includes("[terminal] pty "));
-  const m = /\[terminal\] pty (\d+x\d+)/.exec(lines.pop() ?? "");
-  return m ? m[1] : "";
-}
-
-/** The phone's tmux window size (the active window of its pim-* session). */
-function phoneWindowSize() {
-  try {
-    const line = E.tmux(
-      "list-windows",
-      "-a",
-      "-F",
-      "#{session_name} #{window_active} #{window_width}x#{window_height}",
-    )
-      .split("\n")
-      .find((l) => l.startsWith("pim-") && l.split(" ")[1] === "1");
-    return line ? line.split(" ")[2] : "";
-  } catch {
-    return "";
-  }
-}
-
-/**
- * xterm's size (as sent to the pty) equals tmux's client size, and the phone's window is as wide,
- * once the layout has settled: a wider pty or window wraps pi's full-width rules.
- */
-async function assertTerminalWidthAgrees(ctx, label) {
-  const end = Date.now() + 12_000;
-  let last = "";
-  while (Date.now() < end) {
-    const pty = lastPtySize();
-    const client = clientSize();
-    const win = phoneWindowSize();
-    last = `xterm ${pty || "?"}, tmux client ${client || "?"}, window ${win || "?"}`;
-    if (pty && pty === client && widthOf(win) === widthOf(pty)) {
-      ctx.notes.push(`terminal width (${label}): ${last}`);
-      return;
-    }
-    await sleep(500);
-  }
-  throw new Error(`terminal width disagrees (${label}): ${last}`);
-}
 
 async function back() {
   A.key(A.KEY.BACK);
@@ -177,7 +128,7 @@ async function waitDump(pred, timeoutMs, label) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-const nodeWidth = (node) => (node ? node.bounds[2] - node.bounds[0] : 0);
+const nodeHeight = (node) => (node ? node.bounds[3] - node.bounds[1] : 0);
 
 /** Top/bottom of the host form's landmarks that are on screen (clipped by the sheet's viewport). */
 function sheetLandmarks() {
@@ -225,17 +176,6 @@ async function fillAddress(label, port) {
   await typeInto("host-field-username", os.userInfo().username);
   A.hideKeyboard();
   await sleep(500);
-}
-
-const widthOf = (size) => Number(size.split("x")[0]);
-
-/** The webview's renderer choice, as logged by the RN side (`[terminal-webview] terminal renderer`). */
-function rendererLog() {
-  const lines = A.adb("logcat", "-d", "-s", "ReactNativeJS:I")
-    .split("\n")
-    .filter((line) => line.includes("terminal renderer"));
-  const last = lines.pop();
-  return last ? last.slice(last.indexOf("[terminal-webview]")) : "no renderer log line";
 }
 
 /** Android's 48dp floor with 1px of rounding (bounds are whole pixels: 48dp = 126px at 2.625x). */
@@ -300,10 +240,8 @@ function auditControls(ctx, screen, controls) {
 
 /** Every other clickable node of the app on screen: recorded when unnamed or under 44dp. */
 function sweepClickables(ctx, screen, nodes) {
-  const webviews = nodes.filter((n) => n.cls === "android.webkit.WebView");
   for (const node of nodes) {
     if (!(node.clickable || node.longClickable) || node.pkg !== PKG) continue;
-    if (webviews.some((w) => w !== node && inside(node, w))) continue;
     const [x1, y1, x2, y2] = node.bounds;
     const w = (x2 - x1) / ctx.dp;
     const h = (y2 - y1) / ctx.dp;
@@ -443,6 +381,13 @@ function steps(ctx) {
         ctx.notes.push(`a11y: "${waitingDesc}" | "${workingDesc}" | "${closedDesc}"`);
         const unknown = nodes.find((n) => /\bUnknown\b/.test(n.text) || /\bUnknown\b/.test(n.desc));
         assert(!unknown, `dashboard says Unknown: "${unknown?.text || unknown?.desc}"`);
+        // forge's row: glyph · title · model · age. No asking line, folder, status or error.
+        const waitingRow = nodes.find(rowOf(sessionIdOf("waiting")));
+        const rowTexts = nodes.filter((n) => n.text && inside(n, waitingRow)).map((n) => n.text);
+        assert(rowTexts.length <= 4, `waiting row shows ${rowTexts.length} texts: ${rowTexts}`);
+        assert(!nodes.some(A.byText(/^Allow bash/)), "dashboard shows what pi is asking");
+        assert(!nodes.some(A.byText(/^asking:|^pi is asking/)), "dashboard shows an asking line");
+        ctx.notes.push(`waiting row texts: ${rowTexts.join(" | ")}`);
       },
     ],
     [
@@ -454,12 +399,10 @@ function steps(ctx) {
         shot("07-chat-completed-bottom-dark");
         auditControls(ctx, "chat", [
           ["Back", byDesc("Back")],
-          ["Chat tab", A.byId("session-tab-chat"), { selected: true }],
-          ["Terminal tab", A.byId("session-tab-terminal"), { selected: false }],
           ["composer field", A.byId("chat-composer")],
           ["Send", A.byId("chat-send")],
-          ["assistant copy", A.byId("assistant-turn-copy"), { slop: 16, optional: true }],
         ]);
+        assert(!A.find(A.byId("session-tabs")), "the Chat | Terminal control is still shown");
         assert(A.find(A.byText("Fixed: login redirect loop")), "markdown heading missing");
         A.swipe(540, 900, 540, 1900, 400);
         await sleep(1200);
@@ -467,20 +410,10 @@ function steps(ctx) {
         A.swipe(540, 900, 540, 1900, 400);
         await sleep(1200);
         shot("09-chat-completed-top-dark");
-        // The timestamp and copy under a user bubble stay hidden until a long-press.
-        assert(
-          !A.find(A.byId("user-message-timestamp")),
-          "bubble timestamp shown before long-press",
-        );
-        const bubble = await A.waitNode(A.byId("user-message-bubble"), 10_000, "user bubble");
-        const [bx, by] = A.center(bubble);
-        A.swipe(bx, by, bx, by, 900);
-        await A.waitNode(A.byId("user-message-timestamp"), 5000, "timestamp after long-press");
-        await sleep(500);
-        shot("55-chat-bubble-revealed-dark");
-        auditControls(ctx, "chat (bubble revealed)", [
-          ["Copy message", A.byId("user-message-copy"), { slop: 16 }],
-        ]);
+        // pi's transcript shows the message only: no time or copy row under a bubble.
+        await A.waitNode(A.byId("user-message-bubble"), 10_000, "user bubble");
+        for (const id of ["user-message-timestamp", "user-message-copy", "assistant-turn-copy"])
+          assert(!A.find(A.byId(id)), `chat shows ${id}`);
         const nodes = A.dump();
         for (const label of [
           "Thinking",
@@ -515,134 +448,20 @@ function steps(ctx) {
       },
     ],
     [
-      "Waiting session → Answer in terminal → key bar + soft keyboard bytes",
+      "Waiting session: a calm banner says what pi is asking, with no terminal action",
       async () => {
         await A.tap(rowOf(sessionIdOf("waiting")), "waiting row");
         await A.waitNode(A.byId("chat-waiting-banner"), 30_000, "waiting banner");
+        await sleep(1500);
         shot("11-chat-waiting-banner-dark");
-        auditControls(ctx, "waiting banner", [
-          ["Answer in terminal", A.byId("chat-answer-in-terminal")],
-        ]);
-        await A.tap(A.byId("chat-answer-in-terminal"), "answer in terminal");
-        await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
-        await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* grouped session");
-        await sleep(3000);
-        shot("12-terminal-waiting-dark");
-        auditControls(ctx, "terminal", [
-          ["Terminal tab", A.byId("session-tab-terminal"), { selected: true }],
-          ["Chat tab", A.byId("session-tab-chat"), { selected: false }],
-          ["terminal surface", (n) => n.desc.startsWith("Terminal for "), { textOnly: true }],
-          ...[
-            "escape",
-            "tab",
-            "ctrl",
-            "arrowup",
-            "arrowdown",
-            "arrowleft",
-            "arrowright",
-            "enter",
-          ].map((k) => [`key ${k}`, A.byId(`key-${k}`)]),
-        ]);
-        ctx.notes.push(`renderer: ${rendererLog()}`);
-        const n = eventCount("waiting");
-        for (const k of [
-          "key-escape",
-          "key-arrowup",
-          "key-arrowdown",
-          "key-arrowleft",
-          "key-arrowright",
-          "key-tab",
-        ])
-          await A.tap(A.byId(k), k);
-        await A.tap(A.byId("key-ctrl"), "ctrl");
-        await sleep(600);
-        assert(A.find(A.byId("key-ctrl")).selected, "Ctrl did not stay armed");
-        shot("15-terminal-ctrl-armed-dark");
-        await A.tap(A.byId("key-arrowup"), "ctrl+up");
-        await A.tap(A.byId("key-ctrl"), "ctrl");
-        const before = clientSize();
-        await A.tap(A.byId("terminal-surface"), "surface");
-        await sleep(1500);
-        assert(A.keyboardShown(), "soft keyboard did not open");
-        A.typeText("a");
-        await sleep(500);
-        A.typeText("hi");
-        await sleep(1500);
-        shot("13-terminal-keyboard-dark");
-        const withKeyboard = clientSize();
-        A.hideKeyboard();
-        await sleep(2000);
-        const hex = inputHex("waiting", n);
-        const want = [
-          "1b",
-          "1b5b41",
-          "1b5b42",
-          "1b5b44",
-          "1b5b43",
-          "09",
-          "1b5b313b3541",
-          "01",
-          "68",
-          "69",
-        ];
-        const joined = hex.join(" ");
-        assert(joined.replace(/ /g, "") === want.join(""), `bytes ${joined} != ${want.join(" ")}`);
-        assert(
-          withKeyboard !== before && clientSize() === before,
-          `pty resize ${before} → ${withKeyboard} → ${clientSize()}`,
-        );
-        ctx.notes.push(`pty size ${before} → ${withKeyboard} with the keyboard → ${clientSize()}`);
-        await assertTerminalWidthAgrees(ctx, "portrait");
-        A.rotate(1);
-        await E.waitFor(() => widthOf(clientSize()) > widthOf(before), 10_000, "landscape pty");
-        // Collapsed: no header or sub-bar, the leading ‹ Chat key, immersive system bars.
-        await A.waitNode(A.byId("key-to-chat"), 10_000, "‹ Chat key (collapsed landscape)");
-        await sleep(2000);
-        assert(!A.find(A.byId("session-tabs")), "sub-bar still shown in collapsed landscape");
-        assert(!A.find(A.byId("screen-header")), "header still shown in collapsed landscape");
-        shot("14-terminal-landscape-dark");
-        auditControls(ctx, "terminal (collapsed landscape)", [["‹ Chat", A.byId("key-to-chat")]]);
-        await assertTerminalWidthAgrees(ctx, "collapsed landscape");
-        const landscape = clientSize();
-        A.rotate(0);
-        await E.waitFor(() => clientSize() === before, 10_000, "portrait pty again");
-        await A.waitNode(A.byId("session-tabs"), 10_000, "sub-bar restored in portrait");
-        await assertTerminalWidthAgrees(ctx, "portrait after landscape");
-        assert(!A.find(A.byId("key-to-chat")), "‹ Chat key shown in portrait");
-        ctx.notes.push(`rotation: pty ${before} portrait → ${landscape} landscape → ${before}`);
-        // ‹ Chat switches to Chat and restores the chrome, still in landscape.
-        A.rotate(1);
-        await A.tap(A.byId("key-to-chat"), "‹ Chat", 10_000);
-        await A.waitNode(A.byId("chat-list"), 10_000, "chat after ‹ Chat");
-        await A.waitNode(A.byId("session-tabs"), 10_000, "sub-bar after ‹ Chat");
-        assert(A.find(A.byId("screen-header")), "header not restored after ‹ Chat");
-        await sleep(1500);
-        shot("50-landscape-after-to-chat-dark");
-        // System back while collapsed goes to Chat, not out of the session.
-        await A.tap(A.byId("session-tab-terminal"), "terminal tab (landscape)");
-        await A.waitNode(A.byId("key-to-chat"), 15_000, "collapsed again");
-        await back();
-        await A.waitNode(A.byId("chat-list"), 10_000, "chat after system back");
-        assert(A.find(A.byId("session-tabs")), "system back left the session");
-        assert(!A.find(A.byId("dashboard-composer")), "system back went to the dashboard");
-        A.rotate(0);
-        await sleep(1500);
-        await A.tap(A.byId("session-tab-terminal"), "terminal tab (portrait)");
-        await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* session again");
-      },
-    ],
-    [
-      "Leaving the terminal kills only the phone's pim-* session",
-      async () => {
-        const windows = E.tmux("list-windows", "-t", "pi", "-F", "#{window_id}").trim();
+        const nodes = A.dump();
+        const banner = nodes.find(A.byId("chat-waiting-banner"));
+        assert(nodes.some(A.byText(/terraform apply/)), "the banner does not show the question");
+        const actions = nodes.filter((n) => n !== banner && n.clickable && inside(n, banner));
+        assert(actions.length === 0, `the banner has actions: ${actions.map((n) => n.desc)}`);
+        const terminal = nodes.find((n) => /terminal/i.test(n.text) || /terminal/i.test(n.desc));
+        assert(!terminal, `the session mentions a terminal: "${terminal?.text || terminal?.desc}"`);
         await toDashboard();
-        await E.waitFor(() => pimSessions().length === 0, 15_000, "pim-* session to go");
-        assert(
-          E.sessionsList().some((s) => s.startsWith("pi ")),
-          "user session pi is gone",
-        );
-        const after = E.tmux("list-windows", "-t", "pi", "-F", "#{window_id}").trim();
-        assert(after === windows, "user windows changed");
       },
     ],
     [
@@ -687,7 +506,7 @@ function steps(ctx) {
       },
     ],
     [
-      "Real pi + forge in the Terminal tab, portrait and landscape (PIM_E2E_REAL_PI=1)",
+      "Real pi + forge: its chat opens with pi's state and model (PIM_E2E_REAL_PI=1)",
       async () => {
         if (!E.readState().windows.real) {
           ctx.notes.push("real pi: skipped (PIM_E2E_REAL_PI unset)");
@@ -695,28 +514,12 @@ function steps(ctx) {
         }
         const row = await scrollUntil(rowOf(realSessionId()), "real pi row");
         A.tapNode(row);
-        await A.tap(A.byId("session-tab-terminal"), "terminal tab", 30_000);
-        await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
-        await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* grouped session");
-        await sleep(6000);
-        shot("32-terminal-real-pi-forge-dark");
+        await A.waitNode(A.byId("chat-composer"), 30_000, "real pi chat");
+        await sleep(3000);
+        shot("32-chat-real-pi-dark");
         const realState = A.find(A.byId("session-state"))?.text ?? "";
         assert(!/Unknown/.test(realState), `real pi sub-bar says Unknown: "${realState}"`);
         ctx.notes.push(`real pi sub-bar: "${realState}"`);
-        await assertTerminalWidthAgrees(ctx, "real pi portrait");
-        const portrait = clientSize();
-        A.rotate(1);
-        await E.waitFor(
-          () => widthOf(clientSize()) > widthOf(portrait),
-          10_000,
-          "landscape pty (real pi)",
-        );
-        await sleep(5000);
-        shot("33-terminal-real-pi-landscape-dark");
-        await assertTerminalWidthAgrees(ctx, "real pi collapsed landscape");
-        ctx.notes.push(`real pi: pty ${portrait} → ${clientSize()}; ${rendererLog()}`);
-        A.rotate(0);
-        await sleep(2000);
         await toDashboard();
       },
     ],
@@ -936,23 +739,12 @@ function steps(ctx) {
             await A.waitNode(A.byId("chat-list"), 30_000, `chat @${scale}`);
             await sleep(2500);
             shot(`${n + 2}-fs${tag}-chat-dark`);
-            auditControls(ctx, `chat @${scale}`, [
-              ["Chat tab", A.byId("session-tab-chat"), { selected: true }],
-              ["Terminal tab", A.byId("session-tab-terminal")],
-              ["Send", A.byId("chat-send")],
-            ]);
+            auditControls(ctx, `chat @${scale}`, [["Send", A.byId("chat-send")]]);
             const nodes = A.dump();
             const status = nodes.find(A.byId("session-state"));
-            const tabs = nodes.find(A.byId("session-tabs"));
-            assert(visible(status) && visible(tabs), `sub-bar clipped @${scale}`);
-            assert(
-              status.bounds[2] <= tabs.bounds[0],
-              `sub-bar status overlaps the tabs @${scale}`,
-            );
+            assert(visible(status), `sub-bar clipped @${scale}`);
             assert(visible(nodes.find(A.byId("chat-composer"))), `composer off screen @${scale}`);
-            ctx.notes.push(
-              `font ${scale}: sub-bar status "${status.text}" ${status.bounds}, tabs ${tabs.bounds}`,
-            );
+            ctx.notes.push(`font ${scale}: sub-bar status "${status.text}" ${status.bounds}`);
             const code = nodes.find(A.byId("code-block-scroll"));
             if (code) {
               assert(code.bounds[2] <= W, `code block wider than the screen @${scale}`);
@@ -1001,50 +793,45 @@ function steps(ctx) {
       },
     ],
     [
-      "Font-scale reload keeps the place: same session and tab, dashboard beneath it",
+      "Font-scale reload keeps the place: same session, dashboard beneath it",
       async () => {
         await toDashboard();
         const row = await scrollUntil(rowOf(E.readState().richId), "rich row");
+        const title = row.desc.split(", ")[0];
         A.tapNode(row);
         await A.waitNode(A.byId("chat-list"), 30_000, "chat");
-        await A.tap(A.byId("session-tab-terminal"), "terminal tab");
-        await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
         await sleep(2500);
-        const before = A.dump();
-        const surface = before.find((n) => n.desc.startsWith("Terminal for "));
-        assert(surface, "terminal surface has no label");
-        const chatW = nodeWidth(before.find(A.byId("session-tab-chat")));
+        const stateH = nodeHeight(A.find(A.byId("session-state")));
+        assert(stateH > 0, "no sub-bar state line");
         try {
           A.fontScale(1.3);
-          // The reload is proven by the re-measured (wider) tab; the place by the same session's
-          // terminal on the Terminal tab.
+          // The reload is proven by the re-measured (taller) state line; the place by the same
+          // session's title in the header.
           const restored = await waitDump(
             (nodes) =>
-              nodes.find(A.byId("session-tab-terminal"))?.selected &&
-              nodeWidth(nodes.find(A.byId("session-tab-chat"))) > chatW + 8 &&
-              nodes.some((n) => n.desc === surface.desc),
+              nodes.some(A.byId("chat-list")) &&
+              nodes.some((n) => n.text === title) &&
+              nodeHeight(nodes.find(A.byId("session-state"))) > stateH + 4,
             60_000,
-            "the same session on the Terminal tab after the font-scale reload",
+            "the same session after the font-scale reload",
           );
-          const chatW13 = nodeWidth(restored.find(A.byId("session-tab-chat")));
-          shot("72-fs13-restored-terminal-dark");
+          const stateH13 = nodeHeight(restored.find(A.byId("session-state")));
+          shot("72-fs13-restored-chat-dark");
           ctx.notes.push(
-            `font 1.3 reload: "${surface.desc}" restored on Terminal (Chat tab ${chatW} → ${chatW13}px)`,
+            `font 1.3 reload: "${title}" reopened (state line ${stateH} → ${stateH13}px)`,
           );
-          await A.tap(A.byId("session-tab-chat"), "chat tab");
-          await A.waitNode(A.byId("chat-list"), 10_000, "chat");
           A.fontScale(1);
           await waitDump(
             (nodes) =>
-              nodes.find(A.byId("session-tab-chat"))?.selected &&
-              nodeWidth(nodes.find(A.byId("session-tab-chat"))) < chatW13 - 8 &&
-              nodes.some(A.byId("chat-list")),
+              nodes.some(A.byId("chat-list")) &&
+              nodes.some((n) => n.text === title) &&
+              nodeHeight(nodes.find(A.byId("session-state"))) < stateH13 - 4,
             60_000,
-            "the same session on the Chat tab after the reload back to 1.0",
+            "the same session after the reload back to 1.0",
           );
           await sleep(1500);
           shot("73-fs10-restored-chat-dark");
-          ctx.notes.push("font 1.0 reload: the session reopened on the Chat tab");
+          ctx.notes.push("font 1.0 reload: the session reopened again");
         } finally {
           A.fontScale(1);
         }
@@ -1059,7 +846,7 @@ function steps(ctx) {
       },
     ],
     [
-      "Light mode: dashboard, chat, tool sheet, terminal, hosts",
+      "Light mode: dashboard, chat, tool sheet, hosts",
       async () => {
         night(false);
         await sleep(3000);
@@ -1084,17 +871,6 @@ function steps(ctx) {
         assert(A.find(A.byText(/ENOENT/)), "failed tool error not visible without scrolling");
         await A.tap(A.byId("tool-call-sheet-close"), "close sheet");
         await sleep(800);
-        await A.tap(A.byId("session-tab-terminal"), "terminal tab");
-        await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
-        await sleep(4000);
-        shot("30-terminal-light");
-        A.rotate(1);
-        await A.waitNode(A.byId("key-to-chat"), 15_000, "collapsed terminal (light)");
-        await sleep(3000);
-        shot("52-terminal-landscape-collapsed-light");
-        await assertTerminalWidthAgrees(ctx, "collapsed landscape (light step)");
-        A.rotate(0);
-        await sleep(2000);
         await toDashboard();
         await back();
         await A.waitNode(A.idPrefix("host-row-"), 20_000, "hosts");
@@ -1322,7 +1098,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v7"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v8"),
   );
   const apk = option(
     args,
@@ -1345,10 +1121,9 @@ export async function journey(args = []) {
   A.reduceMotion(true);
   A.fontScale(1);
   A.nightMode(!ctx.light);
-  // Android shows a one-time "Viewing full screen" dialog the first time an app goes immersive (the
-  // collapsed landscape terminal). It takes window focus, hiding the app from uiautomator; a real
-  // user dismisses it once. Pre-confirm it on the test device.
-  A.adb("shell", "settings", "put", "secure", "immersive_mode_confirmations", "confirmed");
+  // Earlier versions pre-confirmed Android's immersive-mode dialog for the (removed) landscape
+  // terminal; the app never goes immersive now, so clear that device setting.
+  A.adb("shell", "settings", "delete", "secure", "immersive_mode_confirmations");
   A.rotate(0);
   A.launch(PKG, { clear: true });
   const results = [];

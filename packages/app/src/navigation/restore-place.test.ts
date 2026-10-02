@@ -49,7 +49,7 @@ const hosts = new Map([
 ]);
 const getHost = (id: string) => hosts.get(id);
 
-const session: Place = { kind: "session", hostId: "h1", sessionId: "s1", tab: "terminal" };
+const session: Place = { kind: "session", hostId: "h1", sessionId: "s1" };
 
 describe("restore place", () => {
   beforeEach(() => reportPlace({ kind: "hosts" }));
@@ -61,7 +61,7 @@ describe("restore place", () => {
     expect(currentPlace()).toEqual(session);
   });
 
-  it("round-trips dashboard and session places, ids and tab only", () => {
+  it("round-trips dashboard and session places, ids only", () => {
     const raw = serializePlace(session, NOW);
     expect(JSON.parse(raw)).toEqual({ v: 1, savedAt: NOW, place: session });
     expect(parseSavedPlace(raw, NOW + 1000)).toEqual(session);
@@ -83,17 +83,17 @@ describe("restore place", () => {
     expect(parseSavedPlace(JSON.stringify(noHost), NOW)).toBeNull();
   });
 
-  it("falls back to the Chat tab for an unknown tab", () => {
-    const odd = { v: 1, savedAt: NOW, place: { ...session, tab: "logs" } };
-    expect(parseSavedPlace(JSON.stringify(odd), NOW)).toEqual({ ...session, tab: "chat" });
+  it("ignores a tab left in a record saved by an older version", () => {
+    const old = { v: 1, savedAt: NOW, place: { ...session, tab: "terminal" } };
+    expect(parseSavedPlace(JSON.stringify(old), NOW)).toEqual(session);
   });
 
-  it("rebuilds dashboard then session, carrying the tab", () => {
+  it("rebuilds dashboard then session", () => {
     expect(restoreSteps(session, getHost)).toEqual([
       { pathname: "/h/[hostId]", params: { hostId: "h1" } },
       {
         pathname: "/h/[hostId]/s/[sessionId]",
-        params: { hostId: "h1", sessionId: "s1", tab: "terminal", restored: "1" },
+        params: { hostId: "h1", sessionId: "s1", restored: "1" },
       },
     ]);
     expect(restoreSteps({ kind: "dashboard", hostId: "h1" }, getHost)).toEqual([

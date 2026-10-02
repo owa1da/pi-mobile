@@ -134,13 +134,6 @@ export interface StartedSession {
   tmuxSession: string;
 }
 
-export interface TerminalAttachment {
-  /** Command to pass as SshShellOptions.command: attaches a phone-private grouped tmux session. */
-  command: string;
-  /** Run after the shell closes to clean up (best effort). */
-  cleanupCommand: string;
-}
-
 export interface HostService {
   readonly connection: SshConnection;
   probe(): Promise<HostEnvironment>;
@@ -153,7 +146,6 @@ export interface HostService {
   sendPrompt(row: SessionRow, text: string): Promise<void>;
   /** Single Escape, only while working; rate limited to once per second per pane. */
   abort(row: SessionRow): Promise<void>;
-  terminalFor(row: SessionRow): TerminalAttachment;
 }
 
 export class HostError extends Error {

@@ -5,21 +5,15 @@ import type {
   PiSshConnectionCloseEvent,
   PiSshHostKeyEvent,
   PiSshNativeModule,
-  PiSshShellCloseEvent,
-  PiSshShellDataEvent,
   PiSshSubscription,
 } from "../../modules/pi-ssh/src/PiSsh.types";
-import { base64ToBytes, bytesToBase64, utf8Encode } from "./base64";
 import { SSH_ERROR_CODES, SshError, toSshError } from "./errors";
-import { ShellEvents } from "./shell-events";
 import type {
   SshClient,
   SshConnectOptions,
   SshConnection,
   SshExecOptions,
   SshExecResult,
-  SshShell,
-  SshShellOptions,
   SshTarget,
 } from "./types";
 
@@ -44,13 +38,6 @@ interface ConnectionState {
   id: string;
   phase: "connecting" | "open" | "closed";
   closeListeners: Set<(error?: Error) => void>;
-  shells: Set<string>;
-}
-
-interface ShellState {
-  id: string;
-  connectionId: string;
-  events: ShellEvents;
 }
 
 let idCounter = 0;
@@ -76,7 +63,6 @@ export function createNativeSshClient(
 ): SshClient {
   const createId = options.createId ?? defaultCreateId;
   const connections = new Map<string, ConnectionState>();
-  const shells = new Map<string, ShellState>();
   const pendingConnects = new Map<string, PendingConnect>();
   let subscriptions: PiSshSubscription[] | null = null;
 
@@ -84,8 +70,6 @@ export function createNativeSshClient(
     if (subscriptions) return;
     subscriptions = [
       native.addListener("onHostKey", handleHostKey),
-      native.addListener("onShellData", handleShellData),
-      native.addListener("onShellClose", handleShellClose),
       native.addListener("onConnectionClose", handleConnectionClose),
     ];
   }
@@ -93,7 +77,7 @@ export function createNativeSshClient(
   /** Drop native subscriptions once nothing is connecting or connected. */
   function maybeUnsubscribe(): void {
     if (!subscriptions) return;
-    if (connections.size > 0 || pendingConnects.size > 0 || shells.size > 0) return;
+    if (connections.size > 0 || pendingConnects.size > 0) return;
     const subs = subscriptions;
     subscriptions = null;
     for (const sub of subs) sub.remove();
@@ -141,36 +125,10 @@ export function createNativeSshClient(
     );
   }
 
-  function handleShellData(event: PiSshShellDataEvent): void {
-    const shell = shells.get(event.shellId);
-    if (!shell) return;
-    let bytes: Uint8Array;
-    try {
-      bytes = base64ToBytes(event.data);
-    } catch {
-      return;
-    }
-    shell.events.pushData(bytes);
-  }
-
-  function finishShell(shellId: string, exitCode: number | null): void {
-    const shell = shells.get(shellId);
-    if (!shell) return;
-    shells.delete(shellId);
-    connections.get(shell.connectionId)?.shells.delete(shellId);
-    shell.events.pushClose(exitCode);
-  }
-
-  function handleShellClose(event: PiSshShellCloseEvent): void {
-    finishShell(event.shellId, typeof event.exitCode === "number" ? event.exitCode : null);
-    maybeUnsubscribe();
-  }
-
   function finishConnection(state: ConnectionState, error?: Error): void {
     if (state.phase === "closed") return;
     state.phase = "closed";
     connections.delete(state.id);
-    for (const shellId of Array.from(state.shells)) finishShell(shellId, null);
     const listeners = [...state.closeListeners];
     state.closeListeners.clear();
     for (const listener of listeners) safeNotify(listener, error);
@@ -185,32 +143,6 @@ export function createNativeSshClient(
         ? new SshError(SSH_ERROR_CODES.CONNECTION_CLOSED, "SSH connection lost")
         : undefined;
     finishConnection(state, error);
-  }
-
-  function makeShell(state: ShellState): SshShell {
-    return {
-      write(data: string | Uint8Array): void {
-        if (state.events.isClosed || !shells.has(state.id)) return;
-        const bytes = typeof data === "string" ? utf8Encode(data) : data;
-        if (bytes.length === 0) return;
-        native.write(state.id, bytesToBase64(bytes));
-      },
-      resize(cols: number, rows: number): void {
-        if (state.events.isClosed || !shells.has(state.id)) return;
-        const c = Math.floor(cols);
-        const r = Math.floor(rows);
-        if (!(c > 0) || !(r > 0)) return;
-        native.resize(state.id, c, r);
-      },
-      onData: (listener) => state.events.onData(listener),
-      onClose: (listener) => state.events.onClose(listener),
-      close(): void {
-        if (!shells.has(state.id)) return;
-        native.closeShell(state.id);
-        finishShell(state.id, null);
-        maybeUnsubscribe();
-      },
-    };
   }
 
   function makeConnection(state: ConnectionState): SshConnection {
@@ -234,36 +166,6 @@ export function createNativeSshClient(
         } catch (error) {
           throw toSshError(error, SSH_ERROR_CODES.EXEC_FAILED);
         }
-      },
-
-      async openShell(shellOptions: SshShellOptions): Promise<SshShell> {
-        if (state.phase !== "open") {
-          throw new SshError(SSH_ERROR_CODES.NOT_CONNECTED, "Not connected");
-        }
-        const shellId = createId("sh");
-        const shell: ShellState = {
-          id: shellId,
-          connectionId: state.id,
-          events: new ShellEvents(),
-        };
-        // Register before the native call so early output is buffered, not dropped.
-        shells.set(shellId, shell);
-        state.shells.add(shellId);
-        try {
-          await native.openShell({
-            connectionId: state.id,
-            shellId,
-            cols: Math.max(1, Math.floor(shellOptions.cols)),
-            rows: Math.max(1, Math.floor(shellOptions.rows)),
-            term: shellOptions.term ?? "xterm-256color",
-            ...(shellOptions.command !== undefined ? { command: shellOptions.command } : {}),
-          });
-        } catch (error) {
-          shells.delete(shellId);
-          state.shells.delete(shellId);
-          throw toSshError(error, SSH_ERROR_CODES.SHELL_FAILED);
-        }
-        return makeShell(shell);
       },
 
       onClose(listener: (error?: Error) => void): () => void {
@@ -311,7 +213,6 @@ export function createNativeSshClient(
         id,
         phase: "connecting",
         closeListeners: new Set(),
-        shells: new Set(),
       };
       pendingConnects.set(id, pending);
       connections.set(id, state);

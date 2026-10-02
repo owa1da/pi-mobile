@@ -3,7 +3,6 @@ package sh.pimobile.ssh
 import android.util.Base64
 import com.jcraft.jsch.Channel
 import com.jcraft.jsch.ChannelExec
-import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.HostKey
 import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSch
@@ -17,7 +16,6 @@ import com.jcraft.jsch.UserInfo
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
-import java.io.OutputStream
 import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.util.UUID
@@ -45,7 +43,6 @@ object SshErrorCodes {
   const val NOT_CONNECTED = "ERR_SSH_NOT_CONNECTED"
   const val CONNECTION_CLOSED = "ERR_SSH_CONNECTION_CLOSED"
   const val EXEC_FAILED = "ERR_SSH_EXEC_FAILED"
-  const val SHELL_FAILED = "ERR_SSH_SHELL_FAILED"
   const val OUTPUT_TOO_LARGE = "ERR_SSH_OUTPUT_TOO_LARGE"
   const val KEYGEN_FAILED = "ERR_SSH_KEYGEN_FAILED"
   const val INVALID_ARGUMENT = "ERR_SSH_INVALID_ARGUMENT"
@@ -184,12 +181,10 @@ internal class Conn(val id: String) {
   @Volatile var established = false
   @Volatile var userClosed = false
   val closed = AtomicBoolean(false)
-  val shells: MutableSet<String> = ConcurrentHashMap.newKeySet()
 }
 
 class SshCore(private val emitRaw: SshEmit) {
   private val connections = ConcurrentHashMap<String, Conn>()
-  private val shells = ConcurrentHashMap<String, Shell>()
   private val pendingHostKeys = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
   private val destroyed = AtomicBoolean(false)
 
@@ -339,14 +334,11 @@ class SshCore(private val emitRaw: SshEmit) {
     }
   }
 
-  /** Idempotent: closes shells (emitting shell-close first), then the session, then connection-close. */
+  /** Idempotent: closes the session, then emits connection-close. */
   private fun teardown(conn: Conn, reason: String) {
     if (!conn.closed.compareAndSet(false, true)) return
     connections.remove(conn.id, conn)
     conn.gate?.cancel()
-    for (shellId in conn.shells.toList()) {
-      shells[shellId]?.finish(null)
-    }
     try {
       conn.session?.disconnect()
     } catch (_: Throwable) {}
@@ -501,207 +493,6 @@ class SshCore(private val emitRaw: SshEmit) {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Interactive shells (pty)
-
-  fun openShell(
-    connId: String,
-    shellId: String,
-    cols: Int,
-    rows: Int,
-    term: String,
-    command: String?,
-  ): String {
-    val conn = requireConn(connId)
-    if (shells.containsKey(shellId)) throw SshError(SshErrorCodes.INVALID_ARGUMENT, "Duplicate shell id $shellId")
-    val session = conn.session!!
-    val c = cols.coerceIn(1, 1000)
-    val r = rows.coerceIn(1, 1000)
-    val channel: Channel
-    try {
-      if (command != null) {
-        val ch = session.openChannel("exec") as ChannelExec
-        ch.setCommand(command.toByteArray(Charsets.UTF_8))
-        ch.setPty(true)
-        ch.setPtyType(term, c, r, c * 8, r * 16)
-        channel = ch
-      } else {
-        val ch = session.openChannel("shell") as ChannelShell
-        ch.setPty(true)
-        ch.setPtyType(term, c, r, c * 8, r * 16)
-        channel = ch
-      }
-    } catch (e: JSchException) {
-      throw SshError(SshErrorCodes.SHELL_FAILED, "Could not open shell channel: ${e.message}", e)
-    }
-    val input: InputStream
-    val output: OutputStream
-    try {
-      input = channel.inputStream
-      output = channel.outputStream
-    } catch (e: IOException) {
-      channel.disconnect()
-      throw SshError(SshErrorCodes.SHELL_FAILED, "Could not open shell streams: ${e.message}", e)
-    }
-    val shell = Shell(shellId, conn, channel, input, output)
-    shells[shellId] = shell
-    conn.shells.add(shellId)
-    try {
-      channel.connect(15_000)
-    } catch (e: JSchException) {
-      shells.remove(shellId)
-      conn.shells.remove(shellId)
-      shell.shutdownWriter()
-      try {
-        channel.disconnect()
-      } catch (_: Throwable) {}
-      throw SshError(SshErrorCodes.SHELL_FAILED, "Could not start shell: ${e.message}", e)
-    }
-    if (conn.closed.get()) {
-      // Raced with teardown; make sure the close is reported.
-      shell.finish(null)
-      throw SshError(SshErrorCodes.CONNECTION_CLOSED, "Connection closed")
-    }
-    Thread({ shell.readLoop() }, "pi-ssh-shell-$shellId").apply { isDaemon = true }.start()
-    return shellId
-  }
-
-  fun write(shellId: String, base64: String) {
-    val shell = shells[shellId] ?: return
-    val bytes = try {
-      Base64.decode(base64, Base64.DEFAULT)
-    } catch (_: IllegalArgumentException) {
-      return
-    }
-    shell.write(bytes)
-  }
-
-  fun resize(shellId: String, cols: Int, rows: Int) {
-    shells[shellId]?.resize(cols.coerceIn(1, 1000), rows.coerceIn(1, 1000))
-  }
-
-  fun closeShell(shellId: String) {
-    val shell = shells[shellId] ?: return
-    shell.closeRequested = true
-    try {
-      pool.execute { shell.finish(null) }
-    } catch (_: RejectedExecutionException) {
-      shell.finish(null)
-    }
-  }
-
-  internal inner class Shell(
-    val id: String,
-    private val conn: Conn,
-    private val channel: Channel,
-    private val input: InputStream,
-    private val output: OutputStream,
-  ) {
-    private val writer: ExecutorService = Executors.newSingleThreadExecutor(daemonFactory("pi-ssh-write"))
-    private val lock = Any()
-    private val pending = ByteArrayOutputStream()
-    private var flushScheduled = false
-    private var finished = false
-    @Volatile var closeRequested = false
-
-    fun write(bytes: ByteArray) {
-      try {
-        writer.execute {
-          try {
-            output.write(bytes)
-            output.flush()
-          } catch (_: IOException) {
-            // Channel gone; the reader reports the close.
-          }
-        }
-      } catch (_: RejectedExecutionException) {}
-    }
-
-    fun resize(cols: Int, rows: Int) {
-      try {
-        writer.execute {
-          try {
-            when (channel) {
-              is ChannelShell -> channel.setPtySize(cols, rows, cols * 8, rows * 16)
-              is ChannelExec -> channel.setPtySize(cols, rows, cols * 8, rows * 16)
-            }
-          } catch (_: Throwable) {}
-        }
-      } catch (_: RejectedExecutionException) {}
-    }
-
-    fun shutdownWriter() {
-      writer.shutdownNow()
-    }
-
-    fun readLoop() {
-      val buf = ByteArray(16 * 1024)
-      try {
-        while (true) {
-          val n = input.read(buf)
-          if (n < 0) break
-          if (n > 0) append(buf, n)
-        }
-      } catch (_: IOException) {
-        // Pipe closed by disconnect.
-      } catch (_: Throwable) {}
-      // EOF arrives before exit-status/close; give the server a moment to deliver them.
-      val deadline = System.currentTimeMillis() + 2_000
-      while (!channel.isClosed && !closeRequested && System.currentTimeMillis() < deadline &&
-        conn.session?.isConnected == true
-      ) {
-        try {
-          Thread.sleep(10)
-        } catch (_: InterruptedException) {
-          break
-        }
-      }
-      val status = if (channel.isClosed) channel.exitStatus else -1
-      finish(if (status >= 0) status else null)
-    }
-
-    private fun append(bytes: ByteArray, n: Int) {
-      synchronized(lock) {
-        if (finished) return
-        pending.write(bytes, 0, n)
-        if (pending.size() >= FLUSH_BYTES) {
-          flushLocked()
-        } else if (!flushScheduled) {
-          flushScheduled = true
-          try {
-            scheduler.schedule({ synchronized(lock) { flushLocked() } }, FLUSH_DELAY_MS, TimeUnit.MILLISECONDS)
-          } catch (_: RejectedExecutionException) {
-            flushLocked()
-          }
-        }
-      }
-    }
-
-    /** Caller holds [lock]. Emitting under the lock keeps chunks ordered and before the close. */
-    private fun flushLocked() {
-      flushScheduled = false
-      if (finished || pending.size() == 0) return
-      val data = Base64.encodeToString(pending.toByteArray(), Base64.NO_WRAP)
-      pending.reset()
-      emit("onShellData", mapOf("shellId" to id, "data" to data))
-    }
-
-    fun finish(exitCode: Int?) {
-      synchronized(lock) {
-        if (finished) return
-        flushLocked()
-        finished = true
-        emit("onShellClose", mapOf("shellId" to id, "connectionId" to conn.id, "exitCode" to exitCode))
-      }
-      shells.remove(id, this)
-      conn.shells.remove(id)
-      try {
-        channel.disconnect()
-      } catch (_: Throwable) {}
-      writer.shutdownNow()
-    }
-  }
-
-  // ---------------------------------------------------------------------------------------------
   // Keys
 
   fun generateKeyPair(comment: String): Map<String, Any?> {
@@ -738,7 +529,5 @@ class SshCore(private val emitRaw: SshEmit) {
 
   companion object {
     const val MAX_EXEC_OUTPUT = 32 * 1024 * 1024
-    const val FLUSH_BYTES = 32 * 1024
-    const val FLUSH_DELAY_MS = 8L
   }
 }

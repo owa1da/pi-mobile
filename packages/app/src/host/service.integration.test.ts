@@ -12,7 +12,7 @@ import type { SshConnection } from "@/ssh/types";
 import { makeNonce, startScript, wrapForAnyShell } from "./commands";
 import { HostOutcomeUnknownError, PaneBusyError } from "./errors";
 import { createSandbox, FAKE_PI, type FakeEvent, type Sandbox } from "./test-support/sandbox";
-import { createHostService, TERMINAL_TMUX_MESSAGE, type PiHostService } from "./service";
+import { createHostService, type PiHostService } from "./service";
 import { HostError, type SessionRow } from "./types";
 
 const hex = (s: string) => Buffer.from(s, "utf8").toString("hex");
@@ -43,11 +43,6 @@ function submitTexts(sb: Sandbox, pid: number): Array<string | undefined> {
     .events(pid)
     .filter((e) => e.kind === "submit")
     .map((e) => e.text);
-}
-
-/** The `list-clients` line of the phone's private session (named pim-…). */
-function phoneClientLine(lines: string): string | undefined {
-  return lines.split("\n").find((l) => l.startsWith("pim-"));
 }
 
 async function expectHostError(p: Promise<unknown>, code: HostError["code"]): Promise<void> {
@@ -372,75 +367,6 @@ describe("host service on an isolated tmux server", () => {
       "assistant",
     ]);
   });
-
-  it("attaches a phone-private grouped session and cleans it up", async () => {
-    const started = await svc.startSession({ prompt: "term", cwd: sb.home });
-    const row = await rowFor(sb, svc, (r) => r.pid === started.pid, "row");
-    const userWindow = sb.tmux("display-message", "-p", "-t", "pi:", "#{window_id}").trim();
-    const att = svc.terminalFor(row);
-    const shell = await sb.connection.openShell({ cols: 60, rows: 20, command: att.command });
-    let out = "";
-    shell.onData((b) => (out += Buffer.from(b).toString("utf8")));
-    const client = await sb.waitFor(
-      () => {
-        const lines = sb.tmux("list-clients", "-F", "#{client_session}\t#{client_flags}").trim();
-        return phoneClientLine(lines);
-      },
-      10_000,
-      "phone client",
-    );
-    expect(client).toContain("ignore-size");
-    const phoneSession = client.split("\t")[0]!;
-    expect(
-      sb
-        .tmux("display-message", "-p", "-t", `${phoneSession}:`, "#{window_id} #{session_group}")
-        .trim(),
-    ).toBe(`${started.windowId} ${started.tmuxSession}`);
-    expect(
-      sb.tmux("display-message", "-p", "-t", started.pane, "#{window_active_clients}").trim(),
-    ).toBe("1");
-    // The user's own session's current window did not move.
-    expect(sb.tmux("display-message", "-p", "-t", "pi:", "#{window_id}").trim()).toBe(userWindow);
-    // Typed keys reach pi.
-    shell.write("typed\r");
-    await sb.waitForEvent(
-      started.pid,
-      (e) => e.kind === "submit" && e.text === "typed",
-      5000,
-      "typed",
-    );
-    expect(out.length).toBeGreaterThan(0);
-
-    const closed = new Promise<void>((resolve) => shell.onClose(() => resolve()));
-    shell.close();
-    await closed;
-    await sb.waitFor(
-      () => !sb.tmux("list-sessions", "-F", "#{session_name}").includes("pim-"),
-      5000,
-      "destroy-unattached",
-    );
-    const res = await sb.connection.exec(att.cleanupCommand);
-    expect(res.exitCode).toBe(0);
-    expect(sb.tmux("list-windows", "-t", "pi", "-F", "#{window_id}")).toContain(started.windowId);
-
-    // cleanupCommand kills a phone session left attached, and only that one.
-    const att2 = svc.terminalFor(row);
-    const shell2 = await sb.connection.openShell({ cols: 60, rows: 20, command: att2.command });
-    await sb.waitFor(
-      () => sb.tmux("list-sessions", "-F", "#{session_name}").includes("pim-"),
-      10_000,
-      "phone session 2",
-    );
-    const res2 = await sb.connection.exec(att2.cleanupCommand);
-    expect(res2.exitCode).toBe(0);
-    await sb.waitFor(
-      () => !sb.tmux("list-sessions", "-F", "#{session_name}").includes("pim-"),
-      5000,
-      "cleanup",
-    );
-    shell2.close();
-    expect(sb.tmux("list-sessions", "-F", "#{session_name}").trim()).toBe("pi");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -612,7 +538,6 @@ describe("wave 5 fixes on an isolated tmux server", () => {
         if (mode === "killed") return Promise.resolve({ stdout: "", stderr: "", exitCode: 124 });
         return sb.connection.exec(command, options);
       },
-      openShell: (o) => sb.connection.openShell(o),
       onClose: (l) => sb.connection.onClose(l),
       isConnected: () => true,
       close: () => undefined,
@@ -632,16 +557,7 @@ describe("wave 5 fixes on an isolated tmux server", () => {
     await expect(wrapped.listSessions()).rejects.not.toBeInstanceOf(HostOutcomeUnknownError);
   });
 
-  it("attach leaves no orphan pim-* session when the chain fails (no terminal)", async () => {
-    const started = await svc.startSession({ prompt: "orphan", cwd: sb.home });
-    const row = await rowFor(sb, svc, (r) => r.pid === started.pid, "row");
-    const att = svc.terminalFor(row);
-    const res = await sb.connection.exec(att.command); // no pty: attach-session fails
-    expect(res.exitCode).not.toBe(0);
-    expect(sb.tmux("list-sessions", "-F", "#{session_name}")).not.toContain("pim-");
-  });
-
-  it("refuses the terminal on tmux below 3.2 or an unparseable version", async () => {
+  it("probes tmux 3.1 and an unparseable version without failing", async () => {
     const real = fs.realpathSync(path.join(sb.bin, "tmux"));
     for (const version of ["tmux master", "tmux 3.1c"]) {
       const odd = createSandbox();
@@ -655,37 +571,12 @@ describe("wave 5 fixes on an isolated tmux server", () => {
         const oddSvc = odd.service();
         const env = await oddSvc.probe();
         expect(env.tmuxVersion).toEqual(version === "tmux master" ? undefined : [3, 1]);
-        const fakeRow = {
-          ...(await closedRowStub()),
-          live: true,
-          tmux: { socket: odd.socket, pane: "%1" },
-        };
-        expect(() => oddSvc.terminalFor(fakeRow)).toThrow(TERMINAL_TMUX_MESSAGE);
-        try {
-          oddSvc.terminalFor(fakeRow);
-        } catch (error) {
-          expect((error as HostError).code).toBe("tmux-missing");
-        }
       } finally {
         odd.cleanup();
       }
     }
   });
 });
-
-async function closedRowStub(): Promise<SessionRow> {
-  return {
-    key: "s",
-    sessionId: "s",
-    section: "completed",
-    live: false,
-    title: "t",
-    cwd: "/",
-    state: "idle",
-    since: 0,
-    messages: 1,
-  };
-}
 
 describe("tmux server environment, argv and # in paths", () => {
   it("a tmux server the app starts gets the login shell's LANG/LC_* and PATH globally", async () => {

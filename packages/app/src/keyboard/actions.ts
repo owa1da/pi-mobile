@@ -1,5 +1,4 @@
 export type KeyboardFocusScope =
-  | "terminal"
   | "message-input"
   | "command-center"
   | "editable"
@@ -47,7 +46,6 @@ export type KeyboardActionId =
   | "command-center.toggle"
   | "command-center.files"
   | "shortcuts.dialog.toggle"
-  | "workspace.terminal.new"
   | "workspace.new"
   | "workspace.project.pick"
   | "worktree.new"

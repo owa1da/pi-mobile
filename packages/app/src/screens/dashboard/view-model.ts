@@ -1,4 +1,4 @@
-// Dashboard view-model: sections, counts, ages, short model and folder, row glyphs. Pure.
+// Dashboard view-model: sections, counts, ages, short model, row glyphs. Pure.
 // Mirrors forge's sessions page (~/.pi/forge/docs/sessions.md).
 
 import type { SessionModel, SessionRow, SessionSection } from "@/host/types";
@@ -82,18 +82,6 @@ export function shortModel(model: SessionModel | undefined): string | undefined 
   return base ? truncate(base, MODEL_MAX) : undefined;
 }
 
-/** Home-shortened folder cut to its last two names: ~/llm-stack, …/repo/api. */
-export function shortFolder(cwd: string, homeDir: string | undefined): string {
-  if (!cwd) return "";
-  let path = cwd;
-  if (homeDir && (cwd === homeDir || cwd.startsWith(`${homeDir}/`)))
-    path = `~${cwd.slice(homeDir.length)}`;
-  const parts = path.split("/").filter(Boolean);
-  if (path.startsWith("~") && parts.length <= 3) return path;
-  if (!path.startsWith("~") && parts.length <= 2) return path;
-  return `…/${parts.slice(-2).join("/")}`;
-}
-
 export type GlyphKind =
   | "needs"
   | "working"
@@ -104,14 +92,6 @@ export type GlyphKind =
   | "interrupted"
   | "gone";
 
-export interface RowPresentation {
-  glyph: GlyphKind;
-  /** Grey status text shown under the title, when it says something the title cannot. */
-  status?: string;
-  /** The status is the question pi is asking. */
-  asking: boolean;
-}
-
 function completedGlyph(row: SessionRow): GlyphKind {
   const detail = row.detail ?? "";
   if (detail.startsWith("error:")) return "failed";
@@ -120,14 +100,9 @@ function completedGlyph(row: SessionRow): GlyphKind {
   return row.endReason === "gone" ? "gone" : "closed";
 }
 
-export function presentRow(row: SessionRow): RowPresentation {
-  if (row.section === "needs") {
-    if (row.asking) return { glyph: "needs", status: row.asking, asking: true };
-    return { glyph: "needs", status: row.detail, asking: false };
-  }
-  if (row.section === "working")
-    return { glyph: row.wake && !row.wake.missed ? "scheduled" : "working", asking: false };
-  const glyph = completedGlyph(row);
-  const showDetail = glyph === "failed" || glyph === "interrupted";
-  return { glyph, status: showDetail ? row.detail : undefined, asking: false };
+/** The row's state glyph (forge's ✻ / spinner / ◷ / ∙ family); the only per-row status shown. */
+export function rowGlyph(row: SessionRow): GlyphKind {
+  if (row.section === "needs") return "needs";
+  if (row.section === "working") return row.wake && !row.wake.missed ? "scheduled" : "working";
+  return completedGlyph(row);
 }

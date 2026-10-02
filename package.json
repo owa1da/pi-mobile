@@ -27,7 +27,6 @@
     "prepare": "lefthook install --force",
     "build:highlight": "npm run build --workspace=@getpaseo/highlight",
     "build:highlight:clean": "npm run build:clean --workspace=@getpaseo/highlight",
-    "build:terminal-webview": "npm run build:terminal-webview --workspace=@pi-mobile/app",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "format": "oxfmt .",

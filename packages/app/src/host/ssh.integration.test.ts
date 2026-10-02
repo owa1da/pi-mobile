@@ -88,23 +88,5 @@ describe.skipIf(!hasSshd)("host service over real SSH", () => {
       "ssh submit",
     );
     expect(submit.pasted).toBe(true);
-
-    // Terminal attach through an SSH pty.
-    const att = remote.terminalFor(row);
-    const shell = await conn.openShell({ cols: 70, rows: 20, command: att.command });
-    await sb.waitFor(
-      () =>
-        sb.tmux("list-clients", "-F", "#{client_session} #{client_flags}").includes("ignore-size"),
-      10_000,
-      "ssh client",
-    );
-    shell.close();
-    const res = await conn.exec(att.cleanupCommand);
-    expect(res.exitCode).toBe(0);
-    await sb.waitFor(
-      () => !sb.tmux("list-sessions", "-F", "#{session_name}").includes("pim-"),
-      5000,
-      "cleanup",
-    );
   });
 });

@@ -7,8 +7,6 @@ import type { SshConnection } from "@/ssh/types";
 import { ChatReader, DEFAULT_CHAT_CAP, type ChatUpdateEx } from "./chat";
 import {
   abortScript,
-  attachCleanupScript,
-  attachScript,
   listingScript,
   makeNonce,
   probeScript,
@@ -32,7 +30,6 @@ import {
   type SessionsSnapshot,
   type StartSessionInput,
   type StartedSession,
-  type TerminalAttachment,
 } from "./types";
 
 /** tmux's command message limit is 16 KiB; forge hands at most this much to a new window's argv. */
@@ -44,8 +41,6 @@ export const ABORT_INTERVAL_MS = 1000;
 const HOST_TIMEOUT_MARGIN_S = 5;
 /** Resume without a prompt: how long to wait for the new pi to register before returning. */
 const SOFT_READY_MS = 15_000;
-
-export const TERMINAL_TMUX_MESSAGE = "Terminal view needs tmux 3.2 or newer";
 
 export interface HostServiceOptions {
   /** The agent dir (default: the login shell's PI_CODING_AGENT_DIR, else ~/.pi/agent). */
@@ -103,19 +98,6 @@ export function parseTmuxVersion(text: string): [number, number] | undefined {
   return match ? [Number(match[1]), Number(match[2])] : undefined;
 }
 
-function versionAtLeast(v: [number, number] | undefined, major: number, minor: number): boolean {
-  if (!v) return false;
-  return v[0] > major || (v[0] === major && v[1] >= minor);
-}
-
-/** Terminal attach needs tmux >= 3.2 (attach -f ignore-size); keep-last needs 3.4. Unknown = old. */
-export function terminalSupport(version: [number, number] | undefined): {
-  ok: boolean;
-  keepLast: boolean;
-} {
-  return { ok: versionAtLeast(version, 3, 2), keepLast: versionAtLeast(version, 3, 4) };
-}
-
 const LOCALE_PAIR = /^(LANG|LC_[A-Z_]+)=[A-Za-z0-9_.@-]+$/;
 
 /** The probe's `key=value` lines, and its `loc=NAME=value` locale lines (LANG, LC_*). */
@@ -135,12 +117,6 @@ function parseProbeLines(lines: string[]): {
     if (eq > 0) kv.set(line.slice(0, eq), line.slice(eq + 1));
   }
   return { kv, locales };
-}
-
-function randomHex(n: number): string {
-  let out = "";
-  for (let i = 0; i < n; i++) out += Math.floor(Math.random() * 16).toString(16);
-  return out;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -340,10 +316,7 @@ class HostServiceImpl implements PiHostService {
       return new HostError("session-live", "This session is already open in another pi");
     if (reason === "file") return new HostError("not-found", "The session file is gone");
     if (reason === "cwd")
-      return new HostError(
-        "not-found",
-        "The session's folder does not exist on the host; open it from the terminal",
-      );
+      return new HostError("not-found", "The session's folder does not exist on the host");
     if (reason === "tmux")
       return new HostError("command-failed", `tmux could not start the window: ${detail}`);
     const where = started ? ` (window ${started.windowId}, pane ${started.pane})` : "";
@@ -526,7 +499,7 @@ class HostServiceImpl implements PiHostService {
     if (!row.tmux || !row.pid)
       throw new HostError(
         "command-failed",
-        "This session does not run in tmux; use its own terminal",
+        "This session does not run in tmux, so the app cannot reach it",
       );
     return { pid: row.pid, pane: row.tmux.pane, socket: row.tmux.socket, sessionId: row.sessionId };
   }
@@ -562,26 +535,23 @@ class HostServiceImpl implements PiHostService {
       case "OK":
         return;
       case "WAITING":
-        throw new HostError(
-          "waiting-for-input",
-          "pi is showing a dialog; answer it in the terminal first",
-        );
+        throw new HostError("waiting-for-input", "pi is asking a question; answer it first");
       case "BUSY":
         throw new PaneBusyError(
           "copy-mode",
-          "The pane is in copy mode; leave it (q) in the terminal first",
+          "The session's tmux pane is in copy mode; leave it (q) on your computer first",
         );
       case "DRAFT":
         throw new PaneBusyError("draft", DRAFT_MESSAGE);
       case "NOPROMPT":
         throw new PaneBusyError(
           "no-prompt",
-          "pi is not showing its prompt (a dialog or page is open); check the terminal first",
+          "pi is not showing its prompt (a dialog or page is open); close it on your computer first",
         );
       case "NOTMUX":
         throw new HostError(
           "command-failed",
-          "This session does not run in tmux; use its own terminal",
+          "This session does not run in tmux, so the app cannot reach it",
         );
       case "GONE":
         throw new HostError("command-failed", "The session's tmux pane is gone");
@@ -657,31 +627,6 @@ class HostServiceImpl implements PiHostService {
       default:
         throw new HostError("command-failed", "Could not send Escape to the pane");
     }
-  }
-
-  // ---------------- terminal ----------------
-
-  terminalFor(row: SessionRow): TerminalAttachment {
-    if (!row.live || !row.tmux)
-      throw new HostError("session-closed", "This session has no live tmux pane");
-    // Older (or unknown) tmux cannot attach with ignore-size: the phone would resize desktop windows.
-    const support = terminalSupport(this.env?.tmuxVersion);
-    if (!support.ok) throw new HostError("tmux-missing", TERMINAL_TMUX_MESSAGE);
-    const tmux = this.env?.tmuxPath ?? "tmux";
-    const sessionName = `pim-${row.tmux.pane.replace(/[^0-9]/g, "")}-${randomHex(6)}`;
-    const target = { tmux, socket: row.tmux.socket };
-    return {
-      command: wrapForAnyShell(
-        attachScript({
-          ...target,
-          pane: row.tmux.pane,
-          sessionName,
-          keepLast: support.keepLast,
-          ignoreSize: true,
-        }),
-      ),
-      cleanupCommand: wrapForAnyShell(attachCleanupScript({ ...target, sessionName })),
-    };
   }
 }
 

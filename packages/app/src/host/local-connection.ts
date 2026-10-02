@@ -1,15 +1,9 @@
 // Test double: an SshConnection that runs commands on this machine the way sshd would
-// (`$SHELL -c <command>`). openShell allocates a pty with util-linux `script`. Node only.
+// (`$SHELL -c <command>`). Node only.
 
 import { spawn, type ChildProcess } from "node:child_process";
 
-import type {
-  SshConnection,
-  SshExecOptions,
-  SshExecResult,
-  SshShell,
-  SshShellOptions,
-} from "@/ssh/types";
+import type { SshConnection, SshExecOptions, SshExecResult } from "@/ssh/types";
 
 export interface LocalConnectionOptions {
   /** The whole environment of every command (default: process.env). */
@@ -68,60 +62,6 @@ export class LocalConnection implements SshConnection {
       child.stdin!.on("error", () => undefined);
       if (options.stdin !== undefined) child.stdin!.end(options.stdin);
       else child.stdin!.end();
-    });
-  }
-
-  /** A pty via `script`; resize() is a no-op (the size is fixed at open). */
-  openShell(options: SshShellOptions): Promise<SshShell> {
-    if (this.closed) return Promise.reject(new Error("connection closed"));
-    const inner = `stty cols ${Math.floor(options.cols)} rows ${Math.floor(options.rows)} 2>/dev/null; ${
-      options.command ?? 'exec "${SHELL:-/bin/sh}" -l'
-    }`;
-    const child = spawn("script", ["-qfec", inner, "/dev/null"], {
-      env: { ...this.env, TERM: options.term ?? "xterm-256color" },
-      cwd: this.options.cwd ?? this.env.HOME,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    this.children.add(child);
-    const dataListeners = new Set<(bytes: Uint8Array) => void>();
-    const closeListeners = new Set<(code: number | null) => void>();
-    let exited = false;
-    let exitCode: number | null = null;
-    const onData = (d: Buffer) => {
-      for (const l of dataListeners) l(new Uint8Array(d));
-    };
-    child.stdout!.on("data", onData);
-    child.stderr!.on("data", onData);
-    child.stdin!.on("error", () => undefined);
-    child.on("close", (code) => {
-      exited = true;
-      exitCode = code;
-      this.children.delete(child);
-      for (const l of closeListeners) l(code);
-    });
-    const shell: SshShell = {
-      write(data) {
-        if (!exited) child.stdin!.write(typeof data === "string" ? data : Buffer.from(data));
-      },
-      resize() {
-        // `script` gives no handle on its pty size after start.
-      },
-      onData(listener) {
-        dataListeners.add(listener);
-        return () => dataListeners.delete(listener);
-      },
-      onClose(listener) {
-        if (exited) queueMicrotask(() => listener(exitCode));
-        else closeListeners.add(listener);
-        return () => closeListeners.delete(listener);
-      },
-      close() {
-        if (!exited) child.kill("SIGHUP");
-      },
-    };
-    return new Promise((resolve, reject) => {
-      child.once("spawn", () => resolve(shell));
-      child.once("error", reject);
     });
   }
 

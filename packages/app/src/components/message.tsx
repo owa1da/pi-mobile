@@ -357,62 +357,22 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   imagePreviewSpacing: {
     marginBottom: theme.spacing[2],
   },
-  copyButton: {
-    alignSelf: "center",
-    padding: theme.spacing[1],
-    paddingTop: theme.spacing[1],
-    marginTop: 0,
-    marginRight: -theme.spacing[1],
-  },
-  trailingRow: {
-    alignSelf: "flex-end",
-    flexDirection: "row",
-    alignItems: "center",
-    height: 24,
-    gap: theme.spacing[2],
-    marginTop: theme.spacing[2],
-  },
-  trailingRowHidden: {
-    opacity: 0,
-  },
-  trailingRowVisible: {
-    opacity: 1,
-  },
-  timestampText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: STREAM_METADATA_FONT_SIZE,
-  },
 }));
 
 const MESSAGE_TEXT_DATASET = { messageText: "true" };
 
 export const UserMessage = memo(function UserMessage({
   message,
-  timestamp,
+  timestamp: _timestamp,
   isFirstInGroup = true,
   isLastInGroup = true,
   isPending = false,
   disableOuterSpacing,
 }: UserMessageProps) {
-  const isCompact = useIsCompactFormFactor();
-  const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
-  // Touch: the timestamp and copy stay out of the way until the bubble is long-pressed (a
-  // per-turn row on every message is noise). Pointer: they appear on hover.
-  const [revealed, setRevealed] = useState(false);
-  const touch = isCompact || isNative;
+  // pi's transcript shows the message only: no time or copy row under it. The text stays
+  // selectable, so it can still be copied with the system selection.
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const hasText = message.trim().length > 0;
-  const showTrailingRow = !isPending && hasText && (touch ? revealed : isHovered);
-  const toggleReveal = useCallback(() => setRevealed((value) => !value), []);
-  const formattedTimestamp = useMemo(
-    () => formatMessageTimestamp(new Date(timestamp)),
-    [timestamp],
-  );
-
-  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
-  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const getMessageContent = useCallback(() => message, [message]);
 
   const containerStyle = useMemo(
     () => [
@@ -425,57 +385,16 @@ export const UserMessage = memo(function UserMessage({
     ],
     [resolvedDisableOuterSpacing, isFirstInGroup, isLastInGroup],
   );
-  const trailingRowStyle = useMemo(
-    () => [
-      userMessageStylesheet.trailingRow,
-      showTrailingRow
-        ? userMessageStylesheet.trailingRowVisible
-        : userMessageStylesheet.trailingRowHidden,
-    ],
-    [showTrailingRow],
-  );
-
   return (
     <View style={containerStyle} testID="user-message" aria-busy={isPending}>
-      <View
-        style={userMessageStylesheet.content}
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
-      >
-        <Pressable
-          style={userMessageStylesheet.bubble}
-          onLongPress={touch && hasText ? toggleReveal : undefined}
-          disabled={!touch || !hasText}
-          accessibilityHint={touch && hasText ? t("message.actions.revealDetails") : undefined}
-          testID="user-message-bubble"
-        >
+      <View style={userMessageStylesheet.content}>
+        <View style={userMessageStylesheet.bubble} testID="user-message-bubble">
           {hasText ? (
-            <Text
-              selectable={!touch}
-              style={userMessageStylesheet.text}
-              dataSet={MESSAGE_TEXT_DATASET}
-            >
+            <Text selectable style={userMessageStylesheet.text} dataSet={MESSAGE_TEXT_DATASET}>
               {message}
             </Text>
           ) : null}
-        </Pressable>
-        {hasText && (!touch || showTrailingRow) ? (
-          <View
-            style={trailingRowStyle}
-            pointerEvents={showTrailingRow ? "auto" : "none"}
-            testID="user-message-trailing-row"
-          >
-            <Text style={userMessageStylesheet.timestampText} testID="user-message-timestamp">
-              {formattedTimestamp}
-            </Text>
-            <TurnCopyButton
-              getContent={getMessageContent}
-              containerStyle={userMessageStylesheet.copyButton}
-              accessibilityLabel={t("message.actions.copyMessage")}
-              testID="user-message-copy"
-            />
-          </View>
-        ) : null}
+        </View>
       </View>
     </View>
   );

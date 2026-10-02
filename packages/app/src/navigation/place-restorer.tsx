@@ -1,5 +1,5 @@
 // Wiring for restore-place.ts: screens report where the user is, the font-scale reload saves it,
-// and the next start rebuilds the stack once (dashboard, then the session on its tab).
+// and the next start rebuilds the stack once (dashboard, then the session).
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useRootNavigationState } from "expo-router";

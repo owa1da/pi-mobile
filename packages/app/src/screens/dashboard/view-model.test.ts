@@ -5,8 +5,7 @@ import {
   CLOSED_SHOWN,
   countParts,
   formatAge,
-  presentRow,
-  shortFolder,
+  rowGlyph,
   shortModel,
 } from "./view-model";
 
@@ -87,48 +86,22 @@ describe("short model and folder", () => {
     expect(shortModel({ provider: "x", id: "" })).toBeUndefined();
     expect(shortModel({ provider: "x", id: "unknown", name: "Opus 5.5" })).toBe("Opus 5.5");
   });
-
-  it("home-shortens and cuts folders to their last two names", () => {
-    expect(shortFolder("/home/me/llm-stack", "/home/me")).toBe("~/llm-stack");
-    expect(shortFolder("/home/me", "/home/me")).toBe("~");
-    expect(shortFolder("/home/me/work/repo/api", "/home/me")).toBe("…/repo/api");
-    expect(shortFolder("/srv/app", "/home/me")).toBe("/srv/app");
-    expect(shortFolder("/srv/a/b/c", undefined)).toBe("…/b/c");
-  });
 });
 
-describe("presentRow", () => {
-  it("needs input shows the question", () => {
-    expect(presentRow(row({ section: "needs", live: true, asking: "Allow rm?" }))).toEqual({
-      glyph: "needs",
-      status: "Allow rm?",
-      asking: true,
-    });
-    expect(presentRow(row({ section: "needs", detail: "send a prompt to start" })).status).toBe(
-      "send a prompt to start",
-    );
-  });
-
-  it("working rows show no status; scheduled waits get their own glyph", () => {
-    expect(presentRow(row({ section: "working", live: true, detail: "bash" }))).toEqual({
-      glyph: "working",
-      asking: false,
-    });
-    expect(presentRow(row({ section: "working", wake: { due: 1, missed: false } })).glyph).toBe(
+describe("rowGlyph", () => {
+  it("needs input, working and scheduled", () => {
+    expect(rowGlyph(row({ section: "needs", live: true, asking: "Allow rm?" }))).toBe("needs");
+    expect(rowGlyph(row({ section: "working", live: true, detail: "bash" }))).toBe("working");
+    expect(rowGlyph(row({ section: "working", wake: { due: 1, missed: false } }))).toBe(
       "scheduled",
     );
   });
 
   it("completed rows: live, closed, gone, failed and interrupted", () => {
-    expect(presentRow(row({ live: true })).glyph).toBe("live");
-    expect(presentRow(row({})).glyph).toBe("closed");
-    expect(presentRow(row({ endReason: "gone" })).glyph).toBe("gone");
-    expect(presentRow(row({ detail: "error: timeout" }))).toMatchObject({
-      glyph: "failed",
-      status: "error: timeout",
-    });
-    expect(presentRow(row({ detail: "interrupted" })).glyph).toBe("interrupted");
-    // a normal reply is not repeated under the title
-    expect(presentRow(row({ live: true, detail: "Done, tests pass." })).status).toBeUndefined();
+    expect(rowGlyph(row({ live: true }))).toBe("live");
+    expect(rowGlyph(row({}))).toBe("closed");
+    expect(rowGlyph(row({ endReason: "gone" }))).toBe("gone");
+    expect(rowGlyph(row({ detail: "error: timeout" }))).toBe("failed");
+    expect(rowGlyph(row({ detail: "interrupted" }))).toBe("interrupted");
   });
 });

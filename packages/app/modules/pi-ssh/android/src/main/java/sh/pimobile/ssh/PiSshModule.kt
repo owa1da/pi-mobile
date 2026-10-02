@@ -7,7 +7,7 @@ import java.util.concurrent.RejectedExecutionException
 
 /**
  * Expo binding for [SshCore]. Blocking work runs on the core's worker pool; promises are settled
- * from there. Events: onHostKey, onShellData, onShellClose, onConnectionClose.
+ * from there. Events: onHostKey, onConnectionClose.
  */
 class PiSshModule : Module() {
   private var coreInstance: SshCore? = null
@@ -45,7 +45,7 @@ class PiSshModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PiSsh")
 
-    Events("onHostKey", "onShellData", "onShellClose", "onConnectionClose")
+    Events("onHostKey", "onConnectionClose")
 
     // options: { connectionId, host, port, username, password?, privateKey?, passphrase?,
     //            timeoutMs?, hostKeyTimeoutMs?, keepaliveIntervalMs? }
@@ -74,36 +74,6 @@ class PiSshModule : Module() {
 
     AsyncFunction("exec") { connectionId: String, command: String, stdin: String?, timeoutMs: Double?, promise: Promise ->
       run(promise) { core.exec(connectionId, command, stdin, timeoutMs?.toInt()) }
-    }
-
-    // options: { connectionId, shellId, cols, rows, term?, command? }
-    AsyncFunction("openShell") { options: Map<String, Any?>, promise: Promise ->
-      run(promise) {
-        val connId = optString(options, "connectionId")
-          ?: throw SshError(SshErrorCodes.INVALID_ARGUMENT, "connectionId is required")
-        val shellId = optString(options, "shellId")
-          ?: throw SshError(SshErrorCodes.INVALID_ARGUMENT, "shellId is required")
-        core.openShell(
-          connId = connId,
-          shellId = shellId,
-          cols = optInt(options, "cols", 80),
-          rows = optInt(options, "rows", 24),
-          term = optString(options, "term") ?: "xterm-256color",
-          command = optString(options, "command"),
-        )
-      }
-    }
-
-    Function("write") { shellId: String, base64: String ->
-      core.write(shellId, base64)
-    }
-
-    Function("resize") { shellId: String, cols: Int, rows: Int ->
-      core.resize(shellId, cols, rows)
-    }
-
-    Function("closeShell") { shellId: String ->
-      core.closeShell(shellId)
     }
 
     Function("isConnected") { connectionId: String ->

@@ -22,7 +22,7 @@ export default {
     name: variant.name,
     slug: "pi-mobile",
     version: nativeReleaseVersion.appVersion,
-    // Rotation is allowed: landscape gives the terminal pane ~2× the columns.
+    // Rotation is allowed: chat and code read wider in landscape.
     orientation: "default",
     icon: "./assets/images/icon.png",
     scheme: "pimobile",

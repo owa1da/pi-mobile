@@ -18,16 +18,6 @@ export interface PiSshConnectOptions {
   keepaliveIntervalMs?: number;
 }
 
-export interface PiSshOpenShellOptions {
-  connectionId: string;
-  /** Caller-chosen unique id; data/close events carry it. */
-  shellId: string;
-  cols: number;
-  rows: number;
-  term?: string;
-  command?: string;
-}
-
 export interface PiSshExecResult {
   stdout: string;
   stderr: string;
@@ -42,18 +32,6 @@ export interface PiSshHostKeyEvent {
   fingerprint: string;
 }
 
-export interface PiSshShellDataEvent {
-  shellId: string;
-  /** base64 bytes */
-  data: string;
-}
-
-export interface PiSshShellCloseEvent {
-  shellId: string;
-  connectionId: string;
-  exitCode?: number | null;
-}
-
 export interface PiSshConnectionCloseEvent {
   connectionId: string;
   /** "closed" after disconnect(), "lost" when the transport died. */
@@ -62,8 +40,6 @@ export interface PiSshConnectionCloseEvent {
 
 export interface PiSshEventMap {
   onHostKey: PiSshHostKeyEvent;
-  onShellData: PiSshShellDataEvent;
-  onShellClose: PiSshShellCloseEvent;
   onConnectionClose: PiSshConnectionCloseEvent;
 }
 
@@ -80,10 +56,6 @@ export interface PiSshNativeModule {
     stdin: string | null,
     timeoutMs: number | null,
   ): Promise<PiSshExecResult>;
-  openShell(options: PiSshOpenShellOptions): Promise<string>;
-  write(shellId: string, base64: string): void;
-  resize(shellId: string, cols: number, rows: number): void;
-  closeShell(shellId: string): void;
   isConnected(connectionId: string): boolean;
   disconnect(connectionId: string): void;
   generateKeyPair(comment: string): Promise<{ privateKey: string; publicKey: string }>;

@@ -18,7 +18,7 @@ import { KeyboardShiftProvider } from "@/keyboard/shift";
 import { PlaceRestorer, savePlaceForReload } from "@/navigation/place-restorer";
 import { ThemedStack } from "@/navigation/themed-stack";
 import { fontScaleChanged } from "@/utils/font-scale";
-import { reloadForFontScale } from "../../modules/pi-system-bars";
+import { reloadForFontScale } from "../../modules/pi-font-scale";
 
 /**
  * Android: when the system font size changes while Pi runs, RN keeps the old text measurements

@@ -1,12 +1,11 @@
-// Session: title, state and model, then Chat | Terminal. Chat renders the transcript with the kept
-// Paseo components; Terminal attaches the real tmux pane, so everything pi can do stays reachable.
+// Session: title, then pi's state and model, then the chat (the transcript rendered with the kept
+// Paseo components) and the composer.
 
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BackHandler, Text, View, useWindowDimensions } from "react-native";
+import { Text, View } from "react-native";
 import Animated from "react-native-reanimated";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet } from "react-native-unistyles";
 import { AssistantFileLinkResolverProvider } from "@/assistant-file-links";
 import { BackHeader } from "@/components/headers/back-header";
@@ -18,15 +17,13 @@ import { EmptyState } from "@/components/pi/empty-state";
 import { MutedSpinner } from "@/components/pi/icons";
 import { InlineBanner } from "@/components/pi/inline-banner";
 import { SessionGlyph } from "@/components/pi/session-glyph";
-import { TerminalView } from "@/components/pi/terminal-view";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
-import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { useToast } from "@/contexts/toast-context";
 import type { SessionRow } from "@/host/types";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
 import { useReportPlace } from "@/navigation/place-restorer";
 import { restoredSessionOutcome } from "@/navigation/restore-place";
-import { presentRow, shortFolder, shortModel } from "@/screens/dashboard/view-model";
+import { rowGlyph, shortModel } from "@/screens/dashboard/view-model";
 import {
   connectionStore,
   refreshSessions,
@@ -38,59 +35,17 @@ import { findRow, type SessionsEntry } from "@/stores/sessions-store";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
 import { useAnnounceOnChange, announce } from "@/components/pi/use-announce";
-import { useIsHandheld } from "@/utils/use-handheld";
-import { setImmersive } from "../../../modules/pi-system-bars";
 import { latestReply, nextReplyAnnouncement, previewText } from "./announce";
-import { shouldCollapseTerminalChrome, subBarStatus } from "./chrome";
+import { subBarStatus } from "./chrome";
 import { friendlyHostError, type FriendlyError } from "./send-errors";
 import { useChatFeed } from "./use-chat-feed";
 
-type Tab = "chat" | "terminal";
-
 const POLL_MS = 2000;
 const FILL = { flex: 1 };
-const HIDDEN = { display: "none" as const };
 
 function backToSessions() {
   if (router.canGoBack()) router.back();
   else router.replace("/");
-}
-
-/**
- * Handheld landscape on the Terminal tab: header, sub-bar and system bars give way to terminal
- * rows. System back while collapsed returns to Chat (restoring the chrome) instead of leaving.
- */
-function useTerminalChromeCollapse(
-  hasRow: boolean,
-  tab: Tab,
-  setTab: (tab: Tab) => void,
-  focused: boolean,
-) {
-  const handheld = useIsHandheld();
-  const { width, height } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
-  const collapsed = hasRow && shouldCollapseTerminalChrome({ tab, handheld, width, height });
-
-  useEffect(() => {
-    if (!collapsed || !focused) return undefined;
-    setImmersive(true);
-    return () => setImmersive(false);
-  }, [collapsed, focused]);
-
-  useEffect(() => {
-    if (!collapsed) return undefined;
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      setTab("chat");
-      return true;
-    });
-    return () => sub.remove();
-  }, [collapsed, setTab]);
-
-  const collapsedStyle = useMemo(
-    () => (collapsed ? { paddingTop: insets.top } : undefined),
-    [collapsed, insets.top],
-  );
-  return { collapsed, collapsedStyle };
 }
 
 /**
@@ -122,22 +77,24 @@ interface SessionParams {
   hostId: string;
   sessionId: string;
   /** Set by PlaceRestorer after a font-scale reload. */
-  tab?: string;
   restored?: string;
 }
 
-/** The open tab (initially the restored one), reported as the user's place while focused. */
-function useSessionTab(params: SessionParams, entry: SessionsEntry | undefined, focused: boolean) {
+/** The session's row, reported as the user's place while focused. */
+function useSessionPlace(
+  params: SessionParams,
+  entry: SessionsEntry | undefined,
+  focused: boolean,
+) {
   const { hostId, sessionId } = params;
-  const [tab, setTab] = useState<Tab>(params.tab === "terminal" ? "terminal" : "chat");
   const row = findRow(entry, sessionId);
-  useReportPlace({ kind: "session", hostId, sessionId, tab }, focused);
+  useReportPlace({ kind: "session", hostId, sessionId }, focused);
   const leaving = useLeaveIfRestoredSessionGone(
     params.restored === "1",
     row !== undefined,
     Boolean(entry?.snapshot),
   );
-  return { tab, setTab, row, leaving };
+  return { row, leaving };
 }
 
 export function SessionScreen() {
@@ -151,18 +108,12 @@ export function SessionScreen() {
   const focused = useScreenFocused();
   const appActive = useAppActive();
   const connected = connection.status === "connected";
-  const { tab, setTab, row, leaving } = useSessionTab(params, entry, focused);
+  const { row, leaving } = useSessionPlace(params, entry, focused);
   // An optimistic send in flight (until the next listing shows pi's state): the sub-bar says so.
   const [sendPending, setSendPending] = useState(false);
   const seen = useRef(false);
   if (row) seen.current = true;
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
-  const { collapsed, collapsedStyle } = useTerminalChromeCollapse(
-    row !== undefined,
-    tab,
-    setTab,
-    focused,
-  );
 
   useEffect(() => {
     if (hostsLoaded) void connectionStore.getState().ensureConnected(hostId);
@@ -173,40 +124,19 @@ export function SessionScreen() {
   const retry = useCallback(() => {
     void connectionStore.getState().connect(hostId);
   }, [hostId]);
-  const openTerminal = useCallback(() => setTab("terminal"), [setTab]);
-  const toChat = useCallback(() => setTab("chat"), [setTab]);
 
   let body;
   if (row) {
     body = (
       <>
-        {collapsed ? null : (
-          <SessionSubBar
-            row={row}
-            tab={tab}
-            onTab={setTab}
-            connection={connection}
-            sending={sendPending}
-          />
-        )}
+        <SessionSubBar row={row} connection={connection} sending={sendPending} />
         <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
-        <View style={tab === "chat" ? FILL : HIDDEN}>
-          <ChatPane
-            hostId={hostId}
-            row={row}
-            active={tab === "chat" && focused && appActive}
-            onOpenTerminal={openTerminal}
-            onPendingChange={setSendPending}
-          />
-        </View>
-        {tab === "terminal" ? (
-          <TerminalPane
-            hostId={hostId}
-            row={row}
-            connected={connected}
-            onToChat={collapsed ? toChat : undefined}
-          />
-        ) : null}
+        <ChatPane
+          hostId={hostId}
+          row={row}
+          active={focused && appActive}
+          onPendingChange={setSendPending}
+        />
       </>
     );
   } else if (entry?.snapshot && !leaving) {
@@ -244,8 +174,8 @@ export function SessionScreen() {
   }
 
   return (
-    <View style={[styles.screen, collapsedStyle]}>
-      {collapsed ? null : <BackHeader title={row?.title || t("pi.session.title")} />}
+    <View style={styles.screen}>
+      <BackHeader title={row?.title || t("pi.session.title")} />
       <Animated.View style={[FILL, keyboardStyle]}>{body}</Animated.View>
     </View>
   );
@@ -253,34 +183,22 @@ export function SessionScreen() {
 
 function SessionSubBar({
   row,
-  tab,
-  onTab,
   connection,
   sending,
 }: {
   row: SessionRow;
-  tab: Tab;
-  onTab: (tab: Tab) => void;
   connection: HostConnectionState;
   sending: boolean;
 }) {
   const { t } = useTranslation();
-  const options = useMemo<SegmentedControlOption<Tab>[]>(
-    () => [
-      { value: "chat", label: t("pi.session.chat"), testID: "session-tab-chat" },
-      { value: "terminal", label: t("pi.session.terminal"), testID: "session-tab-terminal" },
-    ],
-    [t],
-  );
   const model = shortModel(row.model);
   // While the connection is not live the last-known state is stale: name the connection instead,
   // or (banner up) say nothing and keep only the session's identity, dimmed.
   const status = subBarStatus(connection.status, row.state, sending);
   const quiet = status.kind === "quiet";
   const word = quiet ? null : t(status.key);
-  const identity = model ?? (quiet ? shortFolder(row.cwd, connection.env?.homeDir) : undefined);
-  const meta = [word, identity].filter(Boolean).join(" · ");
-  let glyph = presentRow(row).glyph;
+  const meta = [word, model].filter(Boolean).join(" · ");
+  let glyph = rowGlyph(row);
   if (status.kind === "pending") glyph = "working";
   else if (status.kind !== "state") glyph = "gone";
   return (
@@ -295,14 +213,6 @@ function SessionSubBar({
           {meta}
         </Text>
       </View>
-      <SegmentedControl
-        options={options}
-        value={tab}
-        onValueChange={onTab}
-        size="sm"
-        role="tabs"
-        testID="session-tabs"
-      />
     </View>
   );
 }
@@ -311,26 +221,18 @@ function ChatPane({
   hostId,
   row,
   active,
-  onOpenTerminal,
   onPendingChange,
 }: {
   hostId: string;
   row: SessionRow;
   active: boolean;
-  onOpenTerminal: () => void;
   onPendingChange: (pending: boolean) => void;
 }) {
   const toast = useToast();
   return (
     <AssistantFileLinkResolverProvider toast={toast}>
       <ToolCallSheetProvider>
-        <ChatPaneBody
-          hostId={hostId}
-          row={row}
-          active={active}
-          onOpenTerminal={onOpenTerminal}
-          onPendingChange={onPendingChange}
-        />
+        <ChatPaneBody hostId={hostId} row={row} active={active} onPendingChange={onPendingChange} />
       </ToolCallSheetProvider>
     </AssistantFileLinkResolverProvider>
   );
@@ -345,13 +247,11 @@ function ChatPaneBody({
   hostId,
   row,
   active,
-  onOpenTerminal,
   onPendingChange,
 }: {
   hostId: string;
   row: SessionRow;
   active: boolean;
-  onOpenTerminal: () => void;
   onPendingChange: (pending: boolean) => void;
 }) {
   const { t } = useTranslation();
@@ -374,7 +274,7 @@ function ChatPaneBody({
       if (sendingRef.current) return false;
       const service = connectionStore.getState().getService(hostId);
       if (!service) {
-        setSendError({ key: "pi.session.errors.connection", terminal: false });
+        setSendError({ key: "pi.session.errors.connection" });
         return false;
       }
       setSendError(null);
@@ -448,9 +348,6 @@ function ChatPaneBody({
             leading={askingGlyph}
             title={t("pi.session.asking")}
             message={row.asking ?? row.detail ?? ""}
-            actionLabel={t("pi.session.answerInTerminal")}
-            onAction={onOpenTerminal}
-            actionTestID="chat-answer-in-terminal"
             testID="chat-waiting-banner"
           />
         ) : null}
@@ -458,9 +355,6 @@ function ChatPaneBody({
           <InlineBanner
             tone="danger"
             message={errorMessage}
-            actionLabel={sendError.terminal ? t("pi.session.openTerminal") : undefined}
-            onAction={sendError.terminal ? onOpenTerminal : undefined}
-            actionTestID="chat-error-open-terminal"
             dismissLabel={t("pi.session.dismiss")}
             onDismiss={dismissError}
             testID="chat-send-error"
@@ -502,76 +396,6 @@ function useReplyAnnouncement(
   }, [active, latestKey, latestText, t, working]);
 }
 
-function TerminalPane({
-  hostId,
-  row,
-  connected,
-  onToChat,
-}: {
-  hostId: string;
-  row: SessionRow;
-  connected: boolean;
-  onToChat?: () => void;
-}) {
-  const { t } = useTranslation();
-  const toast = useToast();
-  const [attempt, setAttempt] = useState(0);
-  const [resuming, setResuming] = useState(false);
-  const resumingRef = useRef(false);
-  const reconnect = useCallback(() => setAttempt((value) => value + 1), []);
-  const resume = useCallback(async () => {
-    if (resumingRef.current) return;
-    const service = connectionStore.getState().getService(hostId);
-    if (!service) return;
-    resumingRef.current = true;
-    setResuming(true);
-    try {
-      await service.resumeSession(row);
-      await refreshSessions(hostId);
-    } catch (error) {
-      const friendly = friendlyHostError(error);
-      toast.error(friendly.detail ?? t(friendly.key));
-      if (friendly.outcomeUnknown) void refreshSessions(hostId);
-    } finally {
-      resumingRef.current = false;
-      setResuming(false);
-    }
-  }, [hostId, row, t, toast]);
-  const onResume = useCallback(() => void resume(), [resume]);
-
-  if (!row.live || !row.tmux) {
-    return (
-      <EmptyState
-        title={t("pi.session.closedTitle")}
-        body={t("pi.session.closedBody")}
-        actionLabel={t("pi.session.resume")}
-        onAction={onResume}
-        actionLoading={resuming}
-        actionTestID="terminal-resume"
-        testID="terminal-closed"
-      />
-    );
-  }
-  if (!connected) {
-    return (
-      <View style={styles.center} accessible accessibilityLabel={t("pi.terminal.connecting")}>
-        <MutedSpinner size="small" />
-      </View>
-    );
-  }
-  return (
-    <View style={FILL}>
-      <TerminalView
-        key={`${row.tmux.pane}:${attempt}`}
-        hostId={hostId}
-        row={row}
-        onReconnect={reconnect}
-        onToChat={onToChat}
-      />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create((theme) => ({
   screen: { flex: 1, backgroundColor: theme.colors.surface0 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -580,8 +404,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
     paddingHorizontal: theme.spacing[4],
-    // The tabs' 44dp hit row already carries the space below the 32dp pills.
-    paddingBottom: 0,
+    paddingBottom: theme.spacing[2],
   },
   subBarMeta: {
     flex: 1,

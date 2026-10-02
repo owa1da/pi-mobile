@@ -1,40 +1,21 @@
-// The π mark's geometry on a 100×100 grid. Mirrors assets/brand/pi-mark.svg (the launcher icon
-// source); pi-mark-shapes.test.ts fails if the two drift.
+// The pi agent logo's geometry on a 100×100 grid: five rects of a 4×4 grid of 16-unit cells.
+// Mirrors assets/brand/pi-mark.svg (the launcher icon source); pi-mark-shapes.test.ts fails if the
+// two drift.
 
 export interface MarkRect {
-  kind: "rect";
   x: number;
   y: number;
   width: number;
   height: number;
-  rx: number;
 }
 
-export interface MarkPolygon {
-  kind: "polygon";
-  points: readonly (readonly [number, number])[];
-}
-
-export type MarkShape = MarkRect | MarkPolygon;
-
-export const PI_MARK_SHAPES: readonly MarkShape[] = [
-  { kind: "rect", x: 18, y: 24, width: 64, height: 12, rx: 6 },
-  {
-    kind: "polygon",
-    points: [
-      [34, 30],
-      [46, 30],
-      [38, 76],
-      [26, 76],
-    ],
-  },
-  { kind: "rect", x: 56, y: 30, width: 12, height: 40, rx: 0 },
-  { kind: "rect", x: 56, y: 64, width: 22, height: 12, rx: 6 },
+export const PI_MARK_SHAPES: readonly MarkRect[] = [
+  { x: 18, y: 18, width: 48, height: 16 },
+  { x: 18, y: 34, width: 16, height: 48 },
+  { x: 50, y: 34, width: 16, height: 16 },
+  { x: 34, y: 50, width: 16, height: 16 },
+  { x: 66, y: 50, width: 16, height: 32 },
 ];
 
-/** The glyph's bounds, so a renderer can center it. */
-export const PI_MARK_VIEWBOX = "16 22 68 56";
-
-export function polygonPoints(shape: MarkPolygon): string {
-  return shape.points.map(([x, y]) => `${x},${y}`).join(" ");
-}
+/** Square, glyph centred with the margin upstream's 600-unit viewBox gives it (~11%). */
+export const PI_MARK_VIEWBOX = "9 9 82 82";

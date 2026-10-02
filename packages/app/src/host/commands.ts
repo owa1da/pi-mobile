@@ -278,7 +278,7 @@ printf '%s Z\\n' "$N"
 }
 
 // ---------------------------------------------------------------------------
-// tmux: start / send / abort / attach
+// tmux: start / send / abort
 // ---------------------------------------------------------------------------
 
 export interface TmuxTarget {
@@ -551,47 +551,6 @@ if "$T" -S "$S" send-keys -t "$P" Escape; then printf '%s OK\\n' "$N"; else prin
 `;
 }
 
-export interface AttachScriptInput extends TmuxTarget {
-  pane: string;
-  sessionName: string;
-  /** tmux >= 3.4: keep-last (never destroy the group's last session); else on. */
-  keepLast: boolean;
-  /** tmux >= 3.2: attach with -f ignore-size (the service refuses older tmux). */
-  ignoreSize: boolean;
-}
-
-/** Kill the phone's session only while another session in its group still holds the windows. */
-const KILL_PHONE_SESSION = `if "$T" -S "$S" list-sessions -F '#{session_group_size} #{session_name}' 2>/dev/null | awk -v n="$NAME" '$2 == n && NF == 2 && $1 > 1 { f = 1 } END { exit !f }'; then
-    "$T" -S "$S" kill-session -t "=$NAME" 2>/dev/null
-  fi`;
-
-/**
- * A phone-private session grouped with the pane's session, showing the pane's window, attached
- * with ignore-size so a desktop client keeps its size; destroyed when the phone detaches.
- * If any step of the chain fails before the attach (or the attach itself fails), destroy-unattached
- * never fires: the script kills the phone session itself afterwards. Never touches the user's
- * session's current window or clients.
- */
-export function attachScript(input: AttachScriptInput): string {
-  const name = input.sessionName;
-  const flags = input.ignoreSize ? "-f ignore-size " : "";
-  return `
-T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}; P=${shQuote(input.pane)}; NAME=${shQuote(name)}
-W=$("$T" -S "$S" display-message -p -t "$P" '#{pane_id} #{session_id} #{window_id}' 2>/dev/null)
-case "$W" in "$P "*) ;; *) echo "pi-mobile: this session's tmux pane is gone" >&2; exit 1;; esac
-set -- $W
-cleanup() {
-  ${KILL_PHONE_SESSION}
-}
-trap 'cleanup; exit 129' HUP
-trap 'cleanup; exit 143' TERM
-"$T" -u -S "$S" new-session -d -s "$NAME" -t "$2" \\; set-option -t "$NAME" destroy-unattached ${input.keepLast ? "keep-last" : "on"} \\; select-window -t "$NAME:$3" \\; attach-session ${flags}-t "$NAME"
-RC=$?
-cleanup
-exit $RC
-`;
-}
-
 /** The fields of startScript's `OK` line: `<window> <pane> <pid> <session name…>`. */
 export function parseStartedLine(
   line: string,
@@ -599,16 +558,6 @@ export function parseStartedLine(
   const match = /^(@\d+) (%\d+) (\d+) (.*)$/.exec(line.trim());
   if (!match) return undefined;
   return { windowId: match[1]!, pane: match[2]!, pid: Number(match[3]), tmuxSession: match[4]! };
-}
-
-/** Kill the phone's session only while another session in its group still holds the windows. */
-export function attachCleanupScript(input: TmuxTarget & { sessionName: string }): string {
-  return `
-T=${shQuote(input.tmux)}; S=${shQuote(input.socket)}; NAME=${shQuote(input.sessionName)}
-case "$NAME" in pim-*) ;; *) exit 0;; esac
-${KILL_PHONE_SESSION}
-exit 0
-`;
 }
 
 /** `test -f`, `test -d` on the host: prints `<nonce> <f|-> <d|->`. */
