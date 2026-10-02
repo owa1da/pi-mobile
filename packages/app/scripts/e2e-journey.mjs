@@ -3,7 +3,7 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v5), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v6), --keep (leave the sandbox up),
 //          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
 //          --theme dark|light (default dark: the run's
 //          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
@@ -117,6 +117,54 @@ async function revealAboveFooter(id, footerId, tries = 8) {
     await sleep(900);
   }
   throw new Error(`${id} never cleared the sheet footer`);
+}
+
+/** Polls uiautomator dumps until `pred(nodes)` holds. */
+async function waitDump(pred, timeoutMs, label) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const nodes = A.dump();
+    if (pred(nodes)) return nodes;
+    await sleep(1000);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+const nodeWidth = (node) => (node ? node.bounds[2] - node.bounds[0] : 0);
+
+/** Top/bottom of the host form's landmarks that are on screen (clipped by the sheet's viewport). */
+function sheetLandmarks() {
+  const nodes = A.dump();
+  const out = {};
+  for (const id of ["host-auth", "host-field-private-key", "host-field-passphrase"]) {
+    const node = nodes.find(A.byId(id));
+    if (node) out[id] = [node.bounds[1], node.bounds[3]];
+  }
+  return out;
+}
+
+const landmarksMoved = (a, b) =>
+  Object.keys(a).some(
+    (id) => !b[id] || Math.abs(a[id][0] - b[id][0]) >= 100 || Math.abs(a[id][1] - b[id][1]) >= 100,
+  );
+
+/**
+ * Drags from a point on the multiline private-key field and asserts the sheet's content moved.
+ * Up first (scrolls the content down); if the sheet already sat at its end, down.
+ */
+async function dragOnKeyField(label) {
+  for (const dy of [-500, 500]) {
+    const field = await A.waitNode(A.byId("host-field-private-key"), 5000, "key field");
+    const [x] = A.center(field);
+    const y = Math.round(field.bounds[1] + Math.min(120, (field.bounds[3] - field.bounds[1]) / 2));
+    const before = sheetLandmarks();
+    A.swipe(x, y, x, Math.min(2250, Math.max(150, y + dy)), 500);
+    await sleep(1200);
+    const after = sheetLandmarks();
+    if (landmarksMoved(before, after))
+      return `${label}: drag from (${x},${y}) by ${dy}px moved the sheet ${JSON.stringify(before)} → ${JSON.stringify(after)}`;
+  }
+  throw new Error(`${label}: a drag that starts on the key field did not scroll the sheet`);
 }
 
 /** Label, host, port and user in the open host form sheet. */
@@ -834,6 +882,64 @@ function steps(ctx) {
       },
     ],
     [
+      "Font-scale reload keeps the place: same session and tab, dashboard beneath it",
+      async () => {
+        await toDashboard();
+        const row = await scrollUntil(rowOf(E.readState().richId), "rich row");
+        A.tapNode(row);
+        await A.waitNode(A.byId("chat-list"), 30_000, "chat");
+        await A.tap(A.byId("session-tab-terminal"), "terminal tab");
+        await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
+        await sleep(2500);
+        const before = A.dump();
+        const surface = before.find((n) => n.desc.startsWith("Terminal for "));
+        assert(surface, "terminal surface has no label");
+        const chatW = nodeWidth(before.find(A.byId("session-tab-chat")));
+        try {
+          A.fontScale(1.3);
+          // The reload is proven by the re-measured (wider) tab; the place by the same session's
+          // terminal on the Terminal tab.
+          const restored = await waitDump(
+            (nodes) =>
+              nodes.find(A.byId("session-tab-terminal"))?.selected &&
+              nodeWidth(nodes.find(A.byId("session-tab-chat"))) > chatW + 8 &&
+              nodes.some((n) => n.desc === surface.desc),
+            60_000,
+            "the same session on the Terminal tab after the font-scale reload",
+          );
+          const chatW13 = nodeWidth(restored.find(A.byId("session-tab-chat")));
+          shot("72-fs13-restored-terminal-dark");
+          ctx.notes.push(
+            `font 1.3 reload: "${surface.desc}" restored on Terminal (Chat tab ${chatW} → ${chatW13}px)`,
+          );
+          await A.tap(A.byId("session-tab-chat"), "chat tab");
+          await A.waitNode(A.byId("chat-list"), 10_000, "chat");
+          A.fontScale(1);
+          await waitDump(
+            (nodes) =>
+              nodes.find(A.byId("session-tab-chat"))?.selected &&
+              nodeWidth(nodes.find(A.byId("session-tab-chat"))) < chatW13 - 8 &&
+              nodes.some(A.byId("chat-list")),
+            60_000,
+            "the same session on the Chat tab after the reload back to 1.0",
+          );
+          await sleep(1500);
+          shot("73-fs10-restored-chat-dark");
+          ctx.notes.push("font 1.0 reload: the session reopened on the Chat tab");
+        } finally {
+          A.fontScale(1);
+        }
+        // The rebuilt stack: back leaves the session for its dashboard.
+        await back();
+        await A.waitNode(
+          A.byId("dashboard-composer"),
+          20_000,
+          "dashboard under the restored session",
+        );
+        await sleep(1500);
+      },
+    ],
+    [
       "Light mode: dashboard, chat, tool sheet, terminal, hosts",
       async () => {
         night(false);
@@ -957,27 +1063,37 @@ function steps(ctx) {
           if (i > 0) A.key(A.KEY.ENTER);
           A.typeText(line);
         });
+        // A drag that starts on the multiline key field scrolls the sheet: with the keyboard up
+        // (field focused) and after it is hidden.
+        ctx.notes.push(await dragOnKeyField("key-field drag, keyboard up"));
         A.hideKeyboard();
         await sleep(800);
         shot("44-add-host-paste-dark");
-        // A drag that starts on the multiline key field scrolls the sheet (the field never scrolls).
-        const field = A.find(A.byId("host-field-private-key"));
-        const [fx, fy] = A.center(field);
-        // The sheet may already sit at its scroll end: try up, then down; either must move it.
-        A.swipe(fx, fy, fx, Math.max(200, fy - 600), 500);
+        ctx.notes.push(await dragOnKeyField("key-field drag, keyboard hidden"));
+        shot("70-key-field-after-drag-dark");
+        // The field still takes a tap (keyboard), select-all, cut and paste.
+        await A.tap(A.byId("host-field-private-key"), "key field after the drags");
         await sleep(1000);
-        let moved = A.find(A.byId("host-field-private-key"));
-        if (moved && Math.abs(moved.bounds[1] - field.bounds[1]) < 100) {
-          A.swipe(fx, fy, fx, Math.min(2200, fy + 600), 500);
-          await sleep(1000);
-          moved = A.find(A.byId("host-field-private-key"));
-        }
-        // Open (report-a11y.md): the field no longer scrolls itself, but a drag that starts on it
-        // still does not scroll the sheet. Recorded, not asserted, until that is fixed.
-        const sheetMoved = moved && Math.abs(moved.bounds[1] - field.bounds[1]) >= 100;
-        ctx.notes.push(
-          `key-field drag (open item): sheet ${sheetMoved ? "scrolled" : "did not scroll"}, field top ${field.bounds[1]} → ${moved?.bounds[1]}px`,
+        assert(
+          /mInputShown=true/.test(A.adb("shell", "dumpsys", "input_method")),
+          "tap on the key field did not open the keyboard",
         );
+        const body = lines[1];
+        const keyText = () => A.find(A.byId("host-field-private-key"))?.text ?? "";
+        const combo = (...codes) =>
+          A.adb("shell", "input", "keycombination", ...codes.map((c) => String(c)));
+        combo(113, 29); // Ctrl+A
+        await sleep(400);
+        combo(113, 52); // Ctrl+X
+        await sleep(800);
+        assert(!keyText().includes(body), "cut left the key in the field");
+        combo(113, 50); // Ctrl+V
+        await sleep(1000);
+        assert(keyText().includes(body), "paste did not put the key back");
+        A.hideKeyboard();
+        await sleep(800);
+        shot("71-key-field-pasted-dark");
+        ctx.notes.push("key field: tap opens the keyboard; select-all, cut and paste round-trip");
         await A.tap(A.byId("host-save"), "save");
         await A.tap(hostRow("Laptop"), "Laptop row", 15_000);
         await A.waitNode(A.byId("host-key-sheet"), 40_000, "trust sheet");
@@ -1086,7 +1202,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v5"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v6"),
   );
   const apk = option(
     args,

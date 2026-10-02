@@ -137,6 +137,90 @@ index a532cf6..7b66222 100644
    private fun extractGestureHandlers(
      viewGroup: ViewGroup,
      coords: FloatArray,
+diff --git a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt b/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt
+index 8329224..fcd28a8 100644
+--- a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt
++++ b/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt
+@@ -266,12 +266,57 @@ class NativeViewGestureHandler : GestureHandler() {
+     private var startY = 0f
+     private var touchSlopSquared: Int
+ 
++    // Pi patch: a drag that starts on a text field that cannot scroll vertically belongs to the
++    // vertical ScrollView around it (a form in a bottom sheet). The field runs alongside that
++    // ScrollView instead of cancelling it on touch down, and gives the touch up (ACTION_CANCEL, no
++    // focus) once the finger moves vertically past the touch slop. Taps, long-press and editing
++    // are unchanged; a field that can scroll itself keeps the drag as before.
++    private var touchSlop: Int
++    private var startScreenX = 0f
++    private var startScreenY = 0f
++    private var yieldedToScroll = false
++    private val screenLocation = IntArray(2)
++
+     init {
+       val vc = ViewConfiguration.get(editText.context)
++      touchSlop = vc.scaledTouchSlop
+       touchSlopSquared = vc.scaledTouchSlop * vc.scaledTouchSlop
+     }
+ 
++    private fun cannotScrollVertically() = !editText.canScrollVertically(-1) && !editText.canScrollVertically(1)
++
++    private fun yieldsTo(other: GestureHandler) =
++      other is NativeViewGestureHandler && other.view is ReactScrollView && cannotScrollVertically()
++
++    private fun screenPoint(event: MotionEvent): Pair<Float, Float> {
++      editText.getLocationOnScreen(screenLocation)
++      return Pair(screenLocation[0] + event.x, screenLocation[1] + event.y)
++    }
++
++    private fun isVerticalDrag(event: MotionEvent): Boolean {
++      val (x, y) = screenPoint(event)
++      val dx = Math.abs(x - startScreenX)
++      val dy = Math.abs(y - startScreenY)
++      return dy > touchSlop && dy > dx && cannotScrollVertically()
++    }
++
++    override fun sendTouchEvent(view: View?, event: MotionEvent): Boolean? {
++      if (yieldedToScroll) return false
++      if (event.actionMasked == MotionEvent.ACTION_MOVE && isVerticalDrag(event)) {
++        yieldedToScroll = true
++        val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
++        editText.onTouchEvent(cancel)
++        cancel.recycle()
++        return false
++      }
++      return view?.onTouchEvent(event)
++    }
++
+     override fun afterGestureEnd(event: MotionEvent) {
++      if (yieldedToScroll) {
++        yieldedToScroll = false
++        return
++      }
+       if (
+         (event.x - startX) * (event.x - startX) + (event.y - startY) * (event.y - startY) < touchSlopSquared
+       ) {
+@@ -283,16 +328,20 @@ class NativeViewGestureHandler : GestureHandler() {
+     // of RNGestureHandlerRootHelper so no explicit type checks, but its tag is always negative
+     // also if other handler is NativeViewGestureHandler then don't override the default implementation
+     override fun shouldRecognizeSimultaneously(handler: GestureHandler) =
+-      handler.tag > 0 && handler !is NativeViewGestureHandler
++      (handler.tag > 0 && handler !is NativeViewGestureHandler) || yieldsTo(handler)
+ 
+     override fun wantsToHandleEventBeforeActivation() = true
+ 
+     override fun handleEventBeforeActivation(event: MotionEvent) {
++      yieldedToScroll = false
+       handler.activate()
+       editText.onTouchEvent(event)
+ 
+       startX = event.x
+       startY = event.y
++      val (x, y) = screenPoint(event)
++      startScreenX = x
++      startScreenY = y
+     }
+ 
+     override fun shouldCancelRootViewGestureHandlerIfNecessary() = true
 diff --git a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt b/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt
 index d8f8fd6..ed101b9 100644
 --- a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt

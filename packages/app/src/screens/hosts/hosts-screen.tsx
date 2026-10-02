@@ -14,9 +14,11 @@ import { HostKeyMismatchSheet } from "@/components/pi/host-key-sheet";
 import { HostRow } from "@/components/pi/host-row";
 import { ThemedPiIcon, ThemedPlus, extraMutedColor, foregroundColor } from "@/components/pi/icons";
 import type { SavedHost } from "@/host/types";
+import { useReportPlace } from "@/navigation/place-restorer";
 import { deleteHostEverywhere } from "@/screens/hosts/use-host-form";
 import { connectionStore, useHosts, useHostsLoaded } from "@/stores/app";
 import type { HostConnectionState } from "@/stores/connection-store";
+import { useScreenFocused } from "@/stores/use-polling";
 import { useStore } from "zustand";
 
 interface FormTarget {
@@ -32,6 +34,7 @@ interface Mismatch {
 
 const IDLE: HostConnectionState = { status: "idle", attempt: 0 };
 const DELETE_CONFIRM_FALLBACK_MS = 800;
+const HOSTS_PLACE = { kind: "hosts" } as const;
 
 function openDashboard(hostId: string) {
   router.push({ pathname: "/h/[hostId]", params: { hostId } });
@@ -46,6 +49,7 @@ export function HostsScreen() {
   const [formVisible, setFormVisible] = useState(false);
   const [mismatch, setMismatch] = useState<Mismatch | null>(null);
   const [replacing, setReplacing] = useState(false);
+  useReportPlace(HOSTS_PLACE, useScreenFocused());
 
   const openForm = useCallback((host: SavedHost | null) => {
     setForm((current) => ({ key: (current?.key ?? 0) + 1, host }));

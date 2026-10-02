@@ -24,6 +24,8 @@ import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/s
 import { useToast } from "@/contexts/toast-context";
 import type { SessionRow } from "@/host/types";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
+import { useReportPlace } from "@/navigation/place-restorer";
+import { restoredSessionOutcome } from "@/navigation/restore-place";
 import { presentRow, shortModel } from "@/screens/dashboard/view-model";
 import {
   connectionStore,
@@ -32,7 +34,7 @@ import {
   useHostsLoaded,
   useSessionsEntry,
 } from "@/stores/app";
-import { findRow } from "@/stores/sessions-store";
+import { findRow, type SessionsEntry } from "@/stores/sessions-store";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
 import { useAnnounceOnChange, announce } from "@/components/pi/use-announce";
@@ -91,17 +93,65 @@ function useTerminalChromeCollapse(
   return { collapsed, collapsedStyle };
 }
 
+/**
+ * A session reopened after a font-scale reload: decided once, when the host's first snapshot
+ * arrives. If the session no longer exists, go back to its dashboard (pushed under it by
+ * PlaceRestorer) instead of showing "not found". Returns true while leaving.
+ */
+function useLeaveIfRestoredSessionGone(
+  restored: boolean,
+  hasRow: boolean,
+  hasSnapshot: boolean,
+): boolean {
+  const decided = useRef(!restored);
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    if (decided.current) return;
+    const outcome = restoredSessionOutcome(hasRow, hasSnapshot);
+    if (outcome === "wait") return;
+    decided.current = true;
+    if (outcome === "leave") {
+      setLeaving(true);
+      backToSessions();
+    }
+  }, [hasRow, hasSnapshot]);
+  return leaving;
+}
+
+interface SessionParams {
+  hostId: string;
+  sessionId: string;
+  /** Set by PlaceRestorer after a font-scale reload. */
+  tab?: string;
+  restored?: string;
+}
+
+/** The open tab (initially the restored one), reported as the user's place while focused. */
+function useSessionTab(params: SessionParams, entry: SessionsEntry | undefined, focused: boolean) {
+  const { hostId, sessionId } = params;
+  const [tab, setTab] = useState<Tab>(params.tab === "terminal" ? "terminal" : "chat");
+  const row = findRow(entry, sessionId);
+  useReportPlace({ kind: "session", hostId, sessionId, tab }, focused);
+  const leaving = useLeaveIfRestoredSessionGone(
+    params.restored === "1",
+    row !== undefined,
+    Boolean(entry?.snapshot),
+  );
+  return { tab, setTab, row, leaving };
+}
+
 export function SessionScreen() {
   const { t } = useTranslation();
-  const { hostId, sessionId } = useLocalSearchParams<{ hostId: string; sessionId: string }>();
+  // Pick gives the mapped (index-compatible) shape expo-router's params constraint needs.
+  const params = useLocalSearchParams<Pick<SessionParams, keyof SessionParams>>();
+  const { hostId } = params;
   const hostsLoaded = useHostsLoaded();
   const connection = useHostConnection(hostId);
   const entry = useSessionsEntry(hostId);
   const focused = useScreenFocused();
   const appActive = useAppActive();
   const connected = connection.status === "connected";
-  const [tab, setTab] = useState<Tab>("chat");
-  const row = findRow(entry, sessionId);
+  const { tab, setTab, row, leaving } = useSessionTab(params, entry, focused);
   const seen = useRef(false);
   if (row) seen.current = true;
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
@@ -121,8 +171,8 @@ export function SessionScreen() {
   const retry = useCallback(() => {
     void connectionStore.getState().connect(hostId);
   }, [hostId]);
-  const openTerminal = useCallback(() => setTab("terminal"), []);
-  const toChat = useCallback(() => setTab("chat"), []);
+  const openTerminal = useCallback(() => setTab("terminal"), [setTab]);
+  const toChat = useCallback(() => setTab("chat"), [setTab]);
 
   let body;
   if (row) {
@@ -150,7 +200,7 @@ export function SessionScreen() {
         ) : null}
       </>
     );
-  } else if (entry?.snapshot) {
+  } else if (entry?.snapshot && !leaving) {
     body = (
       <EmptyState
         title={seen.current ? t("pi.session.goneTitle") : t("pi.session.notFoundTitle")}

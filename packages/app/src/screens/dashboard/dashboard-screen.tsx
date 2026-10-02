@@ -24,6 +24,7 @@ import { SessionRow } from "@/components/pi/session-row";
 import { useToast } from "@/contexts/toast-context";
 import type { SessionRow as SessionRowData, SessionSection, SessionsSnapshot } from "@/host/types";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
+import { useReportPlace } from "@/navigation/place-restorer";
 import { friendlyHostError } from "@/screens/session/send-errors";
 import {
   connectionStore,
@@ -193,6 +194,7 @@ export function DashboardScreen() {
   const connected = connection.status === "connected";
   const { start, starting } = useStartSession(hostId);
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
+  useReportPlace({ kind: "dashboard", hostId }, focused);
 
   useEffect(() => {
     if (hostsLoaded && host) void connectionStore.getState().ensureConnected(hostId);

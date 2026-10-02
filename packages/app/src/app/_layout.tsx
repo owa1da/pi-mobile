@@ -15,6 +15,7 @@ import { useAnySheetOpen } from "@/components/pi/sheet-a11y";
 import { ThemedStatusBar } from "@/components/pi/themed-status-bar";
 import { ToastProvider } from "@/contexts/toast-context";
 import { KeyboardShiftProvider } from "@/keyboard/shift";
+import { PlaceRestorer, savePlaceForReload } from "@/navigation/place-restorer";
 import { ThemedStack } from "@/navigation/themed-stack";
 import { fontScaleChanged } from "@/utils/font-scale";
 import { reloadForFontScale } from "../../modules/pi-system-bars";
@@ -22,12 +23,16 @@ import { reloadForFontScale } from "../../modules/pi-system-bars";
 /**
  * Android: when the system font size changes while Pi runs, RN keeps the old text measurements
  * (clipped labels, overlapping rows). Reload once at the new scale; a cold start is already right.
+ * The user's place is saved first and rebuilt after the reload (PlaceRestorer).
  */
 function useReloadOnFontScaleChange() {
   useEffect(() => {
     const initial = Dimensions.get("window").fontScale;
+    let reloading = false;
     const sub = Dimensions.addEventListener("change", ({ window }) => {
-      if (fontScaleChanged(initial, window.fontScale)) reloadForFontScale();
+      if (reloading || !fontScaleChanged(initial, window.fontScale)) return;
+      reloading = true;
+      void savePlaceForReload().then(() => reloadForFontScale());
     });
     return () => sub.remove();
   }, []);
@@ -87,6 +92,7 @@ export default function RootLayout() {
             </ThemedStack>
           </SideInsets>
           <AppLifecycle />
+          <PlaceRestorer />
           <HostKeyPromptHost />
         </RootProviders>
       </View>
