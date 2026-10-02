@@ -1,6 +1,7 @@
 // The host service against REAL pi + forge (not the fake): readiness before a paste, one user
 // message per prompt, and draft refusal. Isolated: a temp HOME/agent dir (PI_CODING_AGENT_DIR),
-// a private tmux socket, forge loaded read-only from ~/.pi/forge, PI_OFFLINE=1, no auth copied.
+// a private tmux socket, forge loaded from a copy ($PIM_E2E_FORGE or the remote-channel
+// worktree, never the live ~/.pi/forge), PI_OFFLINE=1, no auth copied.
 // The only model is a provider at 127.0.0.1:9 (connection refused) with retries off: a prompt is
 // recorded in the session .jsonl, then fails before any model call. Costs nothing.
 
@@ -25,7 +26,14 @@ function findRealPi(): string | undefined {
 }
 
 const REAL_PI = findRealPi();
-const FORGE = path.join(os.homedir(), ".pi", "forge");
+// Never the live pack (~/.pi/forge): the user's running pi sessions load it and other sessions
+// edit it. Same source as scripts/e2e-emulator.mjs: $PIM_E2E_FORGE or the remote-channel worktree.
+const LIVE_FORGE = path.join(os.homedir(), ".pi", "forge");
+const FORGE =
+  process.env.PIM_E2E_FORGE ||
+  path.join(os.homedir(), "projects", "pi-mobile-work", "forge-remote");
+if (path.resolve(FORGE) === path.resolve(LIVE_FORGE))
+  throw new Error("real-pi integration test must not load the live forge at ~/.pi/forge");
 const hasForge = fs.existsSync(path.join(FORGE, "extensions"));
 if (!REAL_PI)
   console.warn("real-pi integration test skipped: `pi` is not installed on this machine");
