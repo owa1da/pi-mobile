@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { SessionRow as SessionRowData } from "@/host/types";
+import { rowAccessibilityLabel, rowStateWord } from "@/screens/dashboard/glyphs";
 import { formatAge, presentRow, shortFolder, shortModel } from "@/screens/dashboard/view-model";
 import { SessionGlyph } from "./session-glyph";
 
@@ -42,7 +43,13 @@ export const SessionRow = memo(function SessionRow({
       onPress={handlePress}
       style={rowStyle}
       accessibilityRole="button"
-      accessibilityLabel={[title, status, age].filter(Boolean).join(", ")}
+      accessibilityLabel={rowAccessibilityLabel({
+        title,
+        state: t(`pi.session.stateWord.${rowStateWord(row)}`),
+        status,
+        meta,
+        age,
+      })}
       testID={`session-row-${row.sessionId}`}
     >
       <View style={styles.glyph}>

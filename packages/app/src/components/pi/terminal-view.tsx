@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View } from "react-native";
+import { Text, View, useWindowDimensions } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import WebViewTerminalEmulator from "@/components/terminal-emulator-webview.native";
 import type { TerminalEmulatorHandle } from "@/components/terminal-emulator-contract";
@@ -100,10 +100,16 @@ interface TerminalViewProps {
   hostId: string;
   row: SessionRow;
   onReconnect: () => void;
+  /** Collapsed landscape: show the leading "‹ Chat" key. */
+  onToChat?: () => void;
 }
 
-export function TerminalView({ hostId, row, onReconnect }: TerminalViewProps) {
+export function TerminalView({ hostId, row, onReconnect, onToChat }: TerminalViewProps) {
   const { settings } = useAppSettings();
+  const { width, height } = useWindowDimensions();
+  // Portrait: an 8dp gutter so text never touches the bezel. Landscape is already inset by the
+  // root's side safe areas.
+  const portrait = height >= width;
   const { emulatorRef, shellRef, open, status, error } = useTerminalShell(hostId, row);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const ctrlRef = useRef(false);
@@ -179,7 +185,7 @@ export function TerminalView({ hostId, row, onReconnect }: TerminalViewProps) {
 
   return (
     <View style={styles.fill}>
-      <View style={styles.fill}>
+      <View style={[styles.fill, styles.surface, portrait && styles.gutter]}>
         <ThemedTerminal
           ref={emulatorRef}
           streamKey={`${hostId}:${row.sessionId}`}
@@ -196,7 +202,7 @@ export function TerminalView({ hostId, row, onReconnect }: TerminalViewProps) {
         />
         <TerminalOverlay status={status} error={error} onReconnect={onReconnect} />
       </View>
-      <KeyBar ctrlArmed={ctrlArmed} onKey={onKey} />
+      <KeyBar ctrlArmed={ctrlArmed} onKey={onKey} onToChat={onToChat} />
     </View>
   );
 }
@@ -236,6 +242,8 @@ function TerminalOverlay({
 
 const styles = StyleSheet.create((theme) => ({
   fill: { flex: 1 },
+  surface: { backgroundColor: theme.colors.terminal.background },
+  gutter: { paddingHorizontal: theme.spacing[2] },
   overlay: {
     position: "absolute",
     top: 0,

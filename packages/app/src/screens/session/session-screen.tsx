@@ -4,8 +4,9 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View } from "react-native";
+import { BackHandler, Text, View, useWindowDimensions } from "react-native";
 import Animated from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet } from "react-native-unistyles";
 import { AssistantFileLinkResolverProvider } from "@/assistant-file-links";
 import { BackHeader } from "@/components/headers/back-header";
@@ -32,7 +33,11 @@ import {
   useSessionsEntry,
 } from "@/stores/app";
 import { findRow } from "@/stores/sessions-store";
+import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
+import { useIsHandheld } from "@/utils/use-handheld";
+import { setImmersive } from "../../../modules/pi-system-bars";
+import { shouldCollapseTerminalChrome, subBarStatus } from "./chrome";
 import { friendlyHostError, type FriendlyError } from "./send-errors";
 import { useChatFeed } from "./use-chat-feed";
 
@@ -45,6 +50,43 @@ const HIDDEN = { display: "none" as const };
 function backToSessions() {
   if (router.canGoBack()) router.back();
   else router.replace("/");
+}
+
+/**
+ * Handheld landscape on the Terminal tab: header, sub-bar and system bars give way to terminal
+ * rows. System back while collapsed returns to Chat (restoring the chrome) instead of leaving.
+ */
+function useTerminalChromeCollapse(
+  hasRow: boolean,
+  tab: Tab,
+  setTab: (tab: Tab) => void,
+  focused: boolean,
+) {
+  const handheld = useIsHandheld();
+  const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const collapsed = hasRow && shouldCollapseTerminalChrome({ tab, handheld, width, height });
+
+  useEffect(() => {
+    if (!collapsed || !focused) return undefined;
+    setImmersive(true);
+    return () => setImmersive(false);
+  }, [collapsed, focused]);
+
+  useEffect(() => {
+    if (!collapsed) return undefined;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      setTab("chat");
+      return true;
+    });
+    return () => sub.remove();
+  }, [collapsed, setTab]);
+
+  const collapsedStyle = useMemo(
+    () => (collapsed ? { paddingTop: insets.top } : undefined),
+    [collapsed, insets.top],
+  );
+  return { collapsed, collapsedStyle };
 }
 
 export function SessionScreen() {
@@ -61,6 +103,12 @@ export function SessionScreen() {
   const seen = useRef(false);
   if (row) seen.current = true;
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
+  const { collapsed, collapsedStyle } = useTerminalChromeCollapse(
+    row !== undefined,
+    tab,
+    setTab,
+    focused,
+  );
 
   useEffect(() => {
     if (hostsLoaded) void connectionStore.getState().ensureConnected(hostId);
@@ -72,12 +120,15 @@ export function SessionScreen() {
     void connectionStore.getState().connect(hostId);
   }, [hostId]);
   const openTerminal = useCallback(() => setTab("terminal"), []);
+  const toChat = useCallback(() => setTab("chat"), []);
 
   let body;
   if (row) {
     body = (
       <>
-        <SessionSubBar row={row} tab={tab} onTab={setTab} />
+        {collapsed ? null : (
+          <SessionSubBar row={row} tab={tab} onTab={setTab} connection={connection} />
+        )}
         <ConnectionBanner hostId={hostId} connection={connection} />
         <View style={tab === "chat" ? FILL : HIDDEN}>
           <ChatPane
@@ -88,7 +139,12 @@ export function SessionScreen() {
           />
         </View>
         {tab === "terminal" ? (
-          <TerminalPane hostId={hostId} row={row} connected={connected} />
+          <TerminalPane
+            hostId={hostId}
+            row={row}
+            connected={connected}
+            onToChat={collapsed ? toChat : undefined}
+          />
         ) : null}
       </>
     );
@@ -122,8 +178,8 @@ export function SessionScreen() {
   }
 
   return (
-    <View style={styles.screen}>
-      <BackHeader title={row?.title || t("pi.session.title")} />
+    <View style={[styles.screen, collapsedStyle]}>
+      {collapsed ? null : <BackHeader title={row?.title || t("pi.session.title")} />}
       <Animated.View style={[FILL, keyboardStyle]}>{body}</Animated.View>
     </View>
   );
@@ -133,10 +189,12 @@ function SessionSubBar({
   row,
   tab,
   onTab,
+  connection,
 }: {
   row: SessionRow;
   tab: Tab;
   onTab: (tab: Tab) => void;
+  connection: HostConnectionState;
 }) {
   const { t } = useTranslation();
   const options = useMemo<SegmentedControlOption<Tab>[]>(
@@ -147,11 +205,13 @@ function SessionSubBar({
     [t],
   );
   const model = shortModel(row.model);
-  const meta = [t(`pi.session.state.${row.state}`), model].filter(Boolean).join(" · ");
+  // While the connection is not live the last-known state is stale: name the connection instead.
+  const status = subBarStatus(connection.status, row.state);
+  const meta = [t(status.key), model].filter(Boolean).join(" · ");
   return (
     <View style={styles.subBar}>
       <View style={styles.subBarMeta}>
-        <SessionGlyph kind={presentRow(row).glyph} />
+        <SessionGlyph kind={status.kind === "state" ? presentRow(row).glyph : "gone"} />
         <Text style={styles.subBarText} numberOfLines={1} testID="session-state">
           {meta}
         </Text>
@@ -322,10 +382,12 @@ function TerminalPane({
   hostId,
   row,
   connected,
+  onToChat,
 }: {
   hostId: string;
   row: SessionRow;
   connected: boolean;
+  onToChat?: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -380,6 +442,7 @@ function TerminalPane({
         hostId={hostId}
         row={row}
         onReconnect={reconnect}
+        onToChat={onToChat}
       />
     </View>
   );

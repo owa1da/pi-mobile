@@ -4,6 +4,7 @@ import {
   Text,
   ScrollView as RNScrollView,
   type StyleProp,
+  type TextStyle,
   type ViewStyle,
 } from "react-native";
 import { ScrollView as GHScrollView } from "react-native-gesture-handler";
@@ -746,26 +747,27 @@ function buildDetailSections(
   return [];
 }
 
+// Web only: scrollText sets `white-space: pre` for code; an error message wraps instead.
+const ERROR_WRAP: TextStyle | undefined = isWeb
+  ? ({ whiteSpace: "pre-wrap", overflowWrap: "anywhere" } as TextStyle)
+  : undefined;
+
+// The error wraps (an error message is prose, not code to scan sideways) and keeps the sheet's
+// 16dp gutter even when the rest of the detail is full-bleed.
 function ErrorSection({ errorText, ds }: { errorText: string; ds: DetailStyles }) {
   const { t } = useTranslation();
   return (
-    <View style={styles.section}>
+    <View style={[styles.section, ds.isFullBleed && styles.errorGutter]}>
       <Text style={[styles.sectionTitle, styles.errorText]}>{t("toolCallDetails.error")}</Text>
-      <ScrollView
-        horizontal
-        nestedScrollEnabled
-        style={ds.jsonScrollErrorCombined}
-        contentContainerStyle={styles.jsonContent}
-        showsHorizontalScrollIndicator={true}
-      >
+      <View style={[ds.jsonScrollErrorCombined, styles.jsonContent]}>
         <Text
           selectable
-          style={[styles.scrollText, styles.errorText]}
+          style={[styles.scrollText, ERROR_WRAP, styles.errorText]}
           dataSet={CODE_SURFACE_DATASET}
         >
           {errorText}
         </Text>
-      </ScrollView>
+      </View>
     </View>
   );
 }
@@ -995,6 +997,10 @@ const styles = StyleSheet.create((theme) => {
     },
     errorText: {
       color: theme.colors.destructive,
+    },
+    errorGutter: {
+      paddingHorizontal: theme.spacing[4],
+      paddingTop: theme.spacing[2],
     },
     emptyStateText: {
       color: theme.colors.foregroundMuted,

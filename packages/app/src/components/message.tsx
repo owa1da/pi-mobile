@@ -396,9 +396,14 @@ export const UserMessage = memo(function UserMessage({
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
+  // Touch: the timestamp and copy stay out of the way until the bubble is long-pressed (a
+  // per-turn row on every message is noise). Pointer: they appear on hover.
+  const [revealed, setRevealed] = useState(false);
+  const touch = isCompact || isNative;
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const hasText = message.trim().length > 0;
-  const showTrailingRow = !isPending && hasText && (isCompact || isNative || isHovered);
+  const showTrailingRow = !isPending && hasText && (touch ? revealed : isHovered);
+  const toggleReveal = useCallback(() => setRevealed((value) => !value), []);
   const formattedTimestamp = useMemo(
     () => formatMessageTimestamp(new Date(timestamp)),
     [timestamp],
@@ -436,14 +441,24 @@ export const UserMessage = memo(function UserMessage({
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
-        <View style={userMessageStylesheet.bubble}>
+        <Pressable
+          style={userMessageStylesheet.bubble}
+          onLongPress={touch && hasText ? toggleReveal : undefined}
+          disabled={!touch || !hasText}
+          accessibilityHint={touch && hasText ? t("message.actions.revealDetails") : undefined}
+          testID="user-message-bubble"
+        >
           {hasText ? (
-            <Text selectable style={userMessageStylesheet.text} dataSet={MESSAGE_TEXT_DATASET}>
+            <Text
+              selectable={!touch}
+              style={userMessageStylesheet.text}
+              dataSet={MESSAGE_TEXT_DATASET}
+            >
               {message}
             </Text>
           ) : null}
-        </View>
-        {hasText ? (
+        </Pressable>
+        {hasText && (!touch || showTrailingRow) ? (
           <View
             style={trailingRowStyle}
             pointerEvents={showTrailingRow ? "auto" : "none"}

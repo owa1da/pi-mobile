@@ -88,9 +88,11 @@ interface SessionsListProps {
   hostLabel: string;
   snapshot: SessionsSnapshot;
   homeDir?: string;
+  /** The counts line; scrolls with the list, as on forge's page. */
+  summary: string;
 }
 
-function SessionsList({ hostId, hostLabel, snapshot, homeDir }: SessionsListProps) {
+function SessionsList({ hostId, hostLabel, snapshot, homeDir, summary }: SessionsListProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -150,9 +152,19 @@ function SessionsList({ hostId, hostLabel, snapshot, homeDir }: SessionsListProp
     ),
     [hostLabel, t],
   );
+  const listHeader = useMemo(
+    () =>
+      sections.length > 0 && summary ? (
+        <Text style={styles.summary} testID="dashboard-summary">
+          {summary}
+        </Text>
+      ) : null,
+    [sections.length, summary],
+  );
   return (
     <SectionList
       sections={sections}
+      ListHeaderComponent={listHeader}
       keyExtractor={keyOf}
       renderItem={renderItem}
       renderSectionHeader={renderSectionHeader}
@@ -211,6 +223,7 @@ export function DashboardScreen() {
         hostLabel={host?.label ?? ""}
         snapshot={snapshot}
         homeDir={connection.env?.homeDir}
+        summary={summary}
       />
     );
   } else if (connection.status === "failed") {
@@ -233,11 +246,6 @@ export function DashboardScreen() {
     <View style={styles.screen}>
       <BackHeader title={host?.label ?? t("pi.dashboard.title")} />
       <Animated.View style={[FILL, keyboardStyle]}>
-        {summary ? (
-          <Text style={styles.summary} testID="dashboard-summary">
-            {summary}
-          </Text>
-        ) : null}
         {showBanner ? <ConnectionBanner hostId={hostId} connection={connection} /> : null}
         <View style={FILL}>{body}</View>
         {host ? (

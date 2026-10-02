@@ -1,4 +1,5 @@
-// Compact key bar above the keyboard: esc, tab, sticky ctrl, arrows, enter.
+// Compact key bar above the keyboard: esc, tab, sticky ctrl, arrows, enter. In the collapsed
+// landscape terminal a leading "‹ Chat" key switches back to Chat and restores the chrome.
 
 import { memo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
@@ -17,15 +18,42 @@ function ctrlState(key: BarKey, armed: boolean) {
 interface KeyBarProps {
   ctrlArmed: boolean;
   onKey: (key: BarKey) => void;
+  /** When set, a leading "‹ Chat" key is shown (collapsed landscape terminal). */
+  onToChat?: () => void;
 }
 
-export function KeyBar({ ctrlArmed, onKey }: KeyBarProps) {
+export function KeyBar({ ctrlArmed, onKey, onToChat }: KeyBarProps) {
   return (
     <View style={styles.bar} testID="key-bar">
+      {onToChat ? <ToChatCap onPress={onToChat} /> : null}
       {BAR_KEYS.map((key) => (
         <KeyCap key={key} barKey={key} armed={key === "Ctrl" && ctrlArmed} onKey={onKey} />
       ))}
     </View>
+  );
+}
+
+function ToChatCap({ onPress }: { onPress: () => void }) {
+  const { t } = useTranslation();
+  const style = useCallback(
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.key,
+      styles.toChat,
+      pressed && styles.pressed,
+    ],
+    [],
+  );
+  return (
+    <Pressable
+      onPress={onPress}
+      style={style}
+      focusable={false}
+      accessibilityRole="button"
+      accessibilityLabel={t("pi.terminal.keyLabels.ToChat")}
+      testID="key-to-chat"
+    >
+      <Text style={[styles.label, styles.toChatLabel]}>{t("pi.terminal.toChat")}</Text>
+    </Pressable>
   );
 }
 
@@ -77,7 +105,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   key: {
     flex: 1,
-    height: 40,
+    // 44dp: the touch-target floor (the bar's 6dp padding brings each hit row to 56dp).
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: theme.borderRadius.lg,
@@ -91,4 +120,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
   },
   armedLabel: { color: theme.colors.surface0 },
+  toChat: { flex: 1.6, backgroundColor: theme.colors.surface3 },
+  toChatLabel: { fontFamily: theme.fontFamily.ui, fontWeight: theme.fontWeight.medium },
 }));

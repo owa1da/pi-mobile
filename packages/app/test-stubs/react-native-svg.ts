@@ -7,6 +7,7 @@ export const G = Stub;
 export const Line = Stub;
 export const LinearGradient = Stub;
 export const Path = Stub;
+export const Polygon = Stub;
 export const Rect = Stub;
 export const Stop = Stub;
 export const SvgCss = Stub;

@@ -1,13 +1,15 @@
-// forge's state glyphs as text: ✻ needs input, the · ✢ * ✶ ✻ ✽ spinner while working, ✻/∙ completed.
-// One shared 5 fps ticker drives every spinner; Reduce Motion freezes it.
+// forge's state glyphs as text: ✻ needs input, the · ✢ * ✶ ✻ ✽ spinner while working, ✻/● completed.
+// One shared 5 fps ticker drives every spinner. Under Reduce Motion the working glyph is a still ✢,
+// a different shape from needs-input ✻, so state reads without motion. Glyphs are decorative to
+// screen readers: the row's label carries the state word.
 
 import { memo, useSyncExternalStore } from "react";
 import { Text } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
+import { WORKING_FRAMES, glyphFor, isDotGlyph } from "@/screens/dashboard/glyphs";
 import type { GlyphKind } from "@/screens/dashboard/view-model";
 
-const SPINNER = ["·", "✢", "*", "✶", "✻", "✽", "✻", "✶", "*", "✢"];
 const TICK_MS = 200;
 
 let frame = 0;
@@ -15,7 +17,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 const listeners = new Set<() => void>();
 
 function notifyAll() {
-  frame = (frame + 1) % SPINNER.length;
+  frame = (frame + 1) % WORKING_FRAMES.length;
   for (const listener of listeners) listener();
 }
 
@@ -35,15 +37,11 @@ const getFrame = () => frame;
 const noSubscribe = () => () => undefined;
 const zero = () => 0;
 
-const STATIC: Record<Exclude<GlyphKind, "working">, string> = {
-  needs: "✻",
-  scheduled: "◷",
-  live: "✻",
-  closed: "∙",
-  failed: "∙",
-  interrupted: "∙",
-  gone: "∙",
-};
+const HIDDEN_FROM_A11Y = {
+  accessibilityElementsHidden: true,
+  importantForAccessibility: "no-hide-descendants",
+  accessible: false,
+} as const;
 
 function Spinner() {
   const reduced = useReducedMotion();
@@ -52,18 +50,21 @@ function Spinner() {
     reduced ? zero : getFrame,
     zero,
   );
-  return <Text style={[styles.glyph, styles.working]}>{SPINNER[reduced ? 4 : current]}</Text>;
+  return (
+    <Text style={[styles.glyph, styles.working]} {...HIDDEN_FROM_A11Y}>
+      {glyphFor("working", reduced, current)}
+    </Text>
+  );
 }
 
 export const SessionGlyph = memo(function SessionGlyph({ kind }: { kind: GlyphKind }) {
   if (kind === "working") return <Spinner />;
   return (
     <Text
-      style={[styles.glyph, styles[kind]]}
-      accessibilityElementsHidden
-      importantForAccessibility="no"
+      style={[styles.glyph, isDotGlyph(kind) && styles.dot, styles[kind]]}
+      {...HIDDEN_FROM_A11Y}
     >
-      {STATIC[kind]}
+      {glyphFor(kind, false)}
     </Text>
   );
 });
@@ -76,6 +77,8 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 22,
     textAlign: "center",
   },
+  // ● drawn a step down so its ink matches ✻ (a full-size disc would outweigh the asterisks).
+  dot: { fontSize: theme.fontSize.sm },
   needs: { color: theme.colors.statusWarning },
   working: { color: theme.colors.foregroundMuted },
   scheduled: { color: theme.colors.foregroundMuted },

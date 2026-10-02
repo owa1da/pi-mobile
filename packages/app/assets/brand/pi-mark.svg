@@ -1,14 +1,16 @@
 <!--
-  Pi mark: a π drawn from three rounded bars on a 100×100 grid.
-  Source of every app icon, splash, notification icon and favicon; regenerate the PNGs with
-  `node scripts/build-brand-assets.mjs`. The script reads only the <rect> elements below
-  (x, y, width, height, rx), so keep the mark to rounded rects.
+  Pi mark: a π on a 100×100 grid. A rounded crossbar, a left leg that slants in (like a typeset π),
+  and a right leg that turns out into a foot, so at launcher size it cannot read as "TT".
+  Source of every app icon, splash, notification icon and favicon, and of PiIcon
+  (src/components/icons/pi-mark-shapes.ts mirrors it; a unit test keeps them equal). Regenerate the
+  PNGs with `node scripts/build-brand-assets.mjs`. Only <rect> and <polygon> are read.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
   <rect width="100" height="100" fill="#000000" data-role="background" />
   <g fill="#7ccba0" data-role="glyph">
-    <rect x="18" y="25" width="64" height="11" rx="5.5" />
-    <rect x="31" y="27" width="11" height="49" rx="5.5" />
-    <rect x="58" y="27" width="11" height="49" rx="5.5" />
+    <rect x="18" y="24" width="64" height="12" rx="6" />
+    <polygon points="34,30 46,30 38,76 26,76" />
+    <rect x="56" y="30" width="12" height="40" rx="0" />
+    <rect x="56" y="64" width="22" height="12" rx="6" />
   </g>
 </svg>

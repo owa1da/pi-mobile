@@ -3,7 +3,6 @@
 import * as Clipboard from "expo-clipboard";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
 import { useToast } from "@/contexts/toast-context";
 import type { SavedHost } from "@/host/types";
 import { getSshClient } from "@/ssh";
@@ -53,7 +52,18 @@ async function persistHost(
   return saved;
 }
 
-export function useHostForm(host: SavedHost | null, onDone: () => void) {
+/** Forget a host on this phone: drop its connection, cached sessions, record and secret. */
+export function deleteHostEverywhere(hostId: string): void {
+  connectionStore.getState().disconnect(hostId);
+  sessionsStore.getState().clear(hostId);
+  void hostsStore.getState().removeHost(hostId);
+}
+
+export function useHostForm(
+  host: SavedHost | null,
+  onDone: () => void,
+  onRequestDelete?: (host: SavedHost) => void,
+) {
   const { t } = useTranslation();
   const toast = useToast();
   const [fields, setFields] = useState<Record<FormField, string>>(() => ({
@@ -157,22 +167,10 @@ export function useHostForm(host: SavedHost | null, onDone: () => void) {
     toast.copied(t("pi.hostForm.copied"));
   }, [generated, t, toast]);
 
-  const confirmDelete = useCallback(() => {
-    if (!host) return;
-    Alert.alert(t("pi.hostForm.deleteTitle", { label: host.label }), t("pi.hostForm.deleteBody"), [
-      { text: t("pi.hostForm.cancel"), style: "cancel" },
-      {
-        text: t("pi.hostForm.delete"),
-        style: "destructive",
-        onPress: () => {
-          connectionStore.getState().disconnect(host.id);
-          sessionsStore.getState().clear(host.id);
-          void hostsStore.getState().removeHost(host.id);
-          onDone();
-        },
-      },
-    ]);
-  }, [host, onDone, t]);
+  // The confirmation is a themed sheet owned by the hosts screen (never a sheet over this sheet).
+  const requestDelete = useCallback(() => {
+    if (host) onRequestDelete?.(host);
+  }, [host, onRequestDelete]);
 
   const retryGenerate = useCallback(() => {
     void generate();
@@ -192,7 +190,7 @@ export function useHostForm(host: SavedHost | null, onDone: () => void) {
     saving,
     save,
     copyPublicKey,
-    confirmDelete,
+    requestDelete,
   };
 }
 

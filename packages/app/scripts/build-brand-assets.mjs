@@ -1,5 +1,5 @@
 // Rasterizes assets/brand/pi-mark.svg into every app icon, splash, notification icon and favicon.
-// No dependencies: the mark is rounded rects only (asserted), drawn with 4×4 supersampling and
+// No dependencies: the mark is rounded rects and polygons only (asserted), drawn with 4×4 supersampling and
 // written as PNG through node:zlib. Run from packages/app: `node scripts/build-brand-assets.mjs`.
 
 import fs from "node:fs";
@@ -19,6 +19,17 @@ const WHITE = "#ffffff";
 function readGlyph(svg) {
   const group = /<g[^>]*data-role="glyph"[^>]*>([\s\S]*?)<\/g>/.exec(svg);
   if (!group) throw new Error('pi-mark.svg: missing <g data-role="glyph">');
+  const polygons = [...group[1].matchAll(/<polygon\s+points="([^"]*)"\s*\/>/g)].map((match) => {
+    const nums = match[1]
+      .trim()
+      .split(/[\s,]+/)
+      .map(Number);
+    if (nums.length < 6 || nums.length % 2 || nums.some((n) => !Number.isFinite(n)))
+      throw new Error("pi-mark.svg: polygon needs numeric x,y pairs");
+    const points = [];
+    for (let i = 0; i < nums.length; i += 2) points.push([nums[i], nums[i + 1]]);
+    return { kind: "polygon", points };
+  });
   const rects = [...group[1].matchAll(/<rect\s+([^>]*?)\/>/g)].map((match) => {
     const attrs = Object.fromEntries(
       [...match[1].matchAll(/([a-z]+)="([^"]*)"/g)].map((a) => [a[1], Number(a[2])]),
@@ -26,12 +37,48 @@ function readGlyph(svg) {
     for (const key of ["x", "y", "width", "height"]) {
       if (!Number.isFinite(attrs[key])) throw new Error(`pi-mark.svg: rect without numeric ${key}`);
     }
-    return { x: attrs.x, y: attrs.y, w: attrs.width, h: attrs.height, r: attrs.rx || 0 };
+    return {
+      kind: "rect",
+      x: attrs.x,
+      y: attrs.y,
+      w: attrs.width,
+      h: attrs.height,
+      r: attrs.rx || 0,
+    };
   });
-  const stripped = group[1].replace(/<rect\s+[^>]*?\/>/g, "").trim();
-  if (stripped) throw new Error("pi-mark.svg: the glyph may contain only <rect/> elements");
-  if (rects.length === 0) throw new Error("pi-mark.svg: empty glyph");
-  return rects;
+  const stripped = group[1]
+    .replace(/<rect\s+[^>]*?\/>/g, "")
+    .replace(/<polygon\s+[^>]*?\/>/g, "")
+    .trim();
+  if (stripped) throw new Error("pi-mark.svg: the glyph may contain only <rect/> and <polygon/>");
+  const shapes = [...rects, ...polygons];
+  if (shapes.length === 0) throw new Error("pi-mark.svg: empty glyph");
+  return shapes;
+}
+
+function insidePolygon(px, py, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function insideShape(px, py, shape) {
+  return shape.kind === "polygon"
+    ? insidePolygon(px, py, shape.points)
+    : insideRoundedRect(px, py, shape);
+}
+
+function bounds(shape) {
+  if (shape.kind === "polygon") {
+    const xs = shape.points.map((p) => p[0]);
+    const ys = shape.points.map((p) => p[1]);
+    return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+  }
+  return { x0: shape.x, x1: shape.x + shape.w, y0: shape.y, y1: shape.y + shape.h };
 }
 
 function insideRoundedRect(px, py, rect) {
@@ -56,7 +103,7 @@ function coverage(rects, x, y, offX, offY, unit) {
     for (let sx = 0; sx < SS; sx += 1) {
       const ux = (x + (sx + 0.5) / SS - offX) / unit;
       const uy = (y + (sy + 0.5) / SS - offY) / unit;
-      if (rects.some((rect) => insideRoundedRect(ux, uy, rect))) hits += 1;
+      if (rects.some((shape) => insideShape(ux, uy, shape))) hits += 1;
     }
   }
   return hits / (SS * SS);
@@ -64,10 +111,11 @@ function coverage(rects, x, y, offX, offY, unit) {
 
 /** Glyph centered (by its bounds) at `scale` of the canvas, over `background` (or transparent). */
 function render(rects, { size, scale, fg, background }) {
-  const minX = Math.min(...rects.map((r) => r.x));
-  const maxX = Math.max(...rects.map((r) => r.x + r.w));
-  const minY = Math.min(...rects.map((r) => r.y));
-  const maxY = Math.max(...rects.map((r) => r.y + r.h));
+  const b = rects.map(bounds);
+  const minX = Math.min(...b.map((r) => r.x0));
+  const maxX = Math.max(...b.map((r) => r.x1));
+  const minY = Math.min(...b.map((r) => r.y0));
+  const maxY = Math.max(...b.map((r) => r.y1));
   const unit = (size * scale) / 100;
   const offX = size / 2 - ((minX + maxX) / 2) * unit;
   const offY = size / 2 - ((minY + maxY) / 2) * unit;

@@ -27,11 +27,9 @@ const styles = StyleSheet.create((theme) => ({
   text: {
     flexShrink: 1,
     minWidth: 0,
-    fontSize: theme.fontSize.base,
-    fontWeight: {
-      xs: "400",
-      md: "300",
-    },
+    // The screen's top rung: above the 15/500 row titles, so the hierarchy reads top-down.
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.semibold,
     color: theme.colors.foreground,
   },
 }));

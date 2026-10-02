@@ -1,18 +1,20 @@
 // Hosts: saved SSH hosts. Tap connects (first use asks to trust the key) and opens the dashboard.
 
 import { router } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FlatList, Pressable, View, type ListRenderItem } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ScreenHeader } from "@/components/headers/screen-header";
 import { ScreenTitle } from "@/components/headers/screen-title";
+import { ConfirmSheet } from "@/components/pi/confirm-sheet";
 import { EmptyState } from "@/components/pi/empty-state";
 import { HostFormSheet } from "@/components/pi/host-form-sheet";
 import { HostKeyMismatchSheet } from "@/components/pi/host-key-sheet";
 import { HostRow } from "@/components/pi/host-row";
 import { ThemedPiIcon, ThemedPlus, extraMutedColor, foregroundColor } from "@/components/pi/icons";
 import type { SavedHost } from "@/host/types";
+import { deleteHostEverywhere } from "@/screens/hosts/use-host-form";
 import { connectionStore, useHosts, useHostsLoaded } from "@/stores/app";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useStore } from "zustand";
@@ -29,6 +31,7 @@ interface Mismatch {
 }
 
 const IDLE: HostConnectionState = { status: "idle", attempt: 0 };
+const DELETE_CONFIRM_FALLBACK_MS = 800;
 
 function openDashboard(hostId: string) {
   router.push({ pathname: "/h/[hostId]", params: { hostId } });
@@ -50,6 +53,38 @@ export function HostsScreen() {
   }, []);
   const addHost = useCallback(() => openForm(null), [openForm]);
   const closeForm = useCallback(() => setFormVisible(false), []);
+
+  // Delete: the edit sheet closes first, then the confirm sheet rises once it has dismissed.
+  // A missed dismiss callback must not strand the request: fall back after the sheet's exit time.
+  const pendingDelete = useRef<SavedHost | null>(null);
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SavedHost | null>(null);
+  const onFormDismiss = useCallback(() => {
+    if (pendingTimer.current) clearTimeout(pendingTimer.current);
+    pendingTimer.current = null;
+    if (!pendingDelete.current) return;
+    setDeleteTarget(pendingDelete.current);
+    pendingDelete.current = null;
+  }, []);
+  const requestDelete = useCallback(
+    (host: SavedHost) => {
+      pendingDelete.current = host;
+      setFormVisible(false);
+      pendingTimer.current = setTimeout(onFormDismiss, DELETE_CONFIRM_FALLBACK_MS);
+    },
+    [onFormDismiss],
+  );
+  useEffect(
+    () => () => {
+      if (pendingTimer.current) clearTimeout(pendingTimer.current);
+    },
+    [],
+  );
+  const cancelDelete = useCallback(() => setDeleteTarget(null), []);
+  const confirmDelete = useCallback(() => {
+    if (deleteTarget) deleteHostEverywhere(deleteTarget.id);
+    setDeleteTarget(null);
+  }, [deleteTarget]);
 
   const connect = useCallback(async (host: SavedHost) => {
     const service = await connectionStore.getState().connect(host.id);
@@ -88,7 +123,10 @@ export function HostsScreen() {
     [connections, onPress, openForm],
   );
 
-  const title = useMemo(() => <ScreenTitle>{t("pi.hosts.title")}</ScreenTitle>, [t]);
+  const title = useMemo(
+    () => <ScreenTitle style={styles.title}>{t("pi.hosts.title")}</ScreenTitle>,
+    [t],
+  );
   const addButton = useMemo(
     () => (
       <Pressable
@@ -136,8 +174,25 @@ export function HostsScreen() {
       <ScreenHeader left={title} right={addButton} />
       {body}
       {form ? (
-        <HostFormSheet key={form.key} visible={formVisible} host={form.host} onClose={closeForm} />
+        <HostFormSheet
+          key={form.key}
+          visible={formVisible}
+          host={form.host}
+          onClose={closeForm}
+          onDismiss={onFormDismiss}
+          onRequestDelete={requestDelete}
+        />
       ) : null}
+      <ConfirmSheet
+        visible={deleteTarget !== null}
+        title={t("pi.hostForm.deleteTitle", { label: deleteTarget?.label ?? "" })}
+        body={t("pi.hostForm.deleteBody")}
+        cancelLabel={t("pi.hostForm.cancel")}
+        confirmLabel={t("pi.hostForm.deleteConfirm")}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+        testID="host-delete-sheet"
+      />
       <HostKeyMismatchSheet
         visible={mismatch !== null}
         hostLabel={mismatch?.host.label ?? ""}
@@ -159,6 +214,8 @@ function Separator() {
 
 const styles = StyleSheet.create((theme) => ({
   screen: { flex: 1, backgroundColor: theme.colors.surface0 },
+  // Header inset (4) + 12 = the 16dp row gutter.
+  title: { marginLeft: theme.spacing[3] },
   list: { paddingBottom: theme.spacing[8] },
   separator: {
     height: StyleSheet.hairlineWidth,

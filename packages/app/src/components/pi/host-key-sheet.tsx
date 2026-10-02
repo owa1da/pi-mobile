@@ -8,6 +8,7 @@ import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { splitFingerprint } from "@/stores/tofu";
 import { describeHostKeyAlgorithm } from "@/utils/host-key-algorithm";
+import { SheetActions, sheetActionStyles } from "./sheet-actions";
 
 const TRUST_SNAP_POINTS = ["55%"];
 const MISMATCH_SNAP_POINTS = ["70%", "90%"];
@@ -32,6 +33,22 @@ function Fingerprint({
   );
 }
 
+/** A command to run on the host: prose lead-in, then the command in its own selectable mono block. */
+function HostCommand({ lead, command }: { lead: string; command: string }) {
+  return (
+    <View style={styles.commandGroup}>
+      <Text style={styles.hint}>{lead}</Text>
+      <View style={styles.fingerprint} testID="host-key-hint">
+        <Text style={styles.command} selectable>
+          {command}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+const ANY_HOST_KEY_COMMAND = "for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done";
+
 interface TrustSheetProps {
   visible: boolean;
   hostLabel: string;
@@ -52,17 +69,17 @@ export function HostKeyTrustSheet({
 }: TrustSheetProps) {
   const { t } = useTranslation();
   const keyInfo = describeHostKeyAlgorithm(algorithm);
-  const hint = keyInfo.hostKeyFile
-    ? t("pi.hostKey.checkHint", { file: keyInfo.hostKeyFile })
-    : t("pi.hostKey.checkHintUnknown");
+  const command = keyInfo.hostKeyFile
+    ? `ssh-keygen -lf ${keyInfo.hostKeyFile}`
+    : ANY_HOST_KEY_COMMAND;
   const header = useMemo(() => ({ title: t("pi.hostKey.trustTitle") }), [t]);
   const footer = useMemo(
     () => (
-      <View style={styles.footer}>
+      <SheetActions>
         <Button
           variant="ghost"
           onPress={onCancel}
-          style={styles.footerButton}
+          style={sheetActionStyles.button}
           testID="host-key-cancel"
         >
           {t("pi.hostKey.cancel")}
@@ -70,12 +87,12 @@ export function HostKeyTrustSheet({
         <Button
           variant="default"
           onPress={onTrust}
-          style={styles.footerButton}
+          style={sheetActionStyles.button}
           testID="host-key-trust"
         >
           {t("pi.hostKey.trust")}
         </Button>
-      </View>
+      </SheetActions>
     ),
     [onCancel, onTrust, t],
   );
@@ -95,9 +112,7 @@ export function HostKeyTrustSheet({
           fingerprint={fingerprint}
           testID="host-key-fingerprint"
         />
-        <Text style={styles.hint} selectable testID="host-key-hint">
-          {hint}
-        </Text>
+        <HostCommand lead={t("pi.hostKey.checkLead")} command={command} />
       </View>
     </AdaptiveModalSheet>
   );
@@ -126,11 +141,11 @@ export function HostKeyMismatchSheet({
   const header = useMemo(() => ({ title: t("pi.hostKey.mismatchTitle") }), [t]);
   const footer = useMemo(
     () => (
-      <View style={styles.footer}>
+      <SheetActions>
         <Button
           variant="ghost"
           onPress={onCancel}
-          style={styles.footerButton}
+          style={sheetActionStyles.button}
           testID="host-key-mismatch-cancel"
         >
           {t("pi.hostKey.cancel")}
@@ -139,12 +154,12 @@ export function HostKeyMismatchSheet({
           variant="destructive"
           onPress={onReplace}
           loading={replacing}
-          style={styles.footerButton}
+          style={sheetActionStyles.button}
           testID="host-key-replace"
         >
           {t("pi.hostKey.replace")}
         </Button>
-      </View>
+      </SheetActions>
     ),
     [onCancel, onReplace, replacing, t],
   );
@@ -158,15 +173,14 @@ export function HostKeyMismatchSheet({
       testID="host-key-mismatch-sheet"
     >
       <View style={styles.body}>
-        <Text style={[styles.text, styles.danger]}>
-          {t("pi.hostKey.mismatchBody", { label: hostLabel })}
-        </Text>
+        <Text style={styles.text}>{t("pi.hostKey.mismatchBody", { label: hostLabel })}</Text>
         <Fingerprint label={t("pi.hostKey.pinned")} fingerprint={pinned} />
         <Fingerprint
           label={t("pi.hostKey.presented")}
           fingerprint={presented}
           testID="host-key-presented"
         />
+        <HostCommand lead={t("pi.hostKey.mismatchCheckLead")} command={ANY_HOST_KEY_COMMAND} />
         <Text style={styles.hint}>{t("pi.hostKey.replaceHint")}</Text>
       </View>
     </AdaptiveModalSheet>
@@ -176,12 +190,17 @@ export function HostKeyMismatchSheet({
 const styles = StyleSheet.create((theme) => ({
   body: { gap: theme.spacing[4], paddingBottom: theme.spacing[4] },
   text: { color: theme.colors.foreground, fontSize: theme.fontSize.base, lineHeight: 21 },
-  danger: { color: theme.colors.statusDanger },
   hint: {
     color: theme.colors.foregroundMuted,
-    fontFamily: theme.fontFamily.mono,
     fontSize: theme.fontSize.sm,
     lineHeight: 17,
+  },
+  commandGroup: { gap: theme.spacing[2] },
+  command: {
+    color: theme.colors.foreground,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 18,
   },
   fingerprint: {
     gap: theme.spacing[1],
@@ -199,6 +218,4 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     lineHeight: 20,
   },
-  footer: { flexDirection: "row", gap: theme.spacing[3] },
-  footerButton: { flex: 1 },
 }));

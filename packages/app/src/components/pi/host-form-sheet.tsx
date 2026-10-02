@@ -12,6 +12,7 @@ import type { SavedHost } from "@/host/types";
 import type { AuthMode } from "@/screens/hosts/host-form-logic";
 import { useHostForm, type HostForm } from "@/screens/hosts/use-host-form";
 import { MutedSpinner, ThemedCopy, foregroundColor } from "./icons";
+import { SheetActions, sheetActionStyles } from "./sheet-actions";
 
 const SNAP_POINTS = ["90%"];
 
@@ -20,11 +21,20 @@ interface HostFormSheetProps {
   /** null = add a new host. */
   host: SavedHost | null;
   onClose: () => void;
+  onDismiss?: () => void;
+  /** Edit only: the user asked to delete; the screen closes this sheet and confirms. */
+  onRequestDelete?: (host: SavedHost) => void;
 }
 
-export function HostFormSheet({ visible, host, onClose }: HostFormSheetProps) {
+export function HostFormSheet({
+  visible,
+  host,
+  onClose,
+  onDismiss,
+  onRequestDelete,
+}: HostFormSheetProps) {
   const { t } = useTranslation();
-  const form = useHostForm(host, onClose);
+  const form = useHostForm(host, onClose, onRequestDelete);
   const header = useMemo(
     () => ({ title: host ? t("pi.hostForm.editTitle") : t("pi.hostForm.addTitle") }),
     [host, t],
@@ -34,30 +44,34 @@ export function HostFormSheet({ visible, host, onClose }: HostFormSheetProps) {
   }, [form]);
   const footer = useMemo(
     () => (
-      <View style={styles.footer}>
-        {form.saveError ? <Text style={styles.error}>{form.saveError}</Text> : null}
-        <Button variant="default" onPress={save} loading={form.saving} testID="host-save">
+      <SheetActions>
+        <Button
+          variant="ghost"
+          onPress={onClose}
+          style={sheetActionStyles.button}
+          testID="host-form-cancel"
+        >
+          {t("pi.hostForm.cancel")}
+        </Button>
+        <Button
+          variant="default"
+          onPress={save}
+          loading={form.saving}
+          style={sheetActionStyles.button}
+          testID="host-save"
+        >
           {t("pi.hostForm.save")}
         </Button>
-        {host ? (
-          <Button
-            variant="ghost"
-            onPress={form.confirmDelete}
-            testID="host-delete"
-            textStyle={styles.deleteText}
-          >
-            {t("pi.hostForm.delete")}
-          </Button>
-        ) : null}
-      </View>
+      </SheetActions>
     ),
-    [form.confirmDelete, form.saveError, form.saving, host, save, t],
+    [form.saving, onClose, save, t],
   );
   return (
     <AdaptiveModalSheet
       header={header}
       visible={visible}
       onClose={onClose}
+      onDismiss={onDismiss}
       footer={footer}
       snapPoints={SNAP_POINTS}
       testID="host-form-sheet"
@@ -65,6 +79,23 @@ export function HostFormSheet({ visible, host, onClose }: HostFormSheetProps) {
       <View style={styles.body}>
         <AddressFields form={form} />
         <AuthSection form={form} />
+        {form.saveError ? (
+          <Text style={styles.error} testID="host-save-error">
+            {form.saveError}
+          </Text>
+        ) : null}
+        {host ? (
+          <View style={styles.deleteRow}>
+            <Button
+              variant="ghost"
+              onPress={form.requestDelete}
+              testID="host-delete"
+              textStyle={styles.deleteText}
+            >
+              {t("pi.hostForm.delete")}
+            </Button>
+          </View>
+        ) : null}
       </View>
     </AdaptiveModalSheet>
   );
@@ -286,6 +317,12 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
   },
   error: { color: theme.colors.statusDanger, fontSize: theme.fontSize.sm, lineHeight: 17 },
-  footer: { gap: theme.spacing[2] },
+  deleteRow: {
+    marginTop: theme.spacing[2],
+    paddingTop: theme.spacing[4],
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.border,
+    alignItems: "flex-start",
+  },
   deleteText: { color: theme.colors.statusDanger },
 }));

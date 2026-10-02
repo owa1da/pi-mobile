@@ -82,7 +82,10 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const controlsVisible = isHovered || isNative || isCompact;
+  // Touch: the copy button gets its own row above the code (it never sits over a line of code).
+  // Pointer: it floats in the corner and appears on hover.
+  const inlineControls = isNative || isCompact;
+  const controlsVisible = isHovered || inlineControls;
   // Copy the code without its trailing blank lines. A fence body ends in a newline,
   // and ends in more than one when the author left a blank line before the closing
   // fence; pasting any of them into a terminal runs the last line.
@@ -95,6 +98,11 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
     >
+      {inlineControls ? (
+        <View style={copyButtonStyles.headerRow}>
+          <CopyButton getCode={getCode} visible inline />
+        </View>
+      ) : null}
       {keyedLines ? (
         <MarkdownTextSpan style={innerTextStyle} copyTag="code">
           {renderCodeSegments(keyedLines)}
@@ -104,7 +112,7 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
           {renderedCode}
         </MarkdownTextSpan>
       )}
-      <CopyButton getCode={getCode} visible={controlsVisible} />
+      {inlineControls ? null : <CopyButton getCode={getCode} visible={controlsVisible} />}
     </View>
   );
 });
@@ -167,11 +175,13 @@ function splitFenceStyle(inheritedStyles: TextStyle, textStyle: TextStyle): Spli
 interface CopyButtonProps {
   getCode: () => string;
   visible: boolean;
+  /** In the header row instead of absolutely positioned over the code. */
+  inline?: boolean;
 }
 
 const COPIED_RESET_MS = 1500;
 
-const CopyButton = React.memo(function CopyButton({ getCode, visible }: CopyButtonProps) {
+const CopyButton = React.memo(function CopyButton({ getCode, visible, inline }: CopyButtonProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -199,8 +209,8 @@ const CopyButton = React.memo(function CopyButton({ getCode, visible }: CopyButt
     ? copyButtonStyles.containerVisible
     : copyButtonStyles.containerHidden;
   const wrapperStyle = useMemo(
-    () => [copyButtonStyles.container, visibilityStyle],
-    [visibilityStyle],
+    () => [inline ? copyButtonStyles.inline : copyButtonStyles.container, visibilityStyle],
+    [inline, visibilityStyle],
   );
 
   return (
@@ -233,6 +243,17 @@ const copyButtonStyles = StyleSheet.create((theme) => ({
     top: theme.spacing[2],
     right: theme.spacing[2],
     padding: theme.spacing[1],
+  },
+  // 14dp glyph + 8dp padding each side = 30dp; hitSlop 8 makes the target 46dp.
+  inline: {
+    padding: theme.spacing[2],
+  },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: -theme.spacing[2],
+    marginRight: -theme.spacing[2],
+    marginBottom: -theme.spacing[1],
   },
   containerVisible: {
     opacity: 1,

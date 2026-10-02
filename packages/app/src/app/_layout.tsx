@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet } from "react-native-unistyles";
 import { AppearanceProvider } from "@/appearance/provider";
 import { AppLifecycle, HostKeyPromptHost } from "@/components/pi/app-lifecycle";
+import { ThemedStatusBar } from "@/components/pi/themed-status-bar";
 import { ToastProvider } from "@/contexts/toast-context";
 import { KeyboardShiftProvider } from "@/keyboard/shift";
 import { ThemedStack } from "@/navigation/themed-stack";
@@ -53,6 +54,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.fill}>
       <View style={styles.surface}>
         <RootProviders>
+          <ThemedStatusBar />
           <SideInsets>
             <ThemedStack screenOptions={SCREEN_OPTIONS}>
               <Stack.Screen name="index" />

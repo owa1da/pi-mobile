@@ -3,7 +3,7 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v2), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v4), --keep (leave the sandbox up),
 //          --no-install (use the installed APK).
 
 import { execFileSync } from "node:child_process";
@@ -65,9 +65,11 @@ async function back() {
   await sleep(700);
 }
 
+// The dashboard is recognised by its composer: the counts line scrolls with the list, so it is
+// off screen whenever the list is scrolled down.
 async function toDashboard() {
-  for (let i = 0; i < 3 && !A.find(A.byId("dashboard-summary")); i++) await back();
-  await A.waitNode(A.byId("dashboard-summary"), 20_000, "dashboard");
+  for (let i = 0; i < 3 && !A.find(A.byId("dashboard-composer")); i++) await back();
+  await A.waitNode(A.byId("dashboard-composer"), 20_000, "dashboard");
 }
 
 async function typeInto(id, text) {
@@ -96,6 +98,21 @@ async function scrollUntil(pred, label, { from = [540, 1800], to = [540, 800], t
     await sleep(900);
   }
   return A.waitNode(pred, 3000, label);
+}
+
+/** Scrolls an open sheet until node `id` is fully visible above the footer holding `footerId`. */
+async function revealAboveFooter(id, footerId, tries = 8) {
+  for (let i = 0; i < tries; i++) {
+    const nodes = A.dump();
+    const node = nodes.find(A.byId(id));
+    const footer = nodes.find(A.byId(footerId));
+    // The footer's 12dp padding sits above its button (~32px at 2.625x).
+    if (node && footer && node.bounds[3] <= footer.bounds[1] - 40) return node;
+    // Start above the form's multiline key field: a drag that begins on it scrolls the field.
+    A.swipe(540, 1100, 540, 500, 400);
+    await sleep(900);
+  }
+  throw new Error(`${id} never cleared the sheet footer`);
 }
 
 /** Label, host, port and user in the open host form sheet. */
@@ -193,6 +210,14 @@ function steps(ctx) {
           `section order ${order}`,
         );
         shot("06-dashboard-dark");
+        // State reads without colour or motion: every row's label names its state.
+        const waitingDesc = nodes.find(rowOf(sessionIdOf("waiting")))?.desc ?? "";
+        const workingDesc = nodes.find(rowOf(sessionIdOf("working")))?.desc ?? "";
+        const closedDesc = nodes.find(rowOf(E.readState().endedId))?.desc ?? "";
+        assert(/, needs input,/.test(waitingDesc), `waiting row label "${waitingDesc}"`);
+        assert(/, working(,|$)/.test(workingDesc), `working row label "${workingDesc}"`);
+        assert(/, closed(,|$)/.test(closedDesc), `closed row label "${closedDesc}"`);
+        ctx.notes.push(`a11y: "${waitingDesc}" | "${workingDesc}" | "${closedDesc}"`);
       },
     ],
     [
@@ -209,6 +234,17 @@ function steps(ctx) {
         A.swipe(540, 900, 540, 1900, 400);
         await sleep(1200);
         shot("09-chat-completed-top-dark");
+        // The timestamp and copy under a user bubble stay hidden until a long-press.
+        assert(
+          !A.find(A.byId("user-message-timestamp")),
+          "bubble timestamp shown before long-press",
+        );
+        const bubble = await A.waitNode(A.byId("user-message-bubble"), 10_000, "user bubble");
+        const [bx, by] = A.center(bubble);
+        A.swipe(bx, by, bx, by, 900);
+        await A.waitNode(A.byId("user-message-timestamp"), 5000, "timestamp after long-press");
+        await sleep(500);
+        shot("55-chat-bubble-revealed-dark");
         const nodes = A.dump();
         for (const label of [
           "Thinking",
@@ -296,12 +332,37 @@ function steps(ctx) {
         ctx.notes.push(`pty size ${before} → ${withKeyboard} with the keyboard → ${clientSize()}`);
         A.rotate(1);
         await E.waitFor(() => widthOf(clientSize()) > widthOf(before), 10_000, "landscape pty");
-        await sleep(1500);
+        // Collapsed: no header or sub-bar, the leading ‹ Chat key, immersive system bars.
+        await A.waitNode(A.byId("key-to-chat"), 10_000, "‹ Chat key (collapsed landscape)");
+        await sleep(2000);
+        assert(!A.find(A.byId("session-tabs")), "sub-bar still shown in collapsed landscape");
+        assert(!A.find(A.byId("screen-header")), "header still shown in collapsed landscape");
         shot("14-terminal-landscape-dark");
         const landscape = clientSize();
         A.rotate(0);
         await E.waitFor(() => clientSize() === before, 10_000, "portrait pty again");
+        await A.waitNode(A.byId("session-tabs"), 10_000, "sub-bar restored in portrait");
+        assert(!A.find(A.byId("key-to-chat")), "‹ Chat key shown in portrait");
         ctx.notes.push(`rotation: pty ${before} portrait → ${landscape} landscape → ${before}`);
+        // ‹ Chat switches to Chat and restores the chrome, still in landscape.
+        A.rotate(1);
+        await A.tap(A.byId("key-to-chat"), "‹ Chat", 10_000);
+        await A.waitNode(A.byId("chat-list"), 10_000, "chat after ‹ Chat");
+        await A.waitNode(A.byId("session-tabs"), 10_000, "sub-bar after ‹ Chat");
+        assert(A.find(A.byId("screen-header")), "header not restored after ‹ Chat");
+        await sleep(1500);
+        shot("50-landscape-after-to-chat-dark");
+        // System back while collapsed goes to Chat, not out of the session.
+        await A.tap(A.byId("session-tab-terminal"), "terminal tab (landscape)");
+        await A.waitNode(A.byId("key-to-chat"), 15_000, "collapsed again");
+        await back();
+        await A.waitNode(A.byId("chat-list"), 10_000, "chat after system back");
+        assert(A.find(A.byId("session-tabs")), "system back left the session");
+        assert(!A.find(A.byId("dashboard-composer")), "system back went to the dashboard");
+        A.rotate(0);
+        await sleep(1500);
+        await A.tap(A.byId("session-tab-terminal"), "terminal tab (portrait)");
+        await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* session again");
       },
     ],
     [
@@ -463,6 +524,14 @@ function steps(ctx) {
       async () => {
         await E.sshdStop();
         await A.waitNode(A.byId("connection-banner"), 90_000, "reconnect banner");
+        // The sub-bar names the connection, never a stale "Idle".
+        const state = await A.waitNode(
+          A.byText(/^(Reconnecting…|Connecting…|Not connected)/),
+          20_000,
+          "connection state in the sub-bar",
+        );
+        assert(state.id === "session-state", `connection text is not the sub-bar (${state.id})`);
+        ctx.notes.push(`sub-bar while disconnected: "${state.text}"`);
         shot("25-reconnecting-banner-dark");
         await E.sshdStart();
         await A.waitGone(A.byId("connection-banner"), 90_000, "banner to clear");
@@ -514,6 +583,11 @@ function steps(ctx) {
         A.nightMode(false);
         await sleep(3000);
         shot("28-dashboard-light");
+        A.rotate(1);
+        await sleep(2500);
+        shot("53-dashboard-landscape-light");
+        A.rotate(0);
+        await sleep(2000);
         await A.tap(rowOf(E.readState().richId), "rich row");
         await A.waitNode(A.byId("chat-list"), 30_000, "chat");
         await sleep(2500);
@@ -533,6 +607,12 @@ function steps(ctx) {
         await A.waitNode(A.byId("key-bar"), 20_000, "key bar");
         await sleep(4000);
         shot("30-terminal-light");
+        A.rotate(1);
+        await A.waitNode(A.byId("key-to-chat"), 15_000, "collapsed terminal (light)");
+        await sleep(3000);
+        shot("52-terminal-landscape-collapsed-light");
+        A.rotate(0);
+        await sleep(2000);
         await toDashboard();
         await back();
         await A.waitNode(A.idPrefix("host-row-"), 20_000, "hosts");
@@ -644,7 +724,7 @@ function steps(ctx) {
         await back();
         const id = await hostIdOf("Laptop");
         await A.tap(A.byId(`host-edit-${id}`), "edit Laptop");
-        await A.waitNode(A.byId("host-delete"), 15_000, "edit sheet");
+        await A.waitNode(A.byId("host-field-label"), 15_000, "edit sheet");
         await A.tap(A.byId("host-field-label"), "label");
         A.key(A.KEY.MOVE_END);
         deleteChars(12);
@@ -669,16 +749,32 @@ function steps(ctx) {
         await sleep(1500);
         await toDashboard();
         await back();
-        let first = true;
-        for (const label of ["Laptop renamed", "Gateway", "Sandbox"]) {
+        const openDeleteSheet = async (label, first) => {
           const id = await hostIdOf(label);
           await A.tap(A.byId(`host-edit-${id}`), `edit ${label}`);
-          await A.tap(A.byId("host-delete"), "delete");
-          // RN's Android Alert puts the last (destructive) button on button1.
-          await A.waitNode(A.byId("button1"), 10_000, "delete confirmation");
-          if (first) shot("47-delete-host-confirm-light");
+          await A.waitNode(A.byId("host-field-label"), 15_000, "edit sheet");
+          // uiautomator lists the button even while it sits behind the sticky footer, so scroll
+          // until it is clear of Cancel/Save, then tap where it is now.
+          await revealAboveFooter("host-delete", "host-save");
+          if (first) shot("54-edit-host-delete-row-light");
+          await A.tap(A.byId("host-delete"), "Delete host");
+          // The themed sheet rises after the edit sheet has gone (never a sheet over a sheet).
+          await A.waitNode(A.byId("host-delete-sheet-confirm"), 10_000, "delete sheet");
+          assert(!A.find(A.byId("host-field-label")), "edit sheet still open under the confirm");
+        };
+        let first = true;
+        for (const label of ["Laptop renamed", "Gateway", "Sandbox"]) {
+          await openDeleteSheet(label, first);
+          if (first) {
+            await sleep(800);
+            shot("47-delete-host-confirm-light");
+            await A.tap(A.byId("host-delete-sheet-cancel"), "cancel delete");
+            await A.waitGone(A.byId("host-delete-sheet-confirm"), 10_000, "delete sheet to close");
+            assert(A.find(hostRow(label)), "Cancel deleted the host");
+            await openDeleteSheet(label, false);
+          }
           first = false;
-          await A.tap(A.byId("button1"), "confirm delete");
+          await A.tap(A.byId("host-delete-sheet-confirm"), "confirm delete");
           await A.waitGone(hostRow(label), 15_000, `${label} to go`);
         }
         await A.waitNode(A.byId("hosts-empty"), 15_000, "hosts empty");
@@ -705,7 +801,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v2"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v4"),
   );
   const apk = option(
     args,
@@ -722,6 +818,10 @@ export async function journey(args = []) {
   A.adb("logcat", "-c");
   A.reduceMotion(true);
   A.nightMode(true);
+  // Android shows a one-time "Viewing full screen" dialog the first time an app goes immersive (the
+  // collapsed landscape terminal). It takes window focus, hiding the app from uiautomator; a real
+  // user dismisses it once. Pre-confirm it on the test device.
+  A.adb("shell", "settings", "put", "secure", "immersive_mode_confirmations", "confirmed");
   A.rotate(0);
   A.launch(PKG, { clear: true });
   const results = [];

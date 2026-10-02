@@ -132,8 +132,8 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
   title: {
-    fontSize: theme.fontSize.base,
-    fontWeight: theme.fontWeight.medium,
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.semibold,
   },
   headerActions: {
     flexDirection: "row",
@@ -142,6 +142,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   closeButton: {
     padding: theme.spacing[SHEET_HEADER_CLOSE_PADDING_SCALE],
+    // 44dp target around the 16dp glyph; the negative margin keeps the glyph on the gutter.
+    minWidth: 44,
+    minHeight: 44,
+    marginRight: -theme.spacing[3],
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: theme.borderRadius.lg,
   },
   searchRow: {

@@ -39,7 +39,9 @@ export function ScreenHeader({
   const isMobile = useIsCompactFormFactor() || isHandheld;
   // Only add extra padding on mobile for better touch targets; on desktop, only use safe area insets
   const topPadding = isMobile ? HEADER_TOP_PADDING_MOBILE : 0;
-  const baseHorizontalPadding = isMobile ? theme.spacing[2] : theme.spacing[3];
+  // Mobile: a 4dp inset puts the glyph of every 44dp icon button (back, +, edit) on the 16dp row
+  // gutter; a bare title adds its own 12dp lead (see hosts-screen) to land on the same line.
+  const baseHorizontalPadding = isMobile ? theme.spacing[1] : theme.spacing[3];
 
   const innerStyle = useMemo(
     () => [styles.inner, { paddingTop: insets.top + topPadding }],
