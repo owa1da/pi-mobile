@@ -7,6 +7,18 @@
 // Input: a bracketed paste then CR submits the paste; a typed line then CR submits it; a lone
 // ESC aborts (state -> idle). Commands: "/quit" ends (ended record, live file removed),
 // "/work" stays working until ESC, "/wait" opens a dialog (state waiting) until SIGUSR1.
+//
+// Remote channel v1 (forge's side of ~/projects/pi-mobile-work/remote-channel.md), unless
+// FAKE_PI_REMOTE=0: the record says "remote": 1; <agentDir>/forge/remote/<pid>/state.json
+// publishes prompt/questions/commands/footer; the inbox is drained every 150 ms and each action
+// gets results/<nonce>.json (ok, stale, expired, invalid, refused, unknown-action). Answers are
+// logged ({kind:"remote"}) and appended to the session as displayed custom messages.
+// Tests drive it through <agentDir>/fake-pi/<pid>.ctl (JSON op or array of ops, write tmp + mv):
+//   {op:"prompt", kind, title, message?, options?, placeholder?, prefill?}  open a dialog
+//   {op:"ask", blocking?, items:[{question, header?, multiSelect?, options:[{label,description?}]}]}
+//   {op:"desktop-first", count: n|"always"|0}  the desktop answers first (the app's answer is stale)
+//   {op:"desktop-answer"}  the desktop answers the open dialog now;  {op:"clear"}
+// SIGUSR2 opens a select dialog (FAKE_PI_WAIT_TITLE, FAKE_PI_WAIT_OPTIONS "A|B"); SIGUSR1 cancels it.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -126,6 +138,55 @@ let lastRun = resumedLastText
   : null;
 let lastText = resumedLastText;
 const WAIT_TITLE = process.env.FAKE_PI_WAIT_TITLE || "Allow bash?";
+const WAIT_OPTIONS = (process.env.FAKE_PI_WAIT_OPTIONS || "Allow|Deny").split("|").filter(Boolean);
+const REMOTE = process.env.FAKE_PI_REMOTE !== "0";
+const remoteRoot = path.join(agentDir, "forge", "remote", String(process.pid));
+const inboxDir = path.join(remoteRoot, "inbox");
+const resultsDir = path.join(remoteRoot, "results");
+const controlFile = path.join(logDir, `${process.pid}.ctl`);
+// forge's `/` menu rows (menuRows()), a realistic subset.
+const COMMANDS = [
+  { name: "answer", description: "Answer pi's open questions" },
+  { name: "branch", description: "Branch this session into a new one" },
+  { name: "btw", description: "Ask a side question without derailing the session" },
+  { name: "changelog", description: "What's new in pi" },
+  { name: "clear", description: "Start a new session" },
+  { name: "compact", description: "Compact the context to free up space" },
+  { name: "cost", description: "Session cost and token usage" },
+  { name: "diff", description: "Show the changes since a checkpoint" },
+  { name: "export", description: "Export the conversation as Markdown" },
+  { name: "model", description: "Pick the model and thinking level" },
+  { name: "rename", description: "Rename this session" },
+  { name: "rewind", description: "Rewind the conversation and code" },
+  { name: "side", description: "Open a side conversation" },
+  { name: "tasks", description: "Background tasks, agents and workflows" },
+  { name: "usage", description: "Plan usage and limits" },
+];
+// Rows whose screens are TUI-only views: command.run refuses them ("use the specific action").
+const TUI_VIEWS = new Set([
+  "answer",
+  "btw",
+  "changelog",
+  "cost",
+  "diff",
+  "model",
+  "rewind",
+  "side",
+  "tasks",
+  "usage",
+]);
+let remoteReady = false;
+let rev = 0;
+let seq = 0;
+/** The open dialog (contract `prompt`), or null. */
+let openDialog = null;
+/** Open ask_user items (contract `questions`). */
+let asks = [];
+let desktopFirst =
+  process.env.FAKE_PI_DESKTOP_FIRST === "always"
+    ? Number.POSITIVE_INFINITY
+    : Number(process.env.FAKE_PI_DESKTOP_FIRST || 0);
+const results = new Map();
 const modelInfo = model
   ? { provider: model.split("/")[0], id: model.split("/").slice(1).join("/") || model }
   : { provider: "fake", id: "fake-1" };
@@ -158,6 +219,14 @@ function record() {
     lastRun,
     lastText,
     question: null,
+    ...(asks.length > 0
+      ? {
+          pendingQuestions: asks.length,
+          pendingTitle: asks[0].items[0].question,
+          pendingSince: asks[0].askedAt,
+        }
+      : {}),
+    ...(REMOTE ? { remote: 1 } : {}),
   };
 }
 const liveFile = path.join(procs, `${process.pid}.json`);
@@ -165,7 +234,327 @@ function writeRecord() {
   const tmp = `${liveFile}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify(record())}\n`, { mode: 0o600 });
   fs.renameSync(tmp, liveFile);
+  writeRemoteState();
 }
+
+// ---------- remote channel ----------
+
+function writeRemoteState() {
+  if (!REMOTE || !remoteReady) return;
+  rev++;
+  const snapshot = {
+    v: 1,
+    pid: process.pid,
+    sessionId,
+    rev,
+    updatedAt: Date.now(),
+    view: openDialog ? "dialog" : "main",
+    draft: draftLine.trim() !== "",
+    prompt: openDialog,
+    questions: asks,
+    footer: {
+      model: { provider: modelInfo.provider, id: modelInfo.id, name: "", thinking: thinking ?? "" },
+      contextPercent: Math.min(100, messages * 3),
+      contextTokens: messages * 6000,
+      contextWindow: 200000,
+      cost: Math.round(messages * 0.021 * 1000) / 1000,
+    },
+    commands: COMMANDS,
+  };
+  const file = path.join(remoteRoot, "state.json");
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+function notice(text) {
+  append({ type: "custom_message", customType: "fake-remote", content: text, display: true });
+}
+
+/** pi's state after a dialog or question changed: waiting while one blocks, else as it was. */
+function settleWaiting() {
+  const blocking = asks.find((q) => q.blocking);
+  if (openDialog) setState("waiting", { kind: openDialog.kind, title: openDialog.title });
+  else if (blocking) setState("waiting", { kind: "ask", title: blocking.items[0].question });
+  else setState(state === "waiting" ? "idle" : state);
+}
+
+function openPromptDialog(spec = {}) {
+  const kind = spec.kind || "select";
+  let options = spec.options !== undefined ? spec.options : null;
+  if (options === null && kind === "select") options = WAIT_OPTIONS;
+  openDialog = {
+    id: `p${++seq}-${hex8()}`,
+    kind,
+    title: spec.title ?? WAIT_TITLE,
+    message: spec.message ?? null,
+    options,
+    placeholder: spec.placeholder ?? null,
+    prefill: spec.prefill ?? null,
+    answerable: kind !== "custom" && spec.answerable !== false,
+    held: false,
+    since: Date.now(),
+  };
+  log({ kind: "remote", op: "prompt.open", id: openDialog.id, promptKind: kind });
+  settleWaiting();
+}
+
+function closePromptDialog(by, value, cancel = false) {
+  const dialog = openDialog;
+  if (!dialog) return;
+  openDialog = null;
+  log({
+    kind: "remote",
+    action: "prompt.respond",
+    by,
+    id: dialog.id,
+    value: value ?? null,
+    cancel,
+  });
+  notice(cancel ? `${dialog.title} → cancelled` : `${dialog.title} → ${value}`);
+  settleWaiting();
+}
+
+/** The answer the desktop gives when it answers first. */
+function desktopValue(dialog) {
+  if (dialog.kind === "select") return dialog.options?.[0] ?? "";
+  if (dialog.kind === "confirm") return dialog.options?.[0] ?? "Yes";
+  return "typed on the desktop";
+}
+
+function addAsk(spec) {
+  const question = {
+    id: `q${++seq}-${hex8()}`,
+    blocking: spec.blocking !== false,
+    askedAt: Date.now(),
+    status: "open",
+    items: spec.items,
+  };
+  asks.push(question);
+  log({ kind: "remote", op: "ask.open", id: question.id });
+  settleWaiting();
+}
+
+function closeAsk(question, by, answers) {
+  asks = asks.filter((q) => q !== question);
+  log({
+    kind: "remote",
+    action: answers ? "ask.answer" : "ask.dismiss",
+    by,
+    id: question.id,
+    answers: answers ?? null,
+  });
+  if (answers) {
+    const lines = question.items.map((item, i) => {
+      const a = answers[i];
+      if (!a) return `${item.question} → (skipped)`;
+      return `${item.question} → ${[...a.picked, ...(a.typed ? [a.typed] : [])].join(", ")}`;
+    });
+    notice(`Answers:\n${lines.join("\n")}`);
+  } else notice(`Dismissed: ${question.items[0].question}`);
+  settleWaiting();
+}
+
+const isObject = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+
+function respondPrompt(args) {
+  if (!openDialog || args.id !== openDialog.id)
+    return { code: "stale", message: "that dialog is closed" };
+  if (desktopFirst > 0) {
+    desktopFirst--;
+    closePromptDialog("desktop", desktopValue(openDialog));
+    return { code: "stale", message: "answered on the desktop first" };
+  }
+  if (!openDialog.answerable)
+    return { code: "refused", message: "answer this dialog on the desktop" };
+  if (args.cancel === true) {
+    closePromptDialog("app", null, true);
+    return { code: "ok" };
+  }
+  if (typeof args.value !== "string") return { code: "invalid", message: "value must be text" };
+  const kind = openDialog.kind;
+  if (kind === "select" || kind === "confirm") {
+    const choices = openDialog.options ?? (kind === "confirm" ? ["Yes", "No"] : []);
+    if (!choices.includes(args.value))
+      return { code: "invalid", message: "not one of the options" };
+  }
+  closePromptDialog("app", args.value);
+  return { code: "ok" };
+}
+
+function answerAsk(args) {
+  const question = asks.find((q) => q.id === args.id);
+  if (!question) return { code: "stale", message: "that question is closed" };
+  if (desktopFirst > 0) {
+    desktopFirst--;
+    closeAsk(
+      question,
+      "desktop",
+      question.items.map((item) => ({ picked: item.options.slice(0, 1).map((o) => o.label) })),
+    );
+    return { code: "stale", message: "answered on the desktop first" };
+  }
+  if (!Array.isArray(args.answers) || args.answers.length !== question.items.length)
+    return { code: "invalid", message: "one answer per question" };
+  const answers = [];
+  for (const [i, raw] of args.answers.entries()) {
+    if (raw === null) {
+      answers.push(null);
+      continue;
+    }
+    const item = question.items[i];
+    if (!isObject(raw) || !Array.isArray(raw.picked))
+      return { code: "invalid", message: "bad answer" };
+    const labels = new Set(item.options.map((o) => o.label));
+    if (raw.picked.some((l) => !labels.has(l)))
+      return { code: "invalid", message: "not one of the options" };
+    if (!item.multiSelect && raw.picked.length > 1) return { code: "invalid", message: "pick one" };
+    const typed = typeof raw.typed === "string" && raw.typed.trim() ? raw.typed : undefined;
+    if (raw.picked.length === 0 && !typed) answers.push(null);
+    else answers.push(typed ? { picked: raw.picked, typed } : { picked: raw.picked });
+  }
+  if (answers.every((a) => a === null)) return { code: "invalid", message: "nothing answered" };
+  closeAsk(question, "app", answers);
+  return { code: "ok" };
+}
+
+function runCommand(args) {
+  const line = typeof args.line === "string" ? args.line.trim() : "";
+  const name = /^\/(\S+)/.exec(line)?.[1];
+  if (!name || !COMMANDS.some((c) => c.name === name))
+    return { code: "invalid", message: "not a command" };
+  if (TUI_VIEWS.has(name))
+    return { code: "refused", message: `/${name} opens a terminal view: use its action` };
+  if (openDialog)
+    return { code: "refused", message: "a dialog or a panel has the terminal's input" };
+  log({ kind: "remote", action: "command.run", by: "app", line });
+  notice(`Ran ${line}`);
+  return { code: "ok" };
+}
+
+function act(message) {
+  if (!isObject(message) || typeof message.action !== "string")
+    return { code: "invalid", message: "not an action" };
+  if (typeof message.writtenAt !== "number" || Date.now() - message.writtenAt > 60_000)
+    return { code: "expired", message: "written over 60 s ago" };
+  if (
+    isObject(message.expect) &&
+    typeof message.expect.rev === "number" &&
+    message.expect.rev !== rev
+  )
+    return { code: "stale", message: "the state changed" };
+  const args = isObject(message.args) ? message.args : {};
+  switch (message.action) {
+    case "prompt.respond":
+      return respondPrompt(args);
+    case "ask.answer":
+      return answerAsk(args);
+    case "ask.dismiss": {
+      const question = asks.find((q) => q.id === args.id);
+      if (!question) return { code: "stale", message: "that question is closed" };
+      closeAsk(question, "app", null);
+      return { code: "ok" };
+    }
+    case "command.run":
+      return runCommand(args);
+    default:
+      return { code: "unknown-action", message: `${message.action} is not implemented` };
+  }
+}
+
+function writeResult(nonce, res) {
+  const body = {
+    v: 1,
+    nonce,
+    ok: res.code === "ok",
+    code: res.code,
+    message: res.message ?? null,
+    data: res.data ?? null,
+    at: Date.now(),
+  };
+  const file = path.join(resultsDir, `${nonce}.json`);
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(body)}\n`, { mode: 0o600 });
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+function pollControl() {
+  let text;
+  try {
+    text = fs.readFileSync(controlFile, "utf8");
+    fs.unlinkSync(controlFile);
+  } catch {
+    return;
+  }
+  let ops;
+  try {
+    ops = JSON.parse(text);
+  } catch {
+    log({ kind: "remote", op: "control-unreadable" });
+    return;
+  }
+  for (const op of Array.isArray(ops) ? ops : [ops]) {
+    if (op.op === "prompt") openPromptDialog(op);
+    else if (op.op === "ask") addAsk(op);
+    else if (op.op === "desktop-first")
+      desktopFirst = op.count === "always" ? Number.POSITIVE_INFINITY : Number(op.count ?? 1);
+    else if (op.op === "desktop-answer" && openDialog)
+      closePromptDialog("desktop", desktopValue(openDialog));
+    else if (op.op === "clear") {
+      openDialog = null;
+      asks = [];
+      settleWaiting();
+    }
+  }
+}
+
+function drain() {
+  pollControl();
+  let names;
+  try {
+    names = fs.readdirSync(inboxDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json") || name.startsWith(".")) continue;
+    const file = path.join(inboxDir, name);
+    let text;
+    try {
+      text = fs.readFileSync(file, "utf8");
+      fs.unlinkSync(file);
+    } catch {
+      continue;
+    }
+    let message = null;
+    try {
+      message = JSON.parse(text);
+    } catch {}
+    const nonce =
+      isObject(message) && typeof message.nonce === "string" ? message.nonce : name.slice(0, -5);
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(nonce)) continue;
+    let res = results.get(nonce);
+    if (!res) {
+      res =
+        isObject(message) && message.v === 1
+          ? act(message)
+          : { code: "invalid", message: "not a v1 action" };
+      results.set(nonce, res);
+    }
+    writeResult(nonce, res);
+  }
+  try {
+    for (const name of fs.readdirSync(resultsDir)) {
+      const file = path.join(resultsDir, name);
+      if (Date.now() - fs.statSync(file).mtimeMs > 600_000) fs.rmSync(file, { force: true });
+    }
+  } catch {}
+}
+
+process.on("exit", () => {
+  try {
+    fs.rmSync(remoteRoot, { recursive: true, force: true });
+  } catch {}
+});
 function setState(next, wait = null) {
   state = next;
   stateSince = Date.now();
@@ -208,7 +597,7 @@ function submit(text, pasted) {
   log({ kind: "submit", text, pasted });
   if (text === "/quit") return quit();
   if (text === "/work") return setState("working");
-  if (text === "/wait") return setState("waiting", { kind: "select", title: WAIT_TITLE });
+  if (text === "/wait") return openPromptDialog({});
   if (!text.trim()) return;
   if (!firstPrompt) firstPrompt = text.split("\n")[0];
   append({
@@ -241,8 +630,11 @@ function submit(text, pasted) {
   }, 200);
 }
 
-process.on("SIGUSR1", () => setState("idle"));
-process.on("SIGUSR2", () => setState("waiting", { kind: "select", title: WAIT_TITLE }));
+process.on("SIGUSR1", () => {
+  if (openDialog) closePromptDialog("desktop", null, true);
+  else setState("idle");
+});
+process.on("SIGUSR2", () => openPromptDialog({}));
 
 // pi-tui draws its prompt editor between two rules of "─" (the host service reads this layout from
 // capture-pane to find drafts); the fake draws the same frame around its current input line.
@@ -252,7 +644,8 @@ function render() {
   if (!drawn) return;
   const cols = Math.max(20, (process.stdout.columns || 80) - 1);
   const rule = "─".repeat(cols);
-  const body = state === "waiting" ? `[dialog] ${WAIT_TITLE}` : draftLine.replace(/\n/g, "\r\n");
+  const dialogTitle = openDialog?.title ?? asks[0]?.items[0]?.question ?? WAIT_TITLE;
+  const body = state === "waiting" ? `[dialog] ${dialogTitle}` : draftLine.replace(/\n/g, "\r\n");
   const editor = state === "waiting" ? body : `${rule}\r\n${body}\r\n${rule}`;
   process.stdout.write(
     `\x1b[H\x1b[2Jfake pi ${sessionId}\r\n\r\n${editor}\r\n  fake · ${state}\r\n`,
@@ -269,6 +662,21 @@ setTimeout(() => {
   process.stdout.write("\x1b[?2004h");
   drawn = true;
   render();
+  if (REMOTE) {
+    fs.mkdirSync(inboxDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(resultsDir, { recursive: true, mode: 0o700 });
+    // forge's owner.json: a real forge in the same agent dir prunes a folder without one (or
+    // with a dead owner) once it is a minute old.
+    const owner = path.join(remoteRoot, "owner.json");
+    fs.writeFileSync(
+      `${owner}.tmp`,
+      `${JSON.stringify({ pid: process.pid, procStart, bootId, host: os.hostname(), startedAt: Date.now() })}\n`,
+      { mode: 0o600 },
+    );
+    fs.renameSync(`${owner}.tmp`, owner);
+    remoteReady = true;
+    setInterval(drain, 150).unref();
+  }
   writeRecord();
   log({
     kind: "start",

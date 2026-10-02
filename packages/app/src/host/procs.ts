@@ -130,6 +130,8 @@ export interface LiveRecord {
   pendingTitle?: string | null;
   pendingSince?: number | null;
   wake?: WakeInfo | null;
+  /** Remote channel protocol version (forge's additive `"remote": 1`). */
+  remote?: number;
 }
 
 export interface EndedRecord {
@@ -243,8 +245,13 @@ function parseAgents(value: unknown): LiveRecord["agents"] {
 /** The optional fields, present only when the record has them. */
 function parseOptionalLive(
   obj: Record<string, unknown>,
-): Pick<LiveRecord, "pendingQuestions" | "pendingTitle" | "pendingSince" | "wake"> {
-  const out: Pick<LiveRecord, "pendingQuestions" | "pendingTitle" | "pendingSince" | "wake"> = {};
+): Pick<LiveRecord, "pendingQuestions" | "pendingTitle" | "pendingSince" | "wake" | "remote"> {
+  const out: Pick<
+    LiveRecord,
+    "pendingQuestions" | "pendingTitle" | "pendingSince" | "wake" | "remote"
+  > = {};
+  if (typeof obj.remote === "number" && Number.isInteger(obj.remote) && obj.remote > 0)
+    out.remote = obj.remote;
   if ("pendingQuestions" in obj) out.pendingQuestions = wholeCount(obj.pendingQuestions);
   if ("pendingTitle" in obj) out.pendingTitle = strOrNull(obj.pendingTitle, LIMITS.question);
   if ("pendingSince" in obj)
@@ -659,6 +666,7 @@ export function rowFromLive(record: LiveRecord): SessionRow & { asks: boolean } 
     row.wake = { due: record.wake.due, missed: record.wake.missed };
     if (record.wake.reason) row.wake.reason = record.wake.reason;
   }
+  if (record.remote !== undefined) row.remote = record.remote;
   return row;
 }
 

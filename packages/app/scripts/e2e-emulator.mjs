@@ -22,8 +22,9 @@
 // and a PATH whose `pi` is the fake pi. tmux is always driven with `-S <sandbox socket> -f /dev/null`.
 // It never touches ~/.ssh, the system sshd, the user's tmux server or ~/.pi/agent.
 //
-// Optional: PIM_E2E_REAL_PI=1 adds one window running the real `pi` (forge from ~/.pi/forge, read
-// only) with PI_CODING_AGENT_DIR=<sandbox agent dir> and no prompt, so no model call is made.
+// Optional: PIM_E2E_REAL_PI=1 adds one window running the real `pi` (forge from the remote-channel
+// worktree ~/projects/pi-mobile-work/forge-remote or $PIM_E2E_FORGE, plus a test-only `/pimrig`
+// extension) with PI_CODING_AGENT_DIR=<sandbox agent dir> and no prompt, so no model call is made.
 
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -504,7 +505,10 @@ async function seed() {
     "pi-waiting",
     path.join(WORK, "infra"),
     ["pi", "--", "Deploy the staging stack and run the smoke tests"],
-    { FAKE_PI_WAIT_TITLE: "Allow bash: terraform apply -auto-approve?" },
+    {
+      FAKE_PI_WAIT_TITLE: "Allow bash: terraform apply -auto-approve?",
+      FAKE_PI_WAIT_OPTIONS: "Allow|Allow always|Deny",
+    },
   );
   // (c) completed: a realistic session resumed (live, idle).
   const richId = uuid("aaaa");
@@ -615,6 +619,28 @@ export function seedClosed(count) {
   return ids;
 }
 
+/**
+ * Drives a fake pi's remote channel (forge's side, see fake-pi.mjs): writes
+ * <agent>/fake-pi/<pid>.ctl with tmp + mv. ops: one op object or an array of them.
+ */
+export function control(pid, ops) {
+  const file = path.join(AGENT, "fake-pi", `${pid}.ctl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(ops));
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+/** The fake pi's published remote state (state.json), or undefined. */
+export function remoteState(pid) {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(AGENT, "forge", "remote", String(pid), "state.json"), "utf8"),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 export function procState(pid) {
   try {
     return JSON.parse(fs.readFileSync(path.join(PROCS, `${pid}.json`), "utf8")).state;
@@ -623,13 +649,53 @@ export function procState(pid) {
   }
 }
 
-/** Real pi + forge (read-only ~/.pi/forge) in the sandbox agent dir, without a prompt. */
+/**
+ * forge with the remote channel: the remote-channel worktree (never the live ~/.pi/forge, which
+ * another session edits). PIM_E2E_FORGE overrides it.
+ */
+export const FORGE_DIR =
+  process.env.PIM_E2E_FORGE ||
+  path.join(os.homedir(), "projects", "pi-mobile-work", "forge-remote");
+
+/** Test-only rig extension: `/pimrig` opens a select then an input and logs what they returned. */
+const RIG = `
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+export default function (pi) {
+  const log = (line) =>
+    appendFileSync(join(process.env.PI_CODING_AGENT_DIR, "pimrig.log"), line + "\\n");
+  pi.registerCommand("pimrig", {
+    description: "pi-mobile test rig: a select and an input",
+    handler: async (_args, ctx) => {
+      const color = await ctx.ui.select("RIG pick a color", ["red", "green", "blue"]);
+      log("picked=" + String(color));
+      const name = await ctx.ui.input("RIG name it", "a name");
+      log("input=" + String(name));
+    },
+  });
+}
+`;
+
+/** The rig's log lines (real pi + forge worktree run). */
+export function rigLog() {
+  try {
+    return fs.readFileSync(path.join(AGENT, "pimrig.log"), "utf8").split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Real pi + forge (the remote-channel worktree) in the sandbox agent dir, without a prompt. */
 function startRealPi() {
   const realPi = run("sh", ["-c", "command -v pi"], { env: process.env }).trim();
   const realNodeDir = path.dirname(process.execPath);
-  const forge = path.join(os.homedir(), ".pi", "forge");
+  if (!fs.existsSync(path.join(FORGE_DIR, "extensions", "remote.ts")))
+    throw new Error(`no remote-channel forge at ${FORGE_DIR} (set PIM_E2E_FORGE)`);
+  const rig = path.join(ROOT, "pimrig.ts");
+  fs.writeFileSync(rig, RIG);
   const settings = {
-    packages: [forge],
+    packages: [FORGE_DIR],
+    extensions: [rig],
     theme: "claude",
     tuiMode: "fullscreen",
     quietStartup: true,

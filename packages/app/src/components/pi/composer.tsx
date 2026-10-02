@@ -1,7 +1,8 @@
 // Bottom composer: a multiline field and one round button that is Send, or Stop while a run is
-// working and the field is empty (same coordinates, never an extra control).
+// working and the field is empty (same coordinates, never an extra control). With `commands`, a
+// leading `/` opens forge's `/` menu above the field, filtered as the name is typed.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -16,6 +17,9 @@ import {
   surfaceSolid,
 } from "./icons";
 import { MIN_TOUCH } from "@/styles/touch";
+import { completeCommand, filterCommands, slashQuery } from "@/remote/menu";
+import type { RemoteCommand } from "@/remote/types";
+import { SlashMenu } from "./slash-menu";
 
 const ComposerInput = withUnistyles(AdaptiveTextInput, (theme) => ({
   placeholderTextColor: theme.colors.foregroundMuted,
@@ -33,6 +37,8 @@ interface ComposerProps {
   testID: string;
   sendTestID: string;
   stopTestID?: string;
+  /** forge's `/` menu rows (sessions with the remote channel only). */
+  commands?: readonly RemoteCommand[];
 }
 
 export function Composer({
@@ -45,6 +51,7 @@ export function Composer({
   testID,
   sendTestID,
   stopTestID,
+  commands,
 }: ComposerProps) {
   const { t } = useTranslation();
   const inputRef = useRef<EditingTextInputHandle | null>(null);
@@ -53,6 +60,7 @@ export function Composer({
   const submittingRef = useRef(false);
   const hasText = text.trim().length > 0;
   const showStop = canStop && !hasText && Boolean(onStop);
+  const { matches, pickCommand } = useSlashMenu(commands, busy, text, inputRef, setText);
 
   const submit = useCallback(async () => {
     const value = text.trim();
@@ -87,6 +95,7 @@ export function Composer({
   return (
     <View style={styles.wrap}>
       {hint ? <Text style={styles.hint}>{hint}</Text> : null}
+      {matches.length > 0 ? <SlashMenu commands={matches} onPick={pickCommand} /> : null}
       <View style={styles.row}>
         <ComposerInput
           ref={inputRef}
@@ -117,6 +126,31 @@ export function Composer({
       </View>
     </View>
   );
+}
+
+/** forge's `/` menu for the composer: rows matching the typed name, and a tap that completes it. */
+function useSlashMenu(
+  commands: readonly RemoteCommand[] | undefined,
+  busy: boolean,
+  text: string,
+  inputRef: RefObject<EditingTextInputHandle | null>,
+  setText: (text: string) => void,
+) {
+  const query = commands && !busy ? slashQuery(text) : undefined;
+  const matches = useMemo(
+    () => (query !== undefined && commands ? filterCommands(commands, query) : []),
+    [commands, query],
+  );
+  const pickCommand = useCallback(
+    (command: RemoteCommand) => {
+      const next = completeCommand(command);
+      inputRef.current?.replaceText(next, { start: next.length, end: next.length });
+      setText(next);
+      inputRef.current?.focus();
+    },
+    [inputRef, setText],
+  );
+  return { matches, pickCommand };
 }
 
 const styles = StyleSheet.create((theme) => ({

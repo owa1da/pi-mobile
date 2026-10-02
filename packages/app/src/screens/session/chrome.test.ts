@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { subBarStatus } from "./chrome";
+import { subBarStatus, waitingBannerVisible, type ChannelView } from "./chrome";
+import type { RemoteState } from "@/remote/types";
 
 describe("subBarStatus", () => {
   it("shows the session state while connected", () => {
@@ -40,5 +41,63 @@ describe("subBarStatus", () => {
     expect(subBarStatus("connected", "idle", false)).toMatchObject({
       key: "pi.session.state.idle",
     });
+  });
+});
+
+describe("waitingBannerVisible", () => {
+  const base: RemoteState = {
+    v: 1,
+    pid: 1,
+    sessionId: "s",
+    rev: 1,
+    updatedAt: 0,
+    view: "main",
+    draft: false,
+  };
+  const ch = (state: RemoteState | undefined, extra: Partial<ChannelView> = {}): ChannelView => ({
+    available: true,
+    loaded: true,
+    state,
+    ...extra,
+  });
+  const prompt = {
+    id: "p1",
+    kind: "select" as const,
+    title: "Allow?",
+    message: null,
+    options: ["Allow"],
+    placeholder: null,
+    prefill: null,
+    answerable: true,
+    held: false,
+    since: 0,
+  };
+
+  it("never shows unless the row is waiting", () => {
+    expect(waitingBannerVisible("idle", ch(undefined, { available: false }))).toBe(false);
+  });
+
+  it("shows for sessions without a channel or with an unreadable state", () => {
+    expect(waitingBannerVisible("waiting", ch(undefined, { available: false }))).toBe(true);
+    expect(waitingBannerVisible("waiting", ch(undefined))).toBe(true);
+  });
+
+  it("stays hidden while the channel loads, and while the dock shows a dialog or question", () => {
+    expect(waitingBannerVisible("waiting", ch(undefined, { loaded: false }))).toBe(false);
+    expect(waitingBannerVisible("waiting", ch({ ...base, view: "dialog", prompt }))).toBe(false);
+    const q = { id: "q", blocking: true, askedAt: 0, status: "open" as const, items: [] };
+    expect(waitingBannerVisible("waiting", ch({ ...base, questions: [q] }))).toBe(false);
+  });
+
+  it("trusts the loaded channel over a lagging listing right after an answer", () => {
+    expect(waitingBannerVisible("waiting", ch({ ...base, view: "main", prompt: null }))).toBe(
+      false,
+    );
+  });
+
+  it("shows when the channel says a dialog is up that it does not describe", () => {
+    expect(waitingBannerVisible("waiting", ch({ ...base, view: "dialog", prompt: null }))).toBe(
+      true,
+    );
   });
 });

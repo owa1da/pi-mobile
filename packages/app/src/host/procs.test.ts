@@ -284,3 +284,21 @@ describe("titles and text", () => {
     expect(snap(body).rows).toHaveLength(0);
   });
 });
+
+describe("remote channel flag", () => {
+  it("carries forge's additive remote: 1 onto live rows only when it is a positive integer", () => {
+    const rows = snap(
+      live({ pid: 1, rec: { remote: 1 } }) +
+        live({ pid: 2 }) +
+        live({ pid: 3, rec: { remote: "1" } }) +
+        live({ pid: 4, rec: { remote: 0 } }) +
+        ended("e1", { remote: 1 }),
+    ).rows;
+    const by = (key: string) => rows.find((row) => row.key === key);
+    expect(by("s1")?.remote).toBe(1);
+    expect(by("s2")).not.toHaveProperty("remote");
+    expect(by("s3")).not.toHaveProperty("remote");
+    expect(by("s4")).not.toHaveProperty("remote");
+    expect(by("e1")).not.toHaveProperty("remote");
+  });
+});

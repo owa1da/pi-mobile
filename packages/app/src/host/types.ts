@@ -54,6 +54,8 @@ export interface SessionRow {
   pid?: number;
   tmux?: { socket: string; pane: string };
   wake?: { due: number; missed: boolean; reason?: string };
+  /** Remote channel protocol version from the procs record (`"remote": 1`); absent = none. */
+  remote?: number;
 }
 
 export interface SessionsSnapshot {

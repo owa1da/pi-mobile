@@ -2,6 +2,7 @@
 
 import {
   ArrowUp,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -16,6 +17,7 @@ import { PiIcon } from "@/components/icons/pi-icon";
 import type { Theme } from "@/styles/theme";
 
 export const ThemedArrowUp = withUnistyles(ArrowUp);
+export const ThemedCheck = withUnistyles(Check);
 export const ThemedChevronDown = withUnistyles(ChevronDown);
 export const ThemedChevronRight = withUnistyles(ChevronRight);
 export const ThemedCopy = withUnistyles(Copy);
@@ -27,6 +29,7 @@ export const ThemedPiIcon = withUnistyles(PiIcon);
 
 export const foregroundColor = (theme: Theme) => ({ color: theme.colors.foreground });
 export const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+export const accentColor = (theme: Theme) => ({ color: theme.colors.accentBright });
 export const accentForegroundColor = (theme: Theme) => ({ color: theme.colors.accentForeground });
 export const surfaceColor = (theme: Theme) => ({ color: theme.colors.surface0 });
 /** A solid glyph (Stop's square): stroke and fill both from the theme, never `currentColor`. */

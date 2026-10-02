@@ -14,7 +14,7 @@ export const FAKE_PI = path.resolve(__dirname, "fake-pi.mjs");
 
 export interface FakeEvent {
   t: number;
-  kind: "start" | "input" | "submit" | "escape" | "quit";
+  kind: "start" | "input" | "submit" | "escape" | "quit" | "remote";
   argv?: string[];
   text?: string;
   pasted?: boolean;
@@ -25,6 +25,15 @@ export interface FakeEvent {
   cwd?: string;
   pane?: string;
   agentEnv?: string | null;
+  /** kind "remote": the action answered (or op for dialogs/questions the test opened). */
+  action?: string;
+  op?: string;
+  by?: "app" | "desktop";
+  id?: string;
+  value?: string | null;
+  cancel?: boolean;
+  answers?: unknown;
+  line?: string;
 }
 
 export interface Sandbox {
@@ -39,6 +48,10 @@ export interface Sandbox {
   service(options?: HostServiceOptions): PiHostService;
   tmux(...args: string[]): string;
   events(pid: number): FakeEvent[];
+  /** Drives the fake pi's remote channel: writes <agentDir>/fake-pi/<pid>.ctl (tmp + mv). */
+  control(pid: number, ops: object | object[]): void;
+  /** <agentDir>/forge/remote/<pid> */
+  remoteDir(pid: number): string;
   waitFor<T>(fn: () => T | undefined | false, timeoutMs?: number, label?: string): Promise<T>;
   /** The first event of the fake pi `pid` that matches, once it is logged. */
   waitForEvent(
@@ -86,6 +99,7 @@ const TOOLS = [
   "sort",
   "uniq",
   "rm",
+  "mv",
   "cut",
   "cat",
   "env",
@@ -180,6 +194,13 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
         return [];
       }
     },
+    control(pid, ops) {
+      const file = path.join(agentDir, "fake-pi", `${pid}.ctl`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(ops));
+      fs.renameSync(`${file}.tmp`, file);
+    },
+    remoteDir: (pid) => path.join(agentDir, "forge", "remote", String(pid)),
     async waitFor(fn, timeoutMs = 10_000, label = "condition") {
       const deadline = Date.now() + timeoutMs;
       for (;;) {

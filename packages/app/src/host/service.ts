@@ -72,6 +72,8 @@ export interface HostEnvironmentDetails extends HostEnvironment {
 
 export interface PiHostService extends HostService {
   probe(): Promise<HostEnvironmentDetails>;
+  /** The probed environment (probing once if needed); never re-probes a cached host. */
+  environment(): Promise<HostEnvironmentDetails>;
   readChat(row: Pick<SessionRow, "sessionFile">, cursor?: SessionCursor): Promise<ChatUpdateEx>;
 }
 
@@ -211,6 +213,10 @@ class HostServiceImpl implements PiHostService {
       if (this.probing === p) this.probing = undefined;
     });
     return p;
+  }
+
+  environment(): Promise<HostEnvironmentDetails> {
+    return this.ensureProbe();
   }
 
   private ensureProbe(): Promise<HostEnvironmentDetails> {

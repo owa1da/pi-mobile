@@ -36,9 +36,14 @@ import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
 import { useAnnounceOnChange, announce } from "@/components/pi/use-announce";
 import { latestReply, nextReplyAnnouncement, previewText } from "./announce";
-import { subBarStatus } from "./chrome";
+import { subBarStatus, waitingBannerVisible } from "./chrome";
 import { friendlyHostError, type FriendlyError } from "./send-errors";
 import { useChatFeed } from "./use-chat-feed";
+import { AnswerDock, openIdsOf } from "./answer-dock";
+import { friendlyRemote, useAnswers, useNotice } from "./use-answers";
+import { useRemoteChannel } from "./use-remote-channel";
+import { matchCommand, refusalOutcome } from "@/remote/menu";
+import { isRemoteError } from "@/remote/errors";
 
 const POLL_MS = 2000;
 const FILL = { flex: 1 };
@@ -134,6 +139,7 @@ export function SessionScreen() {
         <ChatPane
           hostId={hostId}
           row={row}
+          entry={entry}
           active={focused && appActive}
           onPendingChange={setSendPending}
         />
@@ -217,22 +223,20 @@ function SessionSubBar({
   );
 }
 
-function ChatPane({
-  hostId,
-  row,
-  active,
-  onPendingChange,
-}: {
+interface ChatPaneProps {
   hostId: string;
   row: SessionRow;
+  entry: SessionsEntry | undefined;
   active: boolean;
   onPendingChange: (pending: boolean) => void;
-}) {
+}
+
+function ChatPane(props: ChatPaneProps) {
   const toast = useToast();
   return (
     <AssistantFileLinkResolverProvider toast={toast}>
       <ToolCallSheetProvider>
-        <ChatPaneBody hostId={hostId} row={row} active={active} onPendingChange={onPendingChange} />
+        <ChatPaneBody {...props} />
       </ToolCallSheetProvider>
     </AssistantFileLinkResolverProvider>
   );
@@ -243,20 +247,14 @@ function composerPlaceholderKey(row: SessionRow): string {
   return row.state === "working" ? "pi.session.placeholderWorking" : "pi.session.placeholder";
 }
 
-function ChatPaneBody({
-  hostId,
-  row,
-  active,
-  onPendingChange,
-}: {
-  hostId: string;
-  row: SessionRow;
-  active: boolean;
-  onPendingChange: (pending: boolean) => void;
-}) {
+function ChatPaneBody({ hostId, row, entry, active, onPendingChange }: ChatPaneProps) {
   const { t } = useTranslation();
   const toast = useToast();
   const feed = useChatFeed(hostId, row, active);
+  const channel = useRemoteChannel(hostId, row, entry, active);
+  const { notice, show: showNotice, dismiss: dismissNotice } = useNotice();
+  const openIds = useMemo(() => openIdsOf(channel), [channel]);
+  const answers = useAnswers(channel, openIds, t, showNotice);
   useReplyAnnouncement(feed.rows, row.state === "working", active);
   useAnnounceOnChange(
     row.state === "waiting"
@@ -268,8 +266,46 @@ function ChatPaneBody({
   const [sendError, setSendError] = useState<FriendlyError | null>(null);
   const sendingRef = useRef(false);
 
+  /**
+   * A `/` line forge lists: run it through the remote channel (as typed in pi's editor). "paste"
+   * when forge says it starts a turn (a prompt template): the caller sends it as a message.
+   */
+  const runCommand = useCallback(
+    async (line: string, name: string): Promise<boolean | "paste"> => {
+      if (sendingRef.current) return false;
+      sendingRef.current = true;
+      setSending(true);
+      setSendError(null);
+      try {
+        await channel.send("command.run", { line });
+        feed.boost();
+        return true;
+      } catch (error) {
+        if (isRemoteError(error, "refused")) {
+          const outcome = refusalOutcome(name, error.detail);
+          if (outcome.kind === "paste") return "paste";
+          if (outcome.kind === "notice") {
+            showNotice({ text: t(outcome.key, outcome.params), testID: outcome.testID });
+            return true;
+          }
+        }
+        setSendError(friendlyRemote(error));
+        return false;
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+    },
+    [channel, feed, showNotice, t],
+  );
+
   const send = useCallback(
     async (text: string): Promise<boolean> => {
+      const command = channel.available ? matchCommand(text, channel.state?.commands) : undefined;
+      if (command) {
+        const ran = await runCommand(text, command.name);
+        if (ran !== "paste") return ran;
+      }
       // One send at a time: a pending send (maybe a resume) is never doubled by a second tap.
       if (sendingRef.current) return false;
       const service = connectionStore.getState().getService(hostId);
@@ -310,7 +346,7 @@ function ChatPaneBody({
         setSending(false);
       }
     },
-    [feed, hostId, onPendingChange, row],
+    [channel.available, channel.state?.commands, feed, hostId, onPendingChange, row, runCommand],
   );
 
   const stop = useCallback(() => {
@@ -342,13 +378,22 @@ function ChatPaneBody({
         <EmptyState title={t("pi.session.noFile")} testID="chat-no-file" />
       )}
       <View style={styles.banners}>
-        {row.state === "waiting" ? (
+        {waitingBannerVisible(row.state, channel) ? (
           <InlineBanner
             tone="warning"
             leading={askingGlyph}
             title={t("pi.session.asking")}
             message={row.asking ?? row.detail ?? ""}
             testID="chat-waiting-banner"
+          />
+        ) : null}
+        {notice ? (
+          <InlineBanner
+            tone="muted"
+            message={notice.text}
+            dismissLabel={t("pi.session.dismiss")}
+            onDismiss={dismissNotice}
+            testID={notice.testID}
           />
         ) : null}
         {sendError ? (
@@ -361,17 +406,20 @@ function ChatPaneBody({
           />
         ) : null}
       </View>
-      <Composer
-        placeholder={t(composerPlaceholderKey(row))}
-        onSubmit={send}
-        busy={sending}
-        canStop={row.live && row.state === "working"}
-        onStop={stop}
-        hint={row.live ? undefined : t("pi.session.closedHint")}
-        testID="chat-composer"
-        sendTestID="chat-send"
-        stopTestID="chat-stop"
-      />
+      <AnswerDock channel={channel} answers={answers}>
+        <Composer
+          commands={channel.available ? channel.state?.commands : undefined}
+          placeholder={t(composerPlaceholderKey(row))}
+          onSubmit={send}
+          busy={sending}
+          canStop={row.live && row.state === "working"}
+          onStop={stop}
+          hint={row.live ? undefined : t("pi.session.closedHint")}
+          testID="chat-composer"
+          sendTestID="chat-send"
+          stopTestID="chat-stop"
+        />
+      </AnswerDock>
     </View>
   );
 }

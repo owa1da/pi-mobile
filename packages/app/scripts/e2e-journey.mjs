@@ -3,7 +3,7 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v8), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v9), --keep (leave the sandbox up),
 //          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
 //          --theme dark|light (default dark: the run's
 //          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
@@ -251,6 +251,43 @@ function sweepClickables(ctx, screen, nodes) {
   }
 }
 
+/**
+ * Closes the soft keyboard and checks the app stayed on the session (Back must only close the
+ * keyboard). Waits for the keyboard to settle first: a Back sent while it is still animating can
+ * reach the app instead of the IME.
+ */
+async function safeHideKeyboard() {
+  await sleep(700);
+  if (!A.keyboardShown()) return;
+  A.key(A.KEY.BACK);
+  await sleep(800);
+  assert(A.find(A.byId("session-state")), "Back to close the keyboard left the session");
+}
+
+/** Scrolls the answer panel's body until `pred`'s node is fully inside it; returns the node. */
+async function revealInPanel(pred, label, tries = 6) {
+  for (let i = 0; i < tries; i++) {
+    const nodes = A.dump();
+    const node = nodes.find(pred);
+    const box = nodes.find(A.byId("answer-scroll"));
+    // A node scrolled out of the viewport reports clipped (even inverted) bounds: require a
+    // positive, whole height inside the scroll box.
+    const visible =
+      node &&
+      box &&
+      node.bounds[3] - node.bounds[1] >= 40 &&
+      node.bounds[1] >= box.bounds[1] &&
+      node.bounds[3] <= box.bounds[3] + 1;
+    if (visible) return node;
+    if (!box) throw new Error(`no answer panel while looking for ${label}`);
+    const x = Math.round((box.bounds[0] + box.bounds[2]) / 2);
+    const h = box.bounds[3] - box.bounds[1];
+    A.swipe(x, box.bounds[1] + Math.round(h * 0.8), x, box.bounds[1] + Math.round(h * 0.3), 400);
+    await sleep(800);
+  }
+  throw new Error(`${label} never came into the answer panel`);
+}
+
 const byDesc = (desc) => (n) => n.desc === desc && n.clickable;
 
 /** Back to the Hosts list (relaunching the activity if a back press left the app). */
@@ -448,19 +485,291 @@ function steps(ctx) {
       },
     ],
     [
-      "Waiting session: a calm banner says what pi is asking, with no terminal action",
+      "Waiting session: answer pi's select dialog in the app (no composer, chat stays above)",
       async () => {
+        const pid = windowPid("waiting");
         await A.tap(rowOf(sessionIdOf("waiting")), "waiting row");
-        await A.waitNode(A.byId("chat-waiting-banner"), 30_000, "waiting banner");
+        await A.waitNode(A.byId("prompt-panel"), 30_000, "prompt panel");
         await sleep(1500);
-        shot("11-chat-waiting-banner-dark");
         const nodes = A.dump();
-        const banner = nodes.find(A.byId("chat-waiting-banner"));
-        assert(nodes.some(A.byText(/terraform apply/)), "the banner does not show the question");
-        const actions = nodes.filter((n) => n !== banner && n.clickable && inside(n, banner));
-        assert(actions.length === 0, `the banner has actions: ${actions.map((n) => n.desc)}`);
+        const panel = nodes.find(A.byId("prompt-panel"));
+        const list = nodes.find(A.byId("chat-list"));
+        assert(
+          nodes.some(A.byText(/terraform apply -auto-approve\?/)),
+          "the dialog title is missing",
+        );
+        assert(list && list.bounds[3] <= panel.bounds[1] + 2, "the panel covers the chat");
+        assert(
+          !nodes.some(A.byId("chat-composer")),
+          "the composer shows while pi's dialog is open",
+        );
+        assert(
+          !nodes.some(A.byId("chat-waiting-banner")),
+          "the passive banner shows over the dialog",
+        );
         const terminal = nodes.find((n) => /terminal/i.test(n.text) || /terminal/i.test(n.desc));
         assert(!terminal, `the session mentions a terminal: "${terminal?.text || terminal?.desc}"`);
+        for (const [i, label] of ["Allow", "Allow always", "Deny"].entries())
+          assert(
+            nodes.find(A.byId(`prompt-option-${i}`))?.desc === label,
+            `option ${i} != ${label}`,
+          );
+        shot("80-prompt-select-dark");
+        auditControls(ctx, "prompt (select)", [
+          ["option Allow", A.byId("prompt-option-0")],
+          ["option Deny", A.byId("prompt-option-2")],
+          ["Cancel", A.byId("prompt-cancel")],
+        ]);
+        A.tapNode(nodes.find(A.byId("prompt-option-0")));
+        await sleep(250);
+        shot("81-prompt-sent-dark");
+        const answered = await E.waitFor(
+          () => E.events(pid).find((e) => e.action === "prompt.respond" && e.by === "app"),
+          20_000,
+          "prompt.respond from the app",
+        );
+        assert(
+          answered.value === "Allow" && !answered.cancel,
+          `answered ${JSON.stringify(answered)}`,
+        );
+        await A.waitGone(A.byId("prompt-panel"), 20_000, "panel to close");
+        await A.waitNode(
+          A.byText(/terraform apply -auto-approve\? → Allow/),
+          20_000,
+          "answer in chat",
+        );
+        await A.waitNode(A.byId("chat-composer"), 10_000, "composer back");
+        shot("82-prompt-answered-chat-dark");
+        ctx.notes.push(`select answered: ${JSON.stringify(answered)}`);
+      },
+    ],
+    [
+      "pi's confirm, input and editor dialogs answered in the app; a custom dialog stays calm",
+      async () => {
+        const pid = windowPid("waiting");
+        const responds = () => E.events(pid).filter((e) => e.action === "prompt.respond");
+        const nextRespond = async (n, label) => E.waitFor(() => responds()[n], 20_000, label);
+        let n = responds().length;
+        E.control(pid, {
+          op: "prompt",
+          kind: "confirm",
+          title: "Overwrite README.md?",
+          message: "It has changes that are not committed.",
+        });
+        await A.waitNode(A.byText("Overwrite README.md?"), 20_000, "confirm");
+        await sleep(800);
+        assert(A.find(A.byId("prompt-option-0"))?.desc === "Yes", "confirm has no Yes row");
+        shot("83-prompt-confirm-dark");
+        await A.tap(A.byId("prompt-option-1"), "No");
+        let e = await nextRespond(n++, "confirm answer");
+        assert(e.value === "No" && e.by === "app", `confirm ${JSON.stringify(e)}`);
+        await A.waitGone(A.byId("prompt-panel"), 20_000, "confirm to close");
+
+        E.control(pid, {
+          op: "prompt",
+          kind: "input",
+          title: "Name the new branch",
+          placeholder: "feature/…",
+        });
+        await A.waitNode(A.byId("prompt-input"), 20_000, "input");
+        await typeInto("prompt-input", "fix/login-loop");
+        A.hideKeyboard();
+        await sleep(600);
+        shot("84-prompt-input-dark");
+        auditControls(ctx, "prompt (input)", [
+          ["field", A.byId("prompt-input")],
+          ["Cancel", A.byId("prompt-cancel")],
+          ["Submit", A.byId("prompt-submit")],
+        ]);
+        await A.tap(A.byId("prompt-submit"), "Submit");
+        e = await nextRespond(n++, "input answer");
+        assert(e.value === "fix/login-loop", `input ${JSON.stringify(e)}`);
+        await A.waitGone(A.byId("prompt-panel"), 20_000, "input to close");
+
+        E.control(pid, {
+          op: "prompt",
+          kind: "editor",
+          title: "Commit message",
+          prefill:
+            "fix: stop the login redirect loop\n\nThe session check ran before the cookie was set.",
+        });
+        const editor = await A.waitNode(A.byId("prompt-input"), 20_000, "editor");
+        await sleep(800);
+        assert(
+          (A.find(A.byId("prompt-input"))?.text ?? editor.text).startsWith(
+            "fix: stop the login redirect loop",
+          ),
+          "editor has no prefill",
+        );
+        shot("85-prompt-editor-dark");
+        await A.tap(A.byId("prompt-cancel"), "Cancel");
+        e = await nextRespond(n++, "editor cancel");
+        assert(e.cancel === true, `editor ${JSON.stringify(e)}`);
+        await A.waitGone(A.byId("prompt-panel"), 20_000, "editor to close");
+
+        E.control(pid, { op: "prompt", kind: "custom", title: "MCP servers" });
+        await A.waitNode(A.byId("prompt-on-computer"), 20_000, "custom dialog");
+        await sleep(800);
+        const nodes = A.dump();
+        const panel = nodes.find(A.byId("prompt-panel"));
+        const actions = nodes.filter((x) => x.clickable && inside(x, panel));
+        assert(
+          actions.length === 0,
+          `custom dialog has actions: ${actions.map((x) => x.desc || x.id)}`,
+        );
+        assert(nodes.some(A.byText("MCP servers")), "custom dialog title missing");
+        shot("86-prompt-custom-dark");
+        E.control(pid, { op: "clear" });
+        await A.waitGone(A.byId("prompt-panel"), 20_000, "custom to close");
+      },
+    ],
+    [
+      "forge's ask_user: a two-question item (single + multi select, free text) submitted whole",
+      async () => {
+        const pid = windowPid("waiting");
+        E.control(pid, {
+          op: "ask",
+          blocking: true,
+          items: [
+            {
+              question: "Which database should the cache use?",
+              header: "Database",
+              options: [
+                { label: "Postgres", description: "The app's main database" },
+                { label: "SQLite", description: "A file next to the service" },
+              ],
+            },
+            {
+              question: "Which checks should run before the deploy?",
+              header: "Checks",
+              multiSelect: true,
+              options: [{ label: "lint" }, { label: "types" }, { label: "tests" }],
+            },
+          ],
+        });
+        await A.waitNode(A.byId("ask-panel"), 20_000, "ask panel");
+        await sleep(1000);
+        assert(!A.find(A.byId("chat-composer")), "composer shown while a blocking ask is open");
+        shot("87-ask-item-dark");
+        auditControls(ctx, "ask panel", [
+          ["radio option", A.byId("ask-option-0-0")],
+          ["Dismiss", A.byId("ask-dismiss")],
+          ["Submit (disabled)", A.byId("ask-submit")],
+        ]);
+        A.tapNode(await revealInPanel(A.byId("ask-option-0-1"), "SQLite"));
+        await sleep(400);
+        A.tapNode(await revealInPanel(A.byId("ask-option-1-0"), "lint"));
+        await sleep(400);
+        A.tapNode(await revealInPanel(A.byId("ask-option-1-2"), "tests"));
+        await sleep(400);
+        A.tapNode(await revealInPanel(A.byId("ask-typed-1"), "own answer"));
+        await sleep(800);
+        A.typeText("and e2e");
+        await safeHideKeyboard();
+        const lint = await revealInPanel(A.byId("ask-option-1-0"), "lint (checked)");
+        assert(lint.checked, "lint is not checked");
+        assert(!A.find(A.byId("ask-option-1-1"))?.checked, "types is checked");
+        shot("88-ask-filled-dark");
+        await A.tap(A.byId("ask-submit"), "Submit");
+        const answered = await E.waitFor(
+          () => E.events(pid).find((e) => e.action === "ask.answer" && e.by === "app"),
+          20_000,
+          "ask.answer",
+        );
+        const want = [{ picked: ["SQLite"] }, { picked: ["lint", "tests"], typed: "and e2e" }];
+        assert(
+          JSON.stringify(answered.answers) === JSON.stringify(want),
+          `answers ${JSON.stringify(answered.answers)}`,
+        );
+        await A.waitGone(A.byId("ask-panel"), 20_000, "ask panel to close");
+        await A.waitNode(
+          A.byText(/Which checks should run before the deploy\? → lint, tests, and e2e/),
+          20_000,
+          "answers in chat",
+        );
+        shot("89-ask-answered-dark");
+        ctx.notes.push(`ask answered: ${JSON.stringify(answered.answers)}`);
+      },
+    ],
+    [
+      "The desktop answered first: the app's answer is stale and says so calmly",
+      async () => {
+        const pid = windowPid("waiting");
+        E.control(pid, [
+          { op: "desktop-first", count: 1 },
+          { op: "prompt", kind: "select", title: "Allow bash: rm -rf node_modules?" },
+        ]);
+        await A.waitNode(A.byText("Allow bash: rm -rf node_modules?"), 20_000, "dialog");
+        await sleep(600);
+        await A.tap(A.byId("prompt-option-2"), "Deny");
+        await A.waitNode(A.byId("answer-stale"), 20_000, "stale notice");
+        // Read the notice at once, from the same dump as its bounds: the layout moves when the
+        // panel closes, and the notice dismisses itself after a few seconds.
+        const fresh = A.dump();
+        const stale = fresh.find(A.byId("answer-stale"));
+        const text = fresh
+          .filter((x) => x.text && stale && inside(x, stale))
+          .map((x) => x.text)
+          .join(" ");
+        assert(/Already answered on your computer/.test(text), `stale text "${text}"`);
+        shot("90-answer-stale-dark");
+        await A.waitGone(A.byId("prompt-panel"), 20_000, "dialog to close");
+        const last = E.events(pid).findLast((e) => e.action === "prompt.respond");
+        assert(
+          last.by === "desktop" && last.value === "Allow",
+          `last answer ${JSON.stringify(last)}`,
+        );
+        ctx.notes.push(`stale: "${text}"; desktop answered ${last.value}`);
+      },
+    ],
+    [
+      "The / menu: forge's rows, filtered as typed; a row completes; command.run; Coming soon",
+      async () => {
+        const pid = windowPid("waiting");
+        await A.waitNode(A.byId("chat-composer"), 20_000, "composer");
+        await typeInto("chat-composer", "/");
+        await A.waitNode(A.byId("slash-menu"), 10_000, "slash menu");
+        await sleep(600);
+        assert(A.find(A.byId("slash-row-answer")), "menu misses forge's first row");
+        shot("91-slash-menu-dark");
+        auditControls(ctx, "slash menu", [["row /answer", A.byId("slash-row-answer")]]);
+        A.typeText("co");
+        await sleep(900);
+        const filtered = A.dump();
+        assert(filtered.some(A.byId("slash-row-compact")), "/co hides compact");
+        assert(!filtered.some(A.byId("slash-row-model")), "/co still lists model");
+        shot("92-slash-filtered-dark");
+        await A.tap(A.byId("slash-row-compact"), "/compact");
+        await sleep(600);
+        const field = A.find(A.byId("chat-composer"))?.text ?? "";
+        assert(field === "/compact ", `composer after the tap: "${field}"`);
+        assert(!A.find(A.byId("slash-menu")), "menu still open after completing");
+        A.typeText("keep the plan");
+        A.hideKeyboard();
+        await sleep(500);
+        await A.tap(A.byId("chat-send"), "send");
+        const ran = await E.waitFor(
+          () => E.events(pid).find((e) => e.action === "command.run"),
+          20_000,
+          "command.run",
+        );
+        assert(ran.line === "/compact keep the plan", `ran ${ran.line}`);
+        await A.waitNode(A.byText(/^Ran \/compact keep the plan$/), 20_000, "command in chat");
+        shot("93-command-ran-dark");
+        await typeInto("chat-composer", "/tasks");
+        A.hideKeyboard();
+        await sleep(500);
+        await A.tap(A.byId("chat-send"), "send /tasks");
+        await A.waitNode(A.byId("command-coming-soon"), 20_000, "Coming soon");
+        // The notice dismisses itself after a few seconds: capture it first.
+        shot("94-command-coming-soon-dark");
+        const soon = A.dump();
+        assert(soon.some(A.byText(/\/tasks is coming soon/)), "no Coming soon text");
+        assert(!soon.some(A.byId("chat-send-error")), "a send error for /tasks");
+        const submits = E.events(pid).filter(
+          (e) => e.kind === "submit" && (e.text ?? "").startsWith("/"),
+        );
+        assert(submits.length === 0, `a / line was pasted: ${submits.map((s) => s.text)}`);
         await toDashboard();
       },
     ],
@@ -520,6 +829,34 @@ function steps(ctx) {
         const realState = A.find(A.byId("session-state"))?.text ?? "";
         assert(!/Unknown/.test(realState), `real pi sub-bar says Unknown: "${realState}"`);
         ctx.notes.push(`real pi sub-bar: "${realState}"`);
+        // forge's remote channel (worktree): run the rig from the / menu, answer its dialogs.
+        await typeInto("chat-composer", "/pim");
+        await A.waitNode(A.byId("slash-row-pimrig"), 30_000, "forge's /pimrig row");
+        await A.tap(A.byId("slash-row-pimrig"), "/pimrig");
+        await sleep(400);
+        await safeHideKeyboard();
+        await A.tap(A.byId("chat-send"), "send /pimrig");
+        await A.waitNode(A.byText("RIG pick a color"), 30_000, "real forge select");
+        await sleep(1000);
+        assert(!A.find(A.byId("chat-composer")), "composer shown over forge's dialog");
+        shot("95-real-forge-select-dark");
+        const green = A.dump().find((n) => n.id.startsWith("prompt-option-") && n.desc === "green");
+        assert(green, "no green option in forge's select");
+        A.tapNode(green);
+        await E.waitFor(() => E.rigLog().includes("picked=green"), 20_000, "rig picked green");
+        await A.waitNode(A.byText("RIG name it"), 20_000, "real forge input");
+        await typeInto("prompt-input", "from the phone");
+        await safeHideKeyboard();
+        shot("96-real-forge-input-dark");
+        await A.tap(A.byId("prompt-submit"), "Submit");
+        await E.waitFor(
+          () => E.rigLog().includes("input=from the phone"),
+          20_000,
+          "rig input from the phone",
+        );
+        await A.waitGone(A.byId("prompt-panel"), 20_000, "forge dialog to close");
+        await A.waitNode(A.byId("chat-composer"), 20_000, "composer back");
+        ctx.notes.push(`real forge rig: ${E.rigLog().join(" | ")}`);
         await toDashboard();
       },
     ],
@@ -1098,7 +1435,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v8"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v9"),
   );
   const apk = option(
     args,
