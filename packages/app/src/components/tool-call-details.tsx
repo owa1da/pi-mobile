@@ -912,11 +912,12 @@ const styles = StyleSheet.create((theme) => {
       overflow: "hidden",
       backgroundColor: theme.colors.surface2,
     },
+    // Same surface as the sheet, so short content never leaves a band of another colour below it.
     fullBleedBlock: {
       borderWidth: 0,
       borderRadius: 0,
       overflow: "hidden",
-      backgroundColor: theme.colors.surface1,
+      backgroundColor: theme.colors.surface2,
     },
     codeVerticalScroll: {},
     codeVerticalContent: {
@@ -928,7 +929,7 @@ const styles = StyleSheet.create((theme) => {
     },
     codeLine: {
       minWidth: "100%",
-      paddingHorizontal: insets.padding,
+      paddingHorizontal: theme.spacing[4],
       paddingVertical: insets.padding,
     },
     scrollArea: {

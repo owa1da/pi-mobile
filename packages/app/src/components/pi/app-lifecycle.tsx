@@ -2,7 +2,13 @@
 // foreground, and show the first-use host key prompt wherever a person started a connect.
 
 import { useCallback, useEffect } from "react";
-import { connectionStore, hostsStore, useHost, useHostKeyPrompt } from "@/stores/app";
+import {
+  connectionStore,
+  hostKeyAlgorithms,
+  hostsStore,
+  useHost,
+  useHostKeyPrompt,
+} from "@/stores/app";
 import { useAppActive } from "@/stores/use-polling";
 import { HostKeyTrustSheet } from "./host-key-sheet";
 
@@ -10,6 +16,7 @@ export function AppLifecycle() {
   const active = useAppActive();
   useEffect(() => {
     void hostsStore.getState().load();
+    void hostKeyAlgorithms.load();
   }, []);
   useEffect(() => {
     if (active) connectionStore.getState().checkAll();

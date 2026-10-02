@@ -9,6 +9,7 @@ import type { HostConnectionState } from "@/stores/connection-store";
 import { hostAddress } from "@/stores/host-records";
 import { failureText } from "./connection-text";
 import { MutedSpinner, ThemedPencil, mutedColor } from "./icons";
+import { MIN_TOUCH } from "@/styles/touch";
 
 const BUSY = { busy: true };
 const IDLE_A11Y = { busy: false };
@@ -61,7 +62,6 @@ export const HostRow = memo(function HostRow({ host, connection, onPress, onEdit
       {busy ? <MutedSpinner size="small" /> : null}
       <Pressable
         onPress={handleEdit}
-        hitSlop={8}
         style={styles.edit}
         accessibilityRole="button"
         accessibilityLabel={t("pi.hosts.edit", { label: host.label })}
@@ -98,8 +98,8 @@ const styles = StyleSheet.create((theme) => ({
   note: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm, lineHeight: 17 },
   noteDanger: { color: theme.colors.statusDanger },
   edit: {
-    width: 44,
-    height: 44,
+    width: MIN_TOUCH,
+    height: MIN_TOUCH,
     alignItems: "center",
     justifyContent: "center",
   },

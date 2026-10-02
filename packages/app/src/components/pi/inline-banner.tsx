@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
+import { MIN_TOUCH } from "@/styles/touch";
 
 export interface InlineBannerProps {
   tone: "warning" | "danger" | "muted";
@@ -68,8 +69,8 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[3],
     paddingHorizontal: theme.spacing[4],
-    // 44dp action and dismiss targets; 8dp keeps the strip as tall as it was with a 32dp button.
-    paddingVertical: theme.spacing[2],
+    // Touch-floor action and dismiss targets; the strip stays 56dp tall around them.
+    paddingVertical: (56 - MIN_TOUCH) / 2,
     minHeight: 56,
     borderRadius: theme.borderRadius.xl,
   },
@@ -88,8 +89,8 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 20,
   },
   dismiss: {
-    width: 44,
-    height: 44,
+    width: MIN_TOUCH,
+    height: MIN_TOUCH,
     marginRight: -theme.spacing[2],
     alignItems: "center",
     justifyContent: "center",

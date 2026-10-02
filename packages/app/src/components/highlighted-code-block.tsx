@@ -1,5 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
+import {
+  Pressable,
+  ScrollView,
+  View,
+  type StyleProp,
+  type TextStyle,
+  type ViewStyle,
+} from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { MarkdownTextSpan } from "@/components/markdown-text";
 import * as Clipboard from "expo-clipboard";
@@ -16,6 +23,7 @@ import {
   markdownCopyDataSet,
   TRAILING_CODE_LINE_BREAKS,
 } from "@/assistant-selection-copy/markup";
+import { touchSlop } from "@/styles/touch";
 
 interface HighlightedCodeBlockProps {
   code: string;
@@ -63,7 +71,7 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
   // Box styles (bg / padding / border / radius / margin) go on the wrapper View
   // so the absolute copy button positions relative to the visible code area,
   // not to a parent that includes the Text's own marginVertical.
-  const { containerStyle, innerTextStyle } = useMemo(
+  const { containerStyle, innerTextStyle, scrollBleed } = useMemo(
     () => splitFenceStyle(inheritedStyles, textStyle),
     [inheritedStyles, textStyle],
   );
@@ -103,15 +111,27 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
           <CopyButton getCode={getCode} visible inline />
         </View>
       ) : null}
-      {keyedLines ? (
-        <MarkdownTextSpan style={innerTextStyle} copyTag="code">
-          {renderCodeSegments(keyedLines)}
-        </MarkdownTextSpan>
-      ) : (
-        <MarkdownTextSpan style={innerTextStyle} copyTag="code">
-          {renderedCode}
-        </MarkdownTextSpan>
-      )}
+      {/* Like a terminal: each code line stays whole and the block scrolls sideways; it never
+          wraps mid-token at a large font. The scroll bleeds into the box padding so the text
+          scrolls under the border, not under an inner margin. */}
+      <ScrollView
+        horizontal
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={false}
+        style={scrollBleed.style}
+        contentContainerStyle={scrollBleed.content}
+        testID="code-block-scroll"
+      >
+        {keyedLines ? (
+          <MarkdownTextSpan style={innerTextStyle} copyTag="code">
+            {renderCodeSegments(keyedLines)}
+          </MarkdownTextSpan>
+        ) : (
+          <MarkdownTextSpan style={innerTextStyle} copyTag="code">
+            {renderedCode}
+          </MarkdownTextSpan>
+        )}
+      </ScrollView>
       {inlineControls ? null : <CopyButton getCode={getCode} visible={controlsVisible} />}
     </View>
   );
@@ -154,6 +174,12 @@ const CodeTextSpan = React.memo(function CodeTextSpan({ text }: CodeTextSpanProp
 interface SplitStyles {
   containerStyle: StyleProp<ViewStyle>;
   innerTextStyle: StyleProp<TextStyle>;
+  scrollBleed: { style: ViewStyle; content: ViewStyle };
+}
+
+function horizontalPadding(box: TextStyle): number {
+  const value = box.paddingHorizontal ?? box.padding;
+  return typeof value === "number" ? value : 0;
 }
 
 const CONTAINER_BASE: ViewStyle = { position: "relative" };
@@ -166,9 +192,14 @@ function splitFenceStyle(inheritedStyles: TextStyle, textStyle: TextStyle): Spli
   if (fontSize !== undefined) textOnly.fontSize = fontSize;
   if (fontSize !== undefined) textOnly.lineHeight = Math.round(fontSize * 1.45);
   if (color !== undefined) textOnly.color = color;
+  const bleed = horizontalPadding(box);
   return {
     containerStyle: [box as ViewStyle, CONTAINER_BASE],
     innerTextStyle: [inheritedStyles, textOnly],
+    scrollBleed: {
+      style: { marginHorizontal: -bleed },
+      content: { paddingHorizontal: bleed, flexGrow: 1 },
+    },
   };
 }
 
@@ -180,6 +211,7 @@ interface CopyButtonProps {
 }
 
 const COPIED_RESET_MS = 1500;
+const COPY_CODE_SLOP = touchSlop(30);
 
 const CopyButton = React.memo(function CopyButton({ getCode, visible, inline }: CopyButtonProps) {
   const { t } = useTranslation();
@@ -220,7 +252,7 @@ const CopyButton = React.memo(function CopyButton({ getCode, visible, inline }: 
       pointerEvents={visible ? "auto" : "none"}
       accessibilityRole="button"
       accessibilityLabel={copied ? t("message.actions.copied") : t("message.actions.copyCode")}
-      hitSlop={8}
+      hitSlop={COPY_CODE_SLOP}
       dataSet={markdownCopyDataSet.ignore}
     >
       {({ hovered }) => {
@@ -244,7 +276,7 @@ const copyButtonStyles = StyleSheet.create((theme) => ({
     right: theme.spacing[2],
     padding: theme.spacing[1],
   },
-  // 14dp glyph + 8dp padding each side = 30dp; hitSlop 8 makes the target 46dp.
+  // 14dp glyph + 8dp padding each side = 30dp; COPY_CODE_SLOP lifts it to the touch floor.
   inline: {
     padding: theme.spacing[2],
   },

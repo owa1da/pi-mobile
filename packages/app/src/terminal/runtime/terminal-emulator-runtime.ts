@@ -103,6 +103,48 @@ export interface TerminalResizeRequest {
   forceClaim?: boolean;
 }
 
+interface RenderDimensionsCore {
+  _core?: { _renderService?: { dimensions?: { device?: { cell?: { height?: number } } } } };
+}
+
+/**
+ * The rows that really fit, counted in device pixels. FitAddon divides by the DOM renderer's CSS
+ * cell height, which is itself rounded from the current row count, so near a row boundary it has
+ * two stable answers (43 from 43, 44 from 23 on a 670px host) and the pty size depends on history.
+ */
+export function deviceFitRows(input: {
+  hostHeightCss: number;
+  paddingCss: number;
+  devicePixelRatio: number;
+  deviceCellHeight: number;
+}): number | null {
+  const { hostHeightCss, paddingCss, devicePixelRatio, deviceCellHeight } = input;
+  if (!(deviceCellHeight > 0) || !(hostHeightCss > 0) || !(devicePixelRatio > 0)) return null;
+  const rows = Math.floor(
+    ((hostHeightCss - paddingCss) * devicePixelRatio + 0.01) / deviceCellHeight,
+  );
+  return rows >= 1 ? rows : null;
+}
+
+function settleRows(terminal: Terminal): void {
+  const cellHeight = (terminal as unknown as RenderDimensionsCore)._core?._renderService?.dimensions
+    ?.device?.cell?.height;
+  const element = terminal.element;
+  const parent = element?.parentElement;
+  if (!cellHeight || !element || !parent || typeof window.getComputedStyle !== "function") return;
+  const parentStyle = window.getComputedStyle(parent);
+  const elementStyle = window.getComputedStyle(element);
+  const rows = deviceFitRows({
+    hostHeightCss: Number.parseFloat(parentStyle.height),
+    paddingCss:
+      (Number.parseFloat(elementStyle.paddingTop) || 0) +
+      (Number.parseFloat(elementStyle.paddingBottom) || 0),
+    devicePixelRatio: window.devicePixelRatio || 1,
+    deviceCellHeight: cellHeight,
+  });
+  if (rows !== null && rows !== terminal.rows) terminal.resize(terminal.cols, rows);
+}
+
 export function createTerminalResizeEvent(input: {
   rows: number;
   cols: number;
@@ -618,6 +660,7 @@ export class TerminalEmulatorRuntime {
       } catch {
         return;
       }
+      settleRows(currentTerminal);
 
       const nextRows = currentTerminal.rows;
       const nextCols = currentTerminal.cols;

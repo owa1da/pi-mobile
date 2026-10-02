@@ -81,6 +81,13 @@ describe("short model and folder", () => {
     expect(shortModel(undefined)).toBeUndefined();
   });
 
+  it("says nothing for a model pi reports as unknown", () => {
+    expect(shortModel({ provider: "unknown", id: "unknown" })).toBeUndefined();
+    expect(shortModel({ provider: "x", id: "Unknown", name: "unknown" })).toBeUndefined();
+    expect(shortModel({ provider: "x", id: "" })).toBeUndefined();
+    expect(shortModel({ provider: "x", id: "unknown", name: "Opus 5.5" })).toBe("Opus 5.5");
+  });
+
   it("home-shortens and cuts folders to their last two names", () => {
     expect(shortFolder("/home/me/llm-stack", "/home/me")).toBe("~/llm-stack");
     expect(shortFolder("/home/me", "/home/me")).toBe("~");

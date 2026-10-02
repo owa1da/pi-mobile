@@ -213,15 +213,16 @@ const styles = StyleSheet.create((theme) => {
     },
     horizontalContent: {
       flexDirection: "column" as const,
-      paddingRight: insets.extraRight,
     },
+    // Rows run edge to edge (their tints are full-bleed); the text inside each row carries the
+    // 16dp gutter, the same inset as the error box and the sheet header above it.
     linesContainer: {
       alignSelf: "flex-start",
-      padding: insets.padding,
+      paddingVertical: insets.padding,
     },
     line: {
       minWidth: "100%",
-      paddingHorizontal: 0,
+      paddingHorizontal: theme.spacing[4],
       paddingVertical: theme.spacing[1],
     },
     lineText: {

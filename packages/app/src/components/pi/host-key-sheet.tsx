@@ -15,17 +15,24 @@ const MISMATCH_SNAP_POINTS = ["70%", "90%"];
 
 function Fingerprint({
   label,
+  keyType,
   fingerprint,
   testID,
 }: {
-  label: string;
+  /** "Trusted", "Presented now"; the first-use sheet has only the key type. */
+  label?: string;
+  /** "ED25519", "RSA", …; omitted when the key type is not known (never guessed). */
+  keyType?: string;
   fingerprint: string;
   testID?: string;
 }) {
   const { prefix, digest } = splitFingerprint(fingerprint);
+  const heading = [label, keyType, prefix].filter(Boolean).join(" · ");
   return (
     <View style={styles.fingerprint} testID={testID}>
-      <Text style={styles.fingerprintLabel}>{prefix ? `${label} · ${prefix}` : label}</Text>
+      <Text style={styles.fingerprintLabel} testID={testID ? `${testID}-label` : undefined}>
+        {heading}
+      </Text>
       <Text style={styles.fingerprintDigest} selectable>
         {digest}
       </Text>
@@ -45,6 +52,10 @@ function HostCommand({ lead, command }: { lead: string; command: string }) {
       </View>
     </View>
   );
+}
+
+function knownKeyType(algorithm: string | undefined): string | undefined {
+  return algorithm ? describeHostKeyAlgorithm(algorithm).label : undefined;
 }
 
 const ANY_HOST_KEY_COMMAND = "for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done";
@@ -108,7 +119,7 @@ export function HostKeyTrustSheet({
       <View style={styles.body}>
         <Text style={styles.text}>{t("pi.hostKey.trustBody", { label: hostLabel })}</Text>
         <Fingerprint
-          label={keyInfo.label}
+          keyType={keyInfo.label}
           fingerprint={fingerprint}
           testID="host-key-fingerprint"
         />
@@ -123,6 +134,9 @@ interface MismatchSheetProps {
   hostLabel: string;
   pinned: string;
   presented: string;
+  /** Key types, when known (seen by this app); a missing one is left out, not guessed. */
+  pinnedAlgorithm?: string;
+  presentedAlgorithm?: string;
   replacing: boolean;
   onReplace: () => void;
   onCancel: () => void;
@@ -133,6 +147,8 @@ export function HostKeyMismatchSheet({
   hostLabel,
   pinned,
   presented,
+  pinnedAlgorithm,
+  presentedAlgorithm,
   replacing,
   onReplace,
   onCancel,
@@ -174,9 +190,15 @@ export function HostKeyMismatchSheet({
     >
       <View style={styles.body}>
         <Text style={styles.text}>{t("pi.hostKey.mismatchBody", { label: hostLabel })}</Text>
-        <Fingerprint label={t("pi.hostKey.pinned")} fingerprint={pinned} />
+        <Fingerprint
+          label={t("pi.hostKey.pinned")}
+          keyType={knownKeyType(pinnedAlgorithm)}
+          fingerprint={pinned}
+          testID="host-key-pinned"
+        />
         <Fingerprint
           label={t("pi.hostKey.presented")}
+          keyType={knownKeyType(presentedAlgorithm)}
           fingerprint={presented}
           testID="host-key-presented"
         />

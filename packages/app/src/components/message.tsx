@@ -99,6 +99,7 @@ import {
   type MarkdownCopyInlineTag,
 } from "@/assistant-selection-copy/markup";
 import { capAssistantMessageForRender, getUtf8ByteLength } from "./assistant-message-render-limit";
+import { MIN_TOUCH, touchSlop } from "@/styles/touch";
 export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
@@ -878,7 +879,9 @@ const turnCopyButtonStylesheet = StyleSheet.create((theme) => ({
 }));
 
 // 18–30dp visual button + 14dp each side = a 46dp+ target.
-const COPY_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 14 };
+// The ~18×22dp glyph box reaches the touch floor (48dp Android, 44pt iOS) on every side.
+const COPY_SLOP = Math.max(14, touchSlop(16));
+const COPY_HIT_SLOP = { top: COPY_SLOP, bottom: COPY_SLOP, left: COPY_SLOP, right: COPY_SLOP };
 
 interface TurnCopyButtonProps {
   getContent: () => string;
@@ -975,8 +978,8 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     borderColor: "transparent",
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1],
-    // A tool row is a 44dp touch target (it opens the detail sheet).
-    minHeight: 44,
+    // A tool row is a touch-floor target (it opens the detail sheet).
+    minHeight: MIN_TOUCH,
     justifyContent: "center",
     overflow: "hidden",
   },
@@ -2793,12 +2796,16 @@ export const ExpandableBadge = memo(function ExpandableBadge({
     iconNode,
   });
 
+  // The full-size row is the one accessible node: its label and role live here, not on the
+  // 22dp text inside it.
   const pressHandlers = isInteractive
     ? {
         onPress: onToggle,
         onPressIn: handlePressIn,
         onPressOut: handlePressOut,
+        accessible: true,
         accessibilityRole: "button" as const,
+        accessibilityLabel: [label, secondaryLabel].filter(Boolean).join(", "),
       }
     : {};
 

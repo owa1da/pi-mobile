@@ -120,6 +120,7 @@ export const en = {
         working: "Working",
         waiting: "Needs input",
         closed: "Closed",
+        sending: "Sending…",
       },
       stateWord: {
         needs: "needs input",

@@ -1,5 +1,6 @@
 import type { StyleProp, ViewStyle } from "react-native";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { MIN_TOUCH } from "@/styles/touch";
 
 export type ButtonControlSize = "xs" | "sm" | "md" | "lg";
 export type FieldControlSize = "sm" | "md";
@@ -24,7 +25,7 @@ export interface ControlInteractionStyleMap {
 
 const TIGHT_CONTROL_HEIGHT = 28;
 const COMPACT_CONTROL_HEIGHT = 32;
-const FIELD_CONTROL_HEIGHT = 44;
+const FIELD_CONTROL_HEIGHT = MIN_TOUCH;
 export const HEADER_CONTROL_HEIGHT = 26;
 const SEGMENTED_TIGHT_INSET = 2;
 const SEGMENTED_COMPACT_INSET = 2;

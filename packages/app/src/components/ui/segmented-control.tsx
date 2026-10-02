@@ -8,6 +8,7 @@ import {
   type SegmentedControlSize,
 } from "@/components/ui/control-geometry";
 import type { Theme } from "@/styles/theme";
+import { MIN_TOUCH } from "@/styles/touch";
 
 type SegmentedControlIconRenderer = (props: { color: string; size: number }) => ReactNode;
 
@@ -30,12 +31,17 @@ interface SegmentedControlProps<T extends string> {
    * value (radiogroup/radio + checked). Default "choice".
    */
   role?: "tabs" | "choice";
+  /**
+   * Let segments flow onto a second row when they no longer fit (large font scales) instead of
+   * overflowing or truncating a label. At normal sizes the control looks exactly the same.
+   */
+  wrap?: boolean;
   style?: StyleProp<ViewStyle>;
   testID?: string;
 }
 
-/** Every segment's touch target is at least 44dp, whatever the visual pill size. */
-const MIN_HIT = 44;
+/** Every segment's touch target is at least the touch floor, whatever the visual pill size. */
+const MIN_HIT = MIN_TOUCH;
 
 interface SegmentIconProps {
   icon: SegmentedControlIconRenderer;
@@ -59,6 +65,7 @@ export function SegmentedControl<T extends string>({
   size = "md",
   hideLabels = false,
   role = "choice",
+  wrap = false,
   style,
   testID,
 }: SegmentedControlProps<T>) {
@@ -73,8 +80,8 @@ export function SegmentedControl<T extends string>({
   const iconSize = segmentedIconSize[size];
 
   const containerStyle = useMemo(
-    () => [styles.container, containerSizeStyle, style],
-    [containerSizeStyle, style],
+    () => [styles.container, containerSizeStyle, wrap && styles.containerWrap, style],
+    [containerSizeStyle, style, wrap],
   );
 
   return (
@@ -220,6 +227,10 @@ const styles = StyleSheet.create((theme) => {
       alignItems: "center",
       backgroundColor: "transparent",
       gap: theme.spacing[1],
+    },
+    containerWrap: {
+      flexWrap: "wrap",
+      rowGap: theme.spacing[1],
     },
     containerXs: {
       ...geometry.segmentedContainerXs,

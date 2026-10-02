@@ -22,6 +22,7 @@ import {
 } from "@/components/message";
 import type { ChatRow } from "@/screens/session/chat-rows";
 import { MutedSpinner, ThemedChevronDown, ThemedChevronRight, mutedColor } from "./icons";
+import { MIN_TOUCH } from "@/styles/touch";
 
 const SHOW_JUMP_AFTER = 400;
 const MAINTAIN_POSITION = { minIndexForVisible: 0, autoscrollToTopThreshold: 96 };
@@ -209,7 +210,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
-    minHeight: 44,
+    minHeight: MIN_TOUCH,
     paddingHorizontal: theme.spacing[4],
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface2,
@@ -217,13 +218,13 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
   },
   jumpText: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
-  // The 44dp header is the target; its extra height replaces the container's vertical padding.
+  // The touch-floor header is the target; its extra height replaces the container's vertical padding.
   thinking: { gap: theme.spacing[2] },
   thinkingHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1.5],
-    minHeight: 44,
+    minHeight: MIN_TOUCH,
   },
   thinkingLabel: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   thinkingText: {

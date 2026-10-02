@@ -80,6 +80,7 @@ vi.mock("@xterm/xterm", () => ({
 
 import {
   createTerminalResizeEvent,
+  deviceFitRows,
   encodeTerminalOutput,
   TerminalEmulatorRuntime,
 } from "./terminal-emulator-runtime";
@@ -695,5 +696,46 @@ describe("terminal-emulator-runtime", () => {
     ).handleVisibilityRestore();
 
     expect(fitAndEmitResize).not.toHaveBeenCalled();
+  });
+});
+
+describe("deviceFitRows", () => {
+  it("counts the rows that fit in device pixels, whatever the current row count", () => {
+    // 670.095 CSS px at 2.625x = 1759 device px; 40px cells → 43 rows (44 would overflow).
+    const input = { hostHeightCss: 670.095, paddingCss: 0, devicePixelRatio: 2.625 };
+    expect(deviceFitRows({ ...input, deviceCellHeight: 40 })).toBe(43);
+  });
+
+  it("keeps an exact fit and subtracts padding", () => {
+    expect(
+      deviceFitRows({
+        hostHeightCss: 400,
+        paddingCss: 0,
+        devicePixelRatio: 2,
+        deviceCellHeight: 40,
+      }),
+    ).toBe(20);
+    expect(
+      deviceFitRows({
+        hostHeightCss: 400,
+        paddingCss: 20,
+        devicePixelRatio: 2,
+        deviceCellHeight: 40,
+      }),
+    ).toBe(19);
+  });
+
+  it("gives no answer without a measured cell or host", () => {
+    expect(
+      deviceFitRows({
+        hostHeightCss: 400,
+        paddingCss: 0,
+        devicePixelRatio: 2,
+        deviceCellHeight: 0,
+      }),
+    ).toBeNull();
+    expect(
+      deviceFitRows({ hostHeightCss: 0, paddingCss: 0, devicePixelRatio: 2, deviceCellHeight: 40 }),
+    ).toBeNull();
   });
 });

@@ -43,6 +43,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AdaptiveTextInput } from "@/components/adaptive-text-input";
 import { useIsHandheld } from "@/utils/use-handheld";
 import { useRegisterOpenSheet } from "@/components/pi/sheet-a11y";
+import { MIN_TOUCH } from "@/styles/touch";
 
 /** After the sheet's rise, TalkBack focus moves to its title (announced as a dialog). */
 const SHEET_FOCUS_DELAY_MS = 450;
@@ -154,9 +155,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   closeButton: {
     padding: theme.spacing[SHEET_HEADER_CLOSE_PADDING_SCALE],
-    // 44dp target around the 16dp glyph; the negative margin keeps the glyph on the gutter.
-    minWidth: 44,
-    minHeight: 44,
+    // Touch-floor target around the 16dp glyph; the negative margin keeps the glyph on the gutter.
+    minWidth: MIN_TOUCH,
+    minHeight: MIN_TOUCH,
     marginRight: -theme.spacing[3],
     alignItems: "center",
     justifyContent: "center",

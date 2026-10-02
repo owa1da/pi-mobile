@@ -259,6 +259,10 @@ function render() {
   );
 }
 
+// Like pi-tui: redraw at the new width when the pty is resized (SIGWINCH), so a rule drawn at an
+// older, wider size is never left for tmux to reflow onto a second line.
+process.stdout.on("resize", render);
+
 const delay = Number(process.env.FAKE_PI_DELAY_MS ?? 300);
 setTimeout(() => {
   if (process.stdin.isTTY) process.stdin.setRawMode(true);

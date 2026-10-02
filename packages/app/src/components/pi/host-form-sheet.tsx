@@ -13,6 +13,7 @@ import type { AuthMode } from "@/screens/hosts/host-form-logic";
 import { useHostForm, type HostForm } from "@/screens/hosts/use-host-form";
 import { MutedSpinner, ThemedCopy, foregroundColor } from "./icons";
 import { SheetActions, sheetActionStyles } from "./sheet-actions";
+import { MIN_TOUCH } from "@/styles/touch";
 
 const SNAP_POINTS = ["90%"];
 
@@ -173,6 +174,7 @@ function AuthSection({ form }: { form: HostForm }) {
         options={options}
         value={form.mode}
         onValueChange={form.setMode}
+        wrap
         testID="host-auth"
       />
       {form.errors.auth ? <Text style={styles.error}>{form.errors.auth}</Text> : null}
@@ -297,7 +299,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[3],
-    minHeight: 44,
+    minHeight: MIN_TOUCH,
   },
   flex: { flex: 1 },
   muted: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm, lineHeight: 17 },

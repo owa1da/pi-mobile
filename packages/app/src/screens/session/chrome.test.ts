@@ -36,13 +36,38 @@ describe("subBarStatus", () => {
       kind: "state",
       key: "pi.session.state.idle",
     });
-    expect(subBarStatus("connected", "waiting").key).toBe("pi.session.state.waiting");
+    expect(subBarStatus("connected", "waiting")).toMatchObject({ key: "pi.session.state.waiting" });
   });
 
   it("names the connection instead of a stale state", () => {
-    expect(subBarStatus("reconnecting", "idle").key).toBe("pi.session.connection.reconnecting");
-    expect(subBarStatus("connecting", "working").key).toBe("pi.session.connection.connecting");
-    expect(subBarStatus("failed", "idle").key).toBe("pi.session.connection.offline");
-    expect(subBarStatus("idle", "idle").kind).toBe("connection");
+    expect(subBarStatus("connecting", "working")).toEqual({
+      kind: "connection",
+      key: "pi.session.connection.connecting",
+    });
+    expect(subBarStatus("idle", "idle")).toEqual({
+      kind: "connection",
+      key: "pi.session.connection.offline",
+    });
+  });
+
+  it("stays quiet while the connection banner already says it", () => {
+    expect(subBarStatus("reconnecting", "idle")).toEqual({ kind: "quiet" });
+    expect(subBarStatus("failed", "working", true)).toEqual({ kind: "quiet" });
+  });
+
+  it("says Sending while an optimistic send is in flight, then the real state", () => {
+    expect(subBarStatus("connected", "idle", true)).toEqual({
+      kind: "pending",
+      key: "pi.session.state.sending",
+    });
+    expect(subBarStatus("connected", "working", true)).toMatchObject({
+      key: "pi.session.state.working",
+    });
+    expect(subBarStatus("connected", "waiting", true)).toMatchObject({
+      key: "pi.session.state.waiting",
+    });
+    expect(subBarStatus("connected", "idle", false)).toMatchObject({
+      key: "pi.session.state.idle",
+    });
   });
 });

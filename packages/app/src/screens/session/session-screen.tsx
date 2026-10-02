@@ -26,7 +26,7 @@ import type { SessionRow } from "@/host/types";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
 import { useReportPlace } from "@/navigation/place-restorer";
 import { restoredSessionOutcome } from "@/navigation/restore-place";
-import { presentRow, shortModel } from "@/screens/dashboard/view-model";
+import { presentRow, shortFolder, shortModel } from "@/screens/dashboard/view-model";
 import {
   connectionStore,
   refreshSessions,
@@ -152,6 +152,8 @@ export function SessionScreen() {
   const appActive = useAppActive();
   const connected = connection.status === "connected";
   const { tab, setTab, row, leaving } = useSessionTab(params, entry, focused);
+  // An optimistic send in flight (until the next listing shows pi's state): the sub-bar says so.
+  const [sendPending, setSendPending] = useState(false);
   const seen = useRef(false);
   if (row) seen.current = true;
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
@@ -179,7 +181,13 @@ export function SessionScreen() {
     body = (
       <>
         {collapsed ? null : (
-          <SessionSubBar row={row} tab={tab} onTab={setTab} connection={connection} />
+          <SessionSubBar
+            row={row}
+            tab={tab}
+            onTab={setTab}
+            connection={connection}
+            sending={sendPending}
+          />
         )}
         <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
         <View style={tab === "chat" ? FILL : HIDDEN}>
@@ -188,6 +196,7 @@ export function SessionScreen() {
             row={row}
             active={tab === "chat" && focused && appActive}
             onOpenTerminal={openTerminal}
+            onPendingChange={setSendPending}
           />
         </View>
         {tab === "terminal" ? (
@@ -247,11 +256,13 @@ function SessionSubBar({
   tab,
   onTab,
   connection,
+  sending,
 }: {
   row: SessionRow;
   tab: Tab;
   onTab: (tab: Tab) => void;
   connection: HostConnectionState;
+  sending: boolean;
 }) {
   const { t } = useTranslation();
   const options = useMemo<SegmentedControlOption<Tab>[]>(
@@ -262,14 +273,25 @@ function SessionSubBar({
     [t],
   );
   const model = shortModel(row.model);
-  // While the connection is not live the last-known state is stale: name the connection instead.
-  const status = subBarStatus(connection.status, row.state);
-  const meta = [t(status.key), model].filter(Boolean).join(" · ");
+  // While the connection is not live the last-known state is stale: name the connection instead,
+  // or (banner up) say nothing and keep only the session's identity, dimmed.
+  const status = subBarStatus(connection.status, row.state, sending);
+  const quiet = status.kind === "quiet";
+  const word = quiet ? null : t(status.key);
+  const identity = model ?? (quiet ? shortFolder(row.cwd, connection.env?.homeDir) : undefined);
+  const meta = [word, identity].filter(Boolean).join(" · ");
+  let glyph = presentRow(row).glyph;
+  if (status.kind === "pending") glyph = "working";
+  else if (status.kind !== "state") glyph = "gone";
   return (
     <View style={styles.subBar}>
       <View style={styles.subBarMeta}>
-        <SessionGlyph kind={status.kind === "state" ? presentRow(row).glyph : "gone"} />
-        <Text style={styles.subBarText} numberOfLines={1} testID="session-state">
+        <SessionGlyph kind={glyph} />
+        <Text
+          style={[styles.subBarText, quiet && styles.subBarQuiet]}
+          numberOfLines={1}
+          testID="session-state"
+        >
           {meta}
         </Text>
       </View>
@@ -290,17 +312,25 @@ function ChatPane({
   row,
   active,
   onOpenTerminal,
+  onPendingChange,
 }: {
   hostId: string;
   row: SessionRow;
   active: boolean;
   onOpenTerminal: () => void;
+  onPendingChange: (pending: boolean) => void;
 }) {
   const toast = useToast();
   return (
     <AssistantFileLinkResolverProvider toast={toast}>
       <ToolCallSheetProvider>
-        <ChatPaneBody hostId={hostId} row={row} active={active} onOpenTerminal={onOpenTerminal} />
+        <ChatPaneBody
+          hostId={hostId}
+          row={row}
+          active={active}
+          onOpenTerminal={onOpenTerminal}
+          onPendingChange={onPendingChange}
+        />
       </ToolCallSheetProvider>
     </AssistantFileLinkResolverProvider>
   );
@@ -316,11 +346,13 @@ function ChatPaneBody({
   row,
   active,
   onOpenTerminal,
+  onPendingChange,
 }: {
   hostId: string;
   row: SessionRow;
   active: boolean;
   onOpenTerminal: () => void;
+  onPendingChange: (pending: boolean) => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -349,12 +381,19 @@ function ChatPaneBody({
       const pendingId = feed.addPending(text);
       sendingRef.current = true;
       setSending(true);
+      onPendingChange(true);
+      const settle = () => {
+        onPendingChange(false);
+        return undefined;
+      };
       try {
         await service.sendPrompt(row, text);
         feed.boost();
-        void refreshSessions(hostId);
+        // "Sending…" holds until the listing shows pi's new state (Working, or a quick reply).
+        void refreshSessions(hostId).then(settle, settle);
         return true;
       } catch (error) {
+        settle();
         // Never re-echo or resend: when the outcome is unknown, the chat refresh shows whether it
         // arrived; the text goes back into the composer only for the user to decide.
         feed.removePending(pendingId);
@@ -371,7 +410,7 @@ function ChatPaneBody({
         setSending(false);
       }
     },
-    [feed, hostId, row],
+    [feed, hostId, onPendingChange, row],
   );
 
   const stop = useCallback(() => {
@@ -552,6 +591,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
   },
   subBarText: { flex: 1, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
+  subBarQuiet: { color: theme.colors.foregroundExtraMuted },
   banners: {
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[3],

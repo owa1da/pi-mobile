@@ -40,6 +40,8 @@ export interface ConnectionStoreDeps<S extends ProbeableService> {
   loadAuth: (id: string) => Promise<SshAuth | null>;
   pinHostKey: (id: string, fingerprint: string) => Promise<void>;
   markConnected?: (id: string) => Promise<void>;
+  /** Every presented key, before any decision: lets the UI label a fingerprint with its type. */
+  noteHostKey?: (key: SshHostKey) => void;
   timers?: Timers;
   /** Delay before reconnect attempt n (1-based). */
   reconnectDelayMs?: (attempt: number) => number;
@@ -145,6 +147,7 @@ export function createConnectionStore<S extends ProbeableService>(
     };
 
     const verify = async (attempt: Attempt, key: SshHostKey): Promise<boolean> => {
+      deps.noteHostKey?.(key);
       const pinned = deps.getHost(attempt.hostId)?.hostKeyFingerprint;
       const decision = decideHostKey({
         pinned,

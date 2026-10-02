@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react-native";
 import { ScreenHeader } from "./screen-header";
 import { ScreenTitle } from "./screen-title";
 import { useIsHandheld } from "@/utils/use-handheld";
+import { MIN_TOUCH } from "@/styles/touch";
 
 interface BackHeaderProps {
   title?: string;
@@ -65,9 +66,12 @@ const styles = StyleSheet.create((theme) => ({
     },
     borderRadius: theme.borderRadius.lg,
   },
-  // A phone in landscape keeps the 44dp+ portrait target (padding xs).
+  // A phone (portrait or landscape) gets the touch-floor target around the 20dp arrow.
   backButtonHandheld: {
-    padding: theme.spacing[3],
+    minWidth: MIN_TOUCH,
+    minHeight: MIN_TOUCH,
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: theme.borderRadius.lg,
   },
 }));

@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/isolated-bottom-sheet-modal";
 import type { ToolCallIconComponent } from "@/utils/tool-call-icon";
 import { ToolCallDetailsContent } from "./tool-call-details";
+import { MIN_TOUCH } from "@/styles/touch";
 
 // ----- Types -----
 
@@ -221,10 +222,10 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     flex: 1,
   },
-  // 44dp target; the negative margin keeps the glyph on the header's trailing rail.
+  // Touch-floor target; the negative margin keeps the glyph on the header's trailing rail.
   closeButton: {
-    width: 44,
-    height: 44,
+    width: MIN_TOUCH,
+    height: MIN_TOUCH,
     alignItems: "center",
     justifyContent: "center",
     marginRight: -theme.spacing[1.5],

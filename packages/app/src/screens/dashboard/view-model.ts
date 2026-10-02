@@ -65,9 +65,19 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
+const isUnknownWord = (value: string | undefined) => {
+  const word = (value ?? "").trim().toLowerCase();
+  return word === "" || word === "unknown";
+};
+
+/** pi reports `unknown` before a model is chosen (no auth yet): say nothing rather than "Unknown". */
+function isUnknownModel(model: SessionModel): boolean {
+  return isUnknownWord(model.id) && isUnknownWord(model.name);
+}
+
 /** forge's short model name (`Opus 5.5`, `GLM 5.3 Flash`; see utils/model-name), ≤ 20 chars. */
 export function shortModel(model: SessionModel | undefined): string | undefined {
-  if (!model) return undefined;
+  if (!model || isUnknownModel(model)) return undefined;
   const base = modelName({ id: model.id, name: model.name });
   return base ? truncate(base, MODEL_MAX) : undefined;
 }

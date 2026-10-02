@@ -38,6 +38,7 @@ import {
 import { startAndLocate } from "@/stores/start-session";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
 import { buildSections, countParts, type DashboardSection } from "./view-model";
+import { MIN_TOUCH } from "@/styles/touch";
 
 const POLL_MS = 2000;
 const FILL = { flex: 1 };
@@ -316,7 +317,7 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.semibold,
   },
   more: {
-    minHeight: 44,
+    minHeight: MIN_TOUCH,
     justifyContent: "center",
     paddingLeft: theme.spacing[4] + 18 + theme.spacing[3],
   },

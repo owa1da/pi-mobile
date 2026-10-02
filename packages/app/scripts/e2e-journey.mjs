@@ -3,11 +3,11 @@
 // input logs, the private tmux server, the registry). Results go to <screens>/journey-results.json.
 //
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
-//          --screens DIR (default ~/projects/pi-mobile-work/screens-v6), --keep (leave the sandbox up),
+//          --screens DIR (default ~/projects/pi-mobile-work/screens-v7), --keep (leave the sandbox up),
 //          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
 //          --theme dark|light (default dark: the run's
 //          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
-// Accessibility: every main control is checked for a label and a ≥44dp hit area (bounds plus its
+// Accessibility: every main control is checked for a label and a ≥48dp (Android floor) hit area (bounds plus its
 // declared hitSlop) on the device; the table goes to <screens>/a11y-audit-<theme>.json.
 
 import { execFileSync } from "node:child_process";
@@ -63,6 +63,53 @@ const inputHex = (name, n) =>
     .map((e) => e.hex);
 const clientSize = () => E.tmux("list-clients", "-F", "#{client_width}x#{client_height}").trim();
 const pimSessions = () => E.sessionsList().filter((line) => line.startsWith("pim-"));
+
+/** The pty size the app last sent (TerminalView logs `[terminal] pty COLSxROWS` per resize). */
+function lastPtySize() {
+  const lines = A.adb("logcat", "-d", "-s", "ReactNativeJS:I")
+    .split("\n")
+    .filter((line) => line.includes("[terminal] pty "));
+  const m = /\[terminal\] pty (\d+x\d+)/.exec(lines.pop() ?? "");
+  return m ? m[1] : "";
+}
+
+/** The phone's tmux window size (the active window of its pim-* session). */
+function phoneWindowSize() {
+  try {
+    const line = E.tmux(
+      "list-windows",
+      "-a",
+      "-F",
+      "#{session_name} #{window_active} #{window_width}x#{window_height}",
+    )
+      .split("\n")
+      .find((l) => l.startsWith("pim-") && l.split(" ")[1] === "1");
+    return line ? line.split(" ")[2] : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * xterm's size (as sent to the pty) equals tmux's client size, and the phone's window is as wide,
+ * once the layout has settled: a wider pty or window wraps pi's full-width rules.
+ */
+async function assertTerminalWidthAgrees(ctx, label) {
+  const end = Date.now() + 12_000;
+  let last = "";
+  while (Date.now() < end) {
+    const pty = lastPtySize();
+    const client = clientSize();
+    const win = phoneWindowSize();
+    last = `xterm ${pty || "?"}, tmux client ${client || "?"}, window ${win || "?"}`;
+    if (pty && pty === client && widthOf(win) === widthOf(pty)) {
+      ctx.notes.push(`terminal width (${label}): ${last}`);
+      return;
+    }
+    await sleep(500);
+  }
+  throw new Error(`terminal width disagrees (${label}): ${last}`);
+}
 
 async function back() {
   A.key(A.KEY.BACK);
@@ -191,8 +238,8 @@ function rendererLog() {
   return last ? last.slice(last.indexOf("[terminal-webview]")) : "no renderer log line";
 }
 
-/** 44dp with 1px of rounding (bounds are whole pixels: 44dp = 115.5px at 2.625x). */
-const MIN_TARGET_DP = 43.5;
+/** Android's 48dp floor with 1px of rounding (bounds are whole pixels: 48dp = 126px at 2.625x). */
+const MIN_TARGET_DP = 47.5;
 const round1 = (v) => Math.round(v * 10) / 10;
 const inside = (inner, outer) =>
   inner.bounds[0] >= outer.bounds[0] &&
@@ -243,7 +290,7 @@ function auditControls(ctx, screen, controls) {
     // A heading (the sheet title) is announced, not tapped: label only.
     assert(
       opts.textOnly || Math.min(w, h) >= MIN_TARGET_DP,
-      `a11y ${screen}: ${label} hit area ${round1(w)}x${round1(h)}dp < 44dp`,
+      `a11y ${screen}: ${label} hit area ${round1(w)}x${round1(h)}dp < 48dp`,
     );
     if (opts.selected !== undefined)
       assert(node.selected === opts.selected, `a11y ${screen}: ${label} selected=${node.selected}`);
@@ -312,6 +359,10 @@ function steps(ctx) {
           ["Paste key", A.byId("host-auth-paste"), { selected: false }],
           ["Password", A.byId("host-auth-password")],
           ["Copy public key", A.byId("host-copy-public-key")],
+          ["Name field", A.byId("host-field-label")],
+          ["Host field", A.byId("host-field-host")],
+          ["Port field", A.byId("host-field-port")],
+          ["Username field", A.byId("host-field-username")],
           ["Cancel", A.byId("host-form-cancel")],
           ["Save", A.byId("host-save")],
         ]);
@@ -390,6 +441,8 @@ function steps(ctx) {
         assert(/, working(,|$)/.test(workingDesc), `working row label "${workingDesc}"`);
         assert(/, closed(,|$)/.test(closedDesc), `closed row label "${closedDesc}"`);
         ctx.notes.push(`a11y: "${waitingDesc}" | "${workingDesc}" | "${closedDesc}"`);
+        const unknown = nodes.find((n) => /\bUnknown\b/.test(n.text) || /\bUnknown\b/.test(n.desc));
+        assert(!unknown, `dashboard says Unknown: "${unknown?.text || unknown?.desc}"`);
       },
     ],
     [
@@ -405,7 +458,7 @@ function steps(ctx) {
           ["Terminal tab", A.byId("session-tab-terminal"), { selected: false }],
           ["composer field", A.byId("chat-composer")],
           ["Send", A.byId("chat-send")],
-          ["assistant copy", A.byId("assistant-turn-copy"), { slop: 14, optional: true }],
+          ["assistant copy", A.byId("assistant-turn-copy"), { slop: 16, optional: true }],
         ]);
         assert(A.find(A.byText("Fixed: login redirect loop")), "markdown heading missing");
         A.swipe(540, 900, 540, 1900, 400);
@@ -426,7 +479,7 @@ function steps(ctx) {
         await sleep(500);
         shot("55-chat-bubble-revealed-dark");
         auditControls(ctx, "chat (bubble revealed)", [
-          ["Copy message", A.byId("user-message-copy"), { slop: 14 }],
+          ["Copy message", A.byId("user-message-copy"), { slop: 16 }],
         ]);
         const nodes = A.dump();
         for (const label of [
@@ -443,6 +496,13 @@ function steps(ctx) {
         ])
           assert(nodes.some(A.byText(desc)), `missing tool ${desc}`);
         assert(nodes.some(A.byId("user-message")), "missing user message");
+        // The tool row's accessible node is the full-size row (label + role on the pressable).
+        auditControls(ctx, "chat (tool row)", [
+          [
+            "tool row (failed edit)",
+            (n) => n.clickable && n.desc.startsWith("Edit, src/auth/sesion"),
+          ],
+        ]);
         await A.tap(A.byText("Edit, src/auth/sesion.ts"), "failed edit");
         await A.waitNode(A.byId("tool-call-sheet-close"), 10_000, "tool sheet");
         await sleep(1200);
@@ -532,6 +592,7 @@ function steps(ctx) {
           `pty resize ${before} → ${withKeyboard} → ${clientSize()}`,
         );
         ctx.notes.push(`pty size ${before} → ${withKeyboard} with the keyboard → ${clientSize()}`);
+        await assertTerminalWidthAgrees(ctx, "portrait");
         A.rotate(1);
         await E.waitFor(() => widthOf(clientSize()) > widthOf(before), 10_000, "landscape pty");
         // Collapsed: no header or sub-bar, the leading ‹ Chat key, immersive system bars.
@@ -541,10 +602,12 @@ function steps(ctx) {
         assert(!A.find(A.byId("screen-header")), "header still shown in collapsed landscape");
         shot("14-terminal-landscape-dark");
         auditControls(ctx, "terminal (collapsed landscape)", [["‹ Chat", A.byId("key-to-chat")]]);
+        await assertTerminalWidthAgrees(ctx, "collapsed landscape");
         const landscape = clientSize();
         A.rotate(0);
         await E.waitFor(() => clientSize() === before, 10_000, "portrait pty again");
         await A.waitNode(A.byId("session-tabs"), 10_000, "sub-bar restored in portrait");
+        await assertTerminalWidthAgrees(ctx, "portrait after landscape");
         assert(!A.find(A.byId("key-to-chat")), "‹ Chat key shown in portrait");
         ctx.notes.push(`rotation: pty ${before} portrait → ${landscape} landscape → ${before}`);
         // ‹ Chat switches to Chat and restores the chrome, still in landscape.
@@ -592,7 +655,12 @@ function steps(ctx) {
         shot("34-dashboard-landscape-dark");
         const composer = await A.waitNode(A.byId("dashboard-composer"), 10_000, "composer");
         assert(composer.bounds[3] <= short, `dashboard composer off screen ${composer.bounds}`);
-        const landscapeScroll = { from: [1200, 850], to: [1200, 350] };
+        // Swipe inside the list band: start just above the composer (its height is the touch floor).
+        const listBottom = composer.bounds[1] - 40;
+        const landscapeScroll = {
+          from: [1200, listBottom],
+          to: [1200, Math.max(300, listBottom - 450)],
+        };
         const row = await scrollUntil(rowOf(E.readState().richId), "rich row", landscapeScroll);
         A.tapNode(row);
         await A.waitNode(A.byId("chat-list"), 30_000, "chat (landscape)");
@@ -632,6 +700,10 @@ function steps(ctx) {
         await E.waitFor(() => pimSessions().length === 1, 20_000, "pim-* grouped session");
         await sleep(6000);
         shot("32-terminal-real-pi-forge-dark");
+        const realState = A.find(A.byId("session-state"))?.text ?? "";
+        assert(!/Unknown/.test(realState), `real pi sub-bar says Unknown: "${realState}"`);
+        ctx.notes.push(`real pi sub-bar: "${realState}"`);
+        await assertTerminalWidthAgrees(ctx, "real pi portrait");
         const portrait = clientSize();
         A.rotate(1);
         await E.waitFor(
@@ -641,6 +713,7 @@ function steps(ctx) {
         );
         await sleep(5000);
         shot("33-terminal-real-pi-landscape-dark");
+        await assertTerminalWidthAgrees(ctx, "real pi collapsed landscape");
         ctx.notes.push(`real pi: pty ${portrait} → ${clientSize()}; ${rendererLog()}`);
         A.rotate(0);
         await sleep(2000);
@@ -656,6 +729,19 @@ function steps(ctx) {
         shot("16-chat-composer-typing-dark");
         await A.tap(A.byId("chat-send"), "send");
         shot("17-chat-sent-optimistic-dark");
+        {
+          // While the composer is busy (the send in flight) the sub-bar never says Idle.
+          const sent = A.dump();
+          const stateText = sent.find(A.byId("session-state"))?.text ?? "";
+          const composer = sent.find(A.byId("chat-composer"));
+          assert(
+            !(composer && !composer.enabled && stateText.startsWith("Idle")),
+            `sub-bar says "${stateText}" while the composer is still sending`,
+          );
+          ctx.notes.push(
+            `sub-bar right after send: "${stateText}" (composer ${composer?.enabled ? "ready" : "sending"})`,
+          );
+        }
         A.hideKeyboard();
         await A.waitNode(A.byText(/^echo: Add a fourth/), 20_000, "reply");
         shot("18-chat-reply-dark");
@@ -728,14 +814,17 @@ function steps(ctx) {
       async () => {
         await E.sshdStop();
         await A.waitNode(A.byId("connection-banner"), 90_000, "reconnect banner");
-        // The sub-bar names the connection, never a stale "Idle".
-        const state = await A.waitNode(
-          A.byText(/^(Reconnecting…|Connecting…|Not connected)/),
-          20_000,
-          "connection state in the sub-bar",
+        await sleep(1000);
+        // The banner says it once; the sub-bar keeps the identity only (no stale "Idle", no repeat).
+        const down = A.dump();
+        const sub = down.find(A.byId("session-state"))?.text ?? "";
+        assert(
+          !/Reconnecting|Connecting|Not connected|Idle|Working|Needs input/.test(sub),
+          `sub-bar repeats a state while the banner is up: "${sub}"`,
         );
-        assert(state.id === "session-state", `connection text is not the sub-bar (${state.id})`);
-        ctx.notes.push(`sub-bar while disconnected: "${state.text}"`);
+        const saying = down.filter((n) => /Reconnecting…/.test(n.text));
+        assert(saying.length <= 1, `"Reconnecting…" shown ${saying.length} times`);
+        ctx.notes.push(`sub-bar while disconnected: "${sub}"; banner text nodes: ${saying.length}`);
         shot("25-reconnecting-banner-dark");
         auditControls(ctx, "reconnecting banner", [["Retry", A.byId("connection-retry")]]);
         await E.sshdStart();
@@ -756,6 +845,17 @@ function steps(ctx) {
         const digest = E.readState().hostFingerprint.replace(/^SHA256:/, "");
         assert(A.find(A.byText(digest)), "mismatch sheet does not show the presented key");
         assert(!A.find(A.byId("host-key-sheet")), "trust sheet shown for a mismatch");
+        {
+          const labels = A.dump();
+          const pinnedLabel = labels.find(A.byId("host-key-pinned-label"))?.text;
+          const presentedLabel = labels.find(A.byId("host-key-presented-label"))?.text;
+          assert(pinnedLabel === "Trusted · ED25519 · SHA256", `pinned label "${pinnedLabel}"`);
+          assert(
+            presentedLabel === "Presented now · ED25519 · SHA256",
+            `presented label "${presentedLabel}"`,
+          );
+          ctx.notes.push(`mismatch labels: "${pinnedLabel}" | "${presentedLabel}"`);
+        }
         shot("27-host-key-mismatch-dark");
         await A.tap(A.byId("host-key-replace"), "replace");
         await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard after replace");
@@ -853,6 +953,11 @@ function steps(ctx) {
             ctx.notes.push(
               `font ${scale}: sub-bar status "${status.text}" ${status.bounds}, tabs ${tabs.bounds}`,
             );
+            const code = nodes.find(A.byId("code-block-scroll"));
+            if (code) {
+              assert(code.bounds[2] <= W, `code block wider than the screen @${scale}`);
+              ctx.notes.push(`font ${scale}: code block scroll ${code.bounds}`);
+            }
             await toDashboard();
             await back();
             await A.tap(A.byId("hosts-add"), `add host @${scale}`);
@@ -861,6 +966,20 @@ function steps(ctx) {
             A.hideKeyboard();
             await sleep(600);
             shot(`${n + 3}-fs${tag}-add-host-dark`);
+            {
+              // Every auth choice is whole on screen (wraps to a second row rather than clip).
+              const form = A.dump();
+              const pills = ["host-auth-generate", "host-auth-paste", "host-auth-password"].map(
+                (id) => form.find(A.byId(id)),
+              );
+              for (const pill of pills)
+                assert(
+                  pill && pill.bounds[0] >= 0 && pill.bounds[2] <= W - 20,
+                  `auth choice ${pill?.id} clipped @${scale}: ${pill?.bounds}`,
+                );
+              const rows = new Set(pills.map((p) => p.bounds[1])).size;
+              ctx.notes.push(`font ${scale}: auth choices on ${rows} row(s)`);
+            }
             auditControls(ctx, `add-host sheet @${scale}`, [
               ["Generate key", A.byId("host-auth-generate")],
               ["Paste key", A.byId("host-auth-paste")],
@@ -973,6 +1092,7 @@ function steps(ctx) {
         await A.waitNode(A.byId("key-to-chat"), 15_000, "collapsed terminal (light)");
         await sleep(3000);
         shot("52-terminal-landscape-collapsed-light");
+        await assertTerminalWidthAgrees(ctx, "collapsed landscape (light step)");
         A.rotate(0);
         await sleep(2000);
         await toDashboard();
@@ -1202,7 +1322,7 @@ export async function journey(args = []) {
   const screens = option(
     args,
     "--screens",
-    path.join(os.homedir(), "projects/pi-mobile-work/screens-v6"),
+    path.join(os.homedir(), "projects/pi-mobile-work/screens-v7"),
   );
   const apk = option(
     args,

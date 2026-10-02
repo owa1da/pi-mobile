@@ -10,6 +10,7 @@ import { createHostService, type PiHostService } from "@/host";
 import type { SavedHost } from "@/host/types";
 import { getSshClient } from "@/ssh";
 import { createConnectionStore, type HostConnectionState } from "./connection-store";
+import { createHostKeyAlgorithms } from "./host-key-algorithms";
 import { secretToAuth } from "./host-records";
 import { createHostsStore } from "./hosts-store";
 import type { SecretStore } from "./secret-store";
@@ -27,6 +28,9 @@ export const hostsStore = createHostsStore({
   newId: () => randomUUID(),
 });
 
+/** Key type per seen fingerprint (labels the pinned key on the changed-key sheet). */
+export const hostKeyAlgorithms = createHostKeyAlgorithms(AsyncStorage);
+
 export const connectionStore = createConnectionStore<PiHostService>({
   client: getSshClient,
   createService: (connection) => createHostService(connection),
@@ -37,6 +41,7 @@ export const connectionStore = createConnectionStore<PiHostService>({
   },
   pinHostKey: (id, fingerprint) => hostsStore.getState().pinHostKey(id, fingerprint),
   markConnected: (id) => hostsStore.getState().markConnected(id),
+  noteHostKey: (key) => hostKeyAlgorithms.note(key.fingerprint, key.algorithm),
 });
 
 export const sessionsStore = createSessionsStore();

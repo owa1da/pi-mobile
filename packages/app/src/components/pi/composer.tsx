@@ -13,8 +13,9 @@ import {
   ThemedSquare,
   accentForegroundColor,
   extraMutedColor,
-  surfaceColor,
+  surfaceSolid,
 } from "./icons";
+import { MIN_TOUCH } from "@/styles/touch";
 
 const ComposerInput = withUnistyles(AdaptiveTextInput, (theme) => ({
   placeholderTextColor: theme.colors.foregroundMuted,
@@ -80,7 +81,7 @@ export function Composer({
   let icon = (
     <ThemedArrowUp size={20} uniProps={disabled ? extraMutedColor : accentForegroundColor} />
   );
-  if (showStop) icon = <ThemedSquare size={14} uniProps={surfaceColor} fill="currentColor" />;
+  if (showStop) icon = <ThemedSquare size={14} uniProps={surfaceSolid} />;
   else if (busy) icon = <MutedSpinner size="small" />;
 
   return (
@@ -136,11 +137,12 @@ const styles = StyleSheet.create((theme) => ({
   row: { flexDirection: "row", alignItems: "flex-end", gap: theme.spacing[2] },
   input: {
     flex: 1,
-    minHeight: 44,
+    minHeight: MIN_TOUCH,
     maxHeight: 160,
     paddingHorizontal: theme.spacing[4],
-    paddingTop: 11,
-    paddingBottom: 11,
+    // One 22dp line centred in the touch-floor field.
+    paddingTop: (MIN_TOUCH - 22) / 2,
+    paddingBottom: (MIN_TOUCH - 22) / 2,
     borderRadius: theme.borderRadius.xl,
     backgroundColor: theme.colors.surface2,
     color: theme.colors.foreground,
@@ -148,8 +150,8 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 22,
   },
   button: {
-    width: 44,
-    height: 44,
+    width: MIN_TOUCH,
+    height: MIN_TOUCH,
     borderRadius: theme.borderRadius.full,
     alignItems: "center",
     justifyContent: "center",

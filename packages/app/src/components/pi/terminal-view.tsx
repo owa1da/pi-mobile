@@ -26,6 +26,12 @@ const ThemedTerminal = withUnistyles(WebViewTerminalEmulator, (theme) => ({
 const FONT_SIZE = 13;
 /** If the renderer never reports a size, attach at a classic 80×24 anyway. */
 const SIZE_FALLBACK_MS = 2500;
+/**
+ * After the chrome collapses or comes back (landscape terminal), the header, sub-bar and system
+ * bars leave in separate layout passes. Re-fit and re-send the pty size once they have settled so
+ * xterm and tmux agree on columns (a stale wider pty wraps pi's full-width rules).
+ */
+const SETTLE_REFIT_MS = [350, 1000];
 
 type ShellStatus = "connecting" | "open" | "closed" | "error";
 
@@ -129,10 +135,20 @@ export function TerminalView({ hostId, row, onReconnect, onToChat }: TerminalVie
     return () => clearTimeout(timer);
   }, [open]);
 
+  const collapsed = Boolean(onToChat);
+  useEffect(() => {
+    const timers = SETTLE_REFIT_MS.map((ms) =>
+      setTimeout(() => emulatorRef.current?.claimSize(), ms),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [collapsed, portrait, emulatorRef]);
+
   const onResize = useCallback(
     ({ rows, cols }: { rows: number; cols: number }) => {
       if (rows <= 0 || cols <= 0) return;
       sizedRef.current = true;
+      // One line per pty size, so a device run can compare it with tmux's client size.
+      console.info(`[terminal] pty ${cols}x${rows}`);
       if (shellRef.current) shellRef.current.resize(cols, rows);
       else void open({ cols, rows });
     },

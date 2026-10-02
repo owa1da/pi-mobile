@@ -16,10 +16,11 @@ import { ThemedPiIcon, ThemedPlus, extraMutedColor, foregroundColor } from "@/co
 import type { SavedHost } from "@/host/types";
 import { useReportPlace } from "@/navigation/place-restorer";
 import { deleteHostEverywhere } from "@/screens/hosts/use-host-form";
-import { connectionStore, useHosts, useHostsLoaded } from "@/stores/app";
+import { connectionStore, hostKeyAlgorithms, useHosts, useHostsLoaded } from "@/stores/app";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useScreenFocused } from "@/stores/use-polling";
 import { useStore } from "zustand";
+import { MIN_TOUCH } from "@/styles/touch";
 
 interface FormTarget {
   key: number;
@@ -202,6 +203,8 @@ export function HostsScreen() {
         hostLabel={mismatch?.host.label ?? ""}
         pinned={mismatch?.pinned ?? ""}
         presented={mismatch?.presented ?? ""}
+        pinnedAlgorithm={hostKeyAlgorithms.algorithmOf(mismatch?.pinned)}
+        presentedAlgorithm={hostKeyAlgorithms.algorithmOf(mismatch?.presented)}
         replacing={replacing}
         onReplace={onReplace}
         onCancel={cancelMismatch}
@@ -227,8 +230,8 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.border,
   },
   headerButton: {
-    width: 44,
-    height: 44,
+    width: MIN_TOUCH,
+    height: MIN_TOUCH,
     alignItems: "center",
     justifyContent: "center",
   },

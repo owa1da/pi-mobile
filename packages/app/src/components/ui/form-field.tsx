@@ -275,11 +275,17 @@ const formInputStyles = StyleSheet.create((theme) => {
     chrome: {
       backgroundColor: theme.colors.surface2,
     },
+    // The chrome keeps the field's height, radius and border; its padding moves onto the input so
+    // the EditText (the one accessible node) covers the whole field, not just its text line.
     chromeSm: {
       ...geometry.fieldControlSm,
+      paddingHorizontal: 0,
+      paddingVertical: 0,
     },
     chromeMd: {
       ...geometry.fieldControlMd,
+      paddingHorizontal: 0,
+      paddingVertical: 0,
     },
     controlRest: {
       ...geometry.controlRest,
@@ -302,11 +308,19 @@ const formInputStyles = StyleSheet.create((theme) => {
       outlineColor: "transparent",
       outlineWidth: 0,
     },
+    // The input reaches over the chrome's 1dp border (negative margin, padding grown to match),
+    // so its bounds are the field's full touch-floor height and width.
     inputSm: {
       ...geometry.fieldTextSm,
+      margin: -theme.borderWidth[1],
+      paddingHorizontal: geometry.fieldControlSm.paddingHorizontal + theme.borderWidth[1],
+      paddingVertical: geometry.fieldControlSm.paddingVertical + theme.borderWidth[1],
     },
     inputMd: {
       ...geometry.fieldTextMd,
+      margin: -theme.borderWidth[1],
+      paddingHorizontal: geometry.fieldControlMd.paddingHorizontal + theme.borderWidth[1],
+      paddingVertical: geometry.fieldControlMd.paddingVertical + theme.borderWidth[1],
     },
   };
 });

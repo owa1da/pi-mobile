@@ -29,6 +29,11 @@ export const foregroundColor = (theme: Theme) => ({ color: theme.colors.foregrou
 export const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 export const accentForegroundColor = (theme: Theme) => ({ color: theme.colors.accentForeground });
 export const surfaceColor = (theme: Theme) => ({ color: theme.colors.surface0 });
+/** A solid glyph (Stop's square): stroke and fill both from the theme, never `currentColor`. */
+export const surfaceSolid = (theme: Theme) => ({
+  color: theme.colors.surface0,
+  fill: theme.colors.surface0,
+});
 export const dangerColor = (theme: Theme) => ({ color: theme.colors.statusDanger });
 export const extraMutedColor = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 
