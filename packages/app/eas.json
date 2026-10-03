@@ -18,6 +18,9 @@
       "env": {
         "APP_VARIANT": "production"
       },
+      "ios": {
+        "autoIncrement": "buildNumber"
+      },
       "android": {
         "resourceClass": "large",
         "gradleCommand": ":app:bundleRelease -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease -x generateReleaseLintModel -x generateReleaseLintVitalModel"
@@ -27,7 +30,8 @@
       "extends": "production",
       "distribution": "internal",
       "ios": {
-        "simulator": true
+        "simulator": true,
+        "autoIncrement": false
       }
     },
     "production-apk": {

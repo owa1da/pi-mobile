@@ -60,7 +60,10 @@ npx eas-cli@latest submit --platform ios --id <BUILD_ID>
 App Store Connect must have a matching `com.owa1da.pimobile` app record. Before testing, complete
 Apple's encryption/export-compliance questions and add the tester to an internal TestFlight
 group. Do not share Apple passwords or verification codes in chat. Subsequent uploads need a
-higher iOS build number; the current local version policy does not auto-increment it.
+higher iOS build number. EAS production iOS builds auto-increment the tracked counter in
+`packages/app/app.json`; commit that update after each build. Run device builds serially from
+one checkout so numbers cannot be reused. Simulator builds do not increment it, and Android
+keeps its existing package-version-derived versionCode.
 
 **iOS verification is in progress.** Cloud compilation and real-iPhone checks are required
 before claiming it ready. Portable SSH tests and the device checklist are documented in
