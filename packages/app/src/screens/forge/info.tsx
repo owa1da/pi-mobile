@@ -115,7 +115,7 @@ export function UsageView({ channel }: ForgeViewProps) {
       {channel.available && !action.unsupported ? (
         <ActionBar>
           <Button
-            variant="secondary"
+            variant="default"
             onPress={pressRefresh}
             loading={action.busy === "usage.refresh"}
             style={sheetActionStyles.button}

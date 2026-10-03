@@ -21,6 +21,13 @@ export type ChatRow =
   | { kind: "compaction"; key: string }
   | { kind: "divider"; key: string; label: string; summary?: string };
 
+/** chat.ts marks a transcript read from the middle of its file with this notice. */
+const EARLIER_TEXT = "Earlier messages are not loaded.";
+
+function isEarlierMarker(id: string, text: string): boolean {
+  return id.startsWith("earlier") && text === EARLIER_TEXT;
+}
+
 /** chat.ts labels compaction dividers with exactly this text. */
 export const COMPACTION_LABEL = "Context compacted";
 
@@ -135,6 +142,8 @@ function itemRow(item: ChatItem, isLast: boolean, working: boolean): ChatRow | n
       };
     }
     case "notice":
+      // The host's "Earlier messages are not loaded." is the app's own words: pi shows nothing.
+      if (isEarlierMarker(item.id, item.text)) return null;
       return { kind: "notice", key: item.id, level: item.level, text: item.text };
     case "divider":
       if (item.label === COMPACTION_LABEL) return { kind: "compaction", key: item.id };

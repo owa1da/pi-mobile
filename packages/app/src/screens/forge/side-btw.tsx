@@ -10,7 +10,7 @@ import { ChatView } from "@/components/pi/chat-view";
 import { Composer } from "@/components/pi/composer";
 import { ConfirmSheet } from "@/components/pi/confirm-sheet";
 import { SheetActions, sheetActionStyles } from "@/components/pi/sheet-actions";
-import { MutedSpinner } from "@/components/pi/icons";
+import { SessionGlyph } from "@/components/pi/session-glyph";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { Button } from "@/components/ui/button";
 import { connectionRunner } from "@/remote/client";
@@ -90,6 +90,7 @@ export function SideView({ hostId, channel, active, params }: ForgeViewProps) {
           placeholder={t(open ? "pi.forge.side.placeholder" : "pi.forge.side.openPlaceholder")}
           onSubmit={send}
           busy={action.busy !== null}
+          autoFocus={!open}
           testID="side-composer"
           sendTestID="side-send"
         />
@@ -115,7 +116,7 @@ function SideBody({
   if (!open) return <View style={styles.fill} testID="side-empty" />;
   return (
     <TranscriptProviders>
-      <ChatView rows={feed.rows} truncated={feed.truncated} loading={feed.loading} />
+      <ChatView rows={feed.rows} loading={feed.loading} />
     </TranscriptProviders>
   );
 }
@@ -294,9 +295,6 @@ function BtwBody({
   const plainError = errorKey ? t(`pi.forge.modelErrors.${errorKey}`) : error;
   return (
     <ScrollView contentContainerStyle={forgeStyles.scroll} testID="btw-history">
-      {history.length === 0 && !pendingQuestion && !error ? (
-        <Text style={forgeStyles.intro}>{t("pi.forge.btw.empty")}</Text>
-      ) : null}
       <TranscriptProviders>
         {keyed.map(({ exchange: item, id }) => (
           <View key={id} style={styles.exchange} testID={`btw-item-${id}`}>
@@ -309,7 +307,11 @@ function BtwBody({
       {pendingQuestion ? (
         <View style={styles.exchange} testID="btw-pending">
           <Text style={styles.question}>{pendingQuestion}</Text>
-          <MutedSpinner size="small" />
+          {/* forge's `✻ Answering…` from the first frame until the answer's first text. */}
+          <View style={styles.pendingLine}>
+            <SessionGlyph kind="working" />
+            <Text style={styles.pendingText}>{t("pi.forge.btw.answering")}</Text>
+          </View>
         </View>
       ) : null}
       {showError ? (
@@ -373,6 +375,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   question: { color: theme.colors.foreground, fontSize: theme.fontSize.base, fontWeight: "600" },
   errorText: { color: theme.colors.statusDanger, fontSize: theme.fontSize.sm },
+  pendingLine: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
+  pendingText: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
   actions: {
     flexDirection: "row",
     gap: theme.spacing[3],

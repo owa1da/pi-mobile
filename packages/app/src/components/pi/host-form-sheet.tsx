@@ -2,7 +2,13 @@
 
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View } from "react-native";
+import {
+  Pressable,
+  Text,
+  View,
+  useWindowDimensions,
+  type PressableStateCallbackType,
+} from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { AdaptiveModalSheet, AdaptiveTextInput } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
@@ -11,11 +17,9 @@ import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/s
 import type { SavedHost } from "@/host/types";
 import type { AuthMode } from "@/screens/hosts/host-form-logic";
 import { useHostForm, type HostForm } from "@/screens/hosts/use-host-form";
-import { MutedSpinner, ThemedCopy, foregroundColor } from "./icons";
+import { MutedSpinner, ThemedCheck, ThemedCopy, foregroundColor } from "./icons";
 import { SheetActions, sheetActionStyles } from "./sheet-actions";
 import { MIN_TOUCH } from "@/styles/touch";
-
-const SNAP_POINTS = ["90%"];
 
 interface HostFormSheetProps {
   visible: boolean;
@@ -74,7 +78,8 @@ export function HostFormSheet({
       onClose={onClose}
       onDismiss={onDismiss}
       footer={footer}
-      snapPoints={SNAP_POINTS}
+      fitContent
+      expandWithKeyboard
       testID="host-form-sheet"
     >
       <View style={styles.body}>
@@ -157,8 +162,73 @@ function AddressFields({ form }: { form: HostForm }) {
   );
 }
 
+/** From this system font scale the three ways to sign in are stacked full-width rows. */
+// 1.25, not 1.3: Android reports the 1.3 setting as a float just under it.
+const STACK_FONT_SCALE = 1.25;
+
+/** The auth choice at a large font: one 48dp row per option, the selected one checked. */
+function StackedChoice({
+  options,
+  value,
+  onValueChange,
+}: {
+  options: SegmentedControlOption<AuthMode>[];
+  value: AuthMode;
+  onValueChange: (value: AuthMode) => void;
+}) {
+  return (
+    <View style={styles.stack} accessibilityRole="radiogroup" testID="host-auth">
+      {options.map((option) => (
+        <StackedOption
+          key={option.value}
+          option={option}
+          selected={option.value === value}
+          onPick={onValueChange}
+        />
+      ))}
+    </View>
+  );
+}
+
+function StackedOption({
+  option,
+  selected,
+  onPick,
+}: {
+  option: SegmentedControlOption<AuthMode>;
+  selected: boolean;
+  onPick: (value: AuthMode) => void;
+}) {
+  const press = useCallback(() => onPick(option.value), [onPick, option.value]);
+  const state = useMemo(() => ({ checked: selected, selected }), [selected]);
+  const rowStyle = useCallback(
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.stackRow,
+      selected && styles.stackRowOn,
+      pressed && !selected && styles.stackRowPressed,
+    ],
+    [selected],
+  );
+  return (
+    <Pressable
+      onPress={press}
+      accessibilityRole="radio"
+      accessibilityLabel={option.label}
+      accessibilityState={state}
+      testID={option.testID}
+      style={rowStyle}
+    >
+      <Text style={[styles.stackLabel, selected && styles.stackLabelOn]} numberOfLines={1}>
+        {option.label}
+      </Text>
+      {selected ? <ThemedCheck size={18} uniProps={foregroundColor} /> : null}
+    </Pressable>
+  );
+}
+
 function AuthSection({ form }: { form: HostForm }) {
   const { t } = useTranslation();
+  const { fontScale } = useWindowDimensions();
   const options = useMemo<SegmentedControlOption<AuthMode>[]>(
     () => [
       { value: "generate", label: t("pi.hostForm.authGenerate"), testID: "host-auth-generate" },
@@ -170,13 +240,16 @@ function AuthSection({ form }: { form: HostForm }) {
   return (
     <View style={styles.auth}>
       <Text style={styles.sectionLabel}>{t("pi.hostForm.auth")}</Text>
-      <SegmentedControl
-        options={options}
-        value={form.mode}
-        onValueChange={form.setMode}
-        wrap
-        testID="host-auth"
-      />
+      {fontScale >= STACK_FONT_SCALE ? (
+        <StackedChoice options={options} value={form.mode} onValueChange={form.setMode} />
+      ) : (
+        <SegmentedControl
+          options={options}
+          value={form.mode}
+          onValueChange={form.setMode}
+          testID="host-auth"
+        />
+      )}
       {form.errors.auth ? <Text style={styles.error}>{form.errors.auth}</Text> : null}
       {form.mode === "generate" ? <GeneratedKeyPanel form={form} /> : null}
       {form.mode === "paste" ? <PastedKeyPanel form={form} /> : null}
@@ -334,4 +407,21 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "flex-start",
   },
   deleteText: { color: theme.colors.statusDanger },
+  stack: { gap: theme.spacing[2] },
+  stackRow: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[3],
+    paddingHorizontal: theme.spacing[4],
+    borderRadius: theme.borderRadius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.surface2,
+    backgroundColor: theme.colors.surface2,
+  },
+  stackRowOn: { borderColor: theme.colors.foregroundMuted },
+  stackRowPressed: { backgroundColor: theme.colors.surface3 },
+  stackLabel: { flex: 1, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base },
+  stackLabelOn: { color: theme.colors.foreground, fontWeight: theme.fontWeight.medium },
 }));

@@ -157,6 +157,21 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         );
         // Exactly forge's segments: no state word or glyph before the model (item 1).
         assert(sub.text.startsWith("Fake 1 · medium · ctx"), `footer: "${sub.text}"`);
+        {
+          // v14 item 1: ONE line right under the input (status-line.md:9), not under the title.
+          const nodes = A.dump();
+          const input = nodes.find(A.byId("chat-composer"));
+          const line = nodes.find(A.byId("session-state"));
+          const send = nodes.find(A.byId("chat-send"));
+          const bottom = Math.max(input.bounds[3], send?.bounds[3] ?? 0);
+          assert(line.bounds[1] >= bottom, `footer ${line.bounds} not under input ${input.bounds}`);
+          assert(
+            line.bounds[1] - bottom < 80,
+            `footer ${line.bounds[1] - bottom}px under the input`,
+          );
+          const [, sh] = A.screenSize();
+          assert(line.bounds[3] <= sh, "footer below the screen");
+        }
         ctx.notes.push(`forge footer: "${sub.text}"`);
         shot("100-forge-footer-dark");
         await slash("rewind");
@@ -243,6 +258,12 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
           assert(!nodes.some(A.byText(/runs next to this one/)), "the side intro is back");
           assert(!nodes.some(A.byId("side-badge")), "the side badge is back");
         }
+        {
+          // v14 item 6: blank, with the composer focused for the first line.
+          await sleep(800);
+          const field = A.find(A.byId("side-composer"));
+          assert(field?.focused, "the empty side's composer is not focused");
+        }
         shot("109-side-empty-dark");
         const since = mark();
         await typeChecked("side-composer", "What is a token bucket", "side-composer");
@@ -268,7 +289,33 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await kbDown();
         await A.tap(A.byId("btw-send"), "btw send");
         await acted("btw.ask", since, (e) => e.args?.text === "Is a token bucket fair");
-        await A.waitNode(A.byId("btw-pending"), 10_000, "btw pending (forge's btw state)");
+        // v14 item 5: the question, then forge's muted `Answering…` in the answer's place, read
+        // from ONE dump (scoped to the pending block: other mounted screens hold the same words),
+        // and the shot taken right after it.
+        const pendingTexts = await E.waitFor(
+          () => {
+            const nodes = A.dump();
+            const box = nodes.find(A.byId("btw-pending"));
+            if (!box) return null;
+            const within = (n) =>
+              n.bounds[0] >= box.bounds[0] &&
+              n.bounds[1] >= box.bounds[1] &&
+              n.bounds[2] <= box.bounds[2] &&
+              n.bounds[3] <= box.bounds[3];
+            const texts = nodes.filter((n) => n.text && within(n)).map((n) => n.text);
+            return texts.includes("Answering…") ? texts : null;
+          },
+          10_000,
+          "btw pending block with Answering…",
+        );
+        assert(
+          pendingTexts.includes("Is a token bucket fair"),
+          `pending block: ${pendingTexts.join(" | ")}`,
+        );
+        assert(
+          !pendingTexts.some((x) => /A token bucket holds/.test(x)),
+          "answer inside the pending block",
+        );
         shot("111a-btw-pending-dark");
         await A.waitNode(A.byId("btw-item-0"), 20_000, "btw answer");
         await A.waitNode(A.byText(/A token bucket holds/), 10_000, "answer text");
@@ -391,6 +438,8 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
             `thinking chip ${chip.id} clipped: ${chip.bounds}`,
           );
         const tops = new Set(chips.map((n) => n.bounds[1]));
+        // v14 item 7: every level on one row at 1080px (no orphan chip).
+        assert(tops.size === 1, `thinking chips on ${tops.size} rows`);
         ctx.notes.push(`thinking chips: ${chips.length} on ${tops.size} row(s)`);
         shot("118-model-dark");
         auditControls(ctx, "model", [

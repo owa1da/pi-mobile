@@ -48,6 +48,8 @@ interface ComposerProps {
    * (pi's dialog replaced it, then closed) never puts the same text back.
    */
   onPrefillApplied?: () => void;
+  /** Focus the field on mount (an empty side waits for its first line). */
+  autoFocus?: boolean;
 }
 
 export function Composer({
@@ -64,6 +66,7 @@ export function Composer({
   onPickNative,
   prefill,
   onPrefillApplied,
+  autoFocus = false,
 }: ComposerProps) {
   const { t } = useTranslation();
   const inputRef = useRef<EditingTextInputHandle | null>(null);
@@ -128,6 +131,7 @@ export function Composer({
           onChangeText={setText}
           placeholder={placeholder}
           multiline
+          autoFocus={autoFocus}
           editable={!busy}
           style={styles.input}
           accessibilityLabel={placeholder}

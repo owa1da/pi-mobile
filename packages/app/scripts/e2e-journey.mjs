@@ -796,7 +796,9 @@ function steps(ctx) {
           "command.run",
         );
         assert(ran.line === "/compact keep the plan", `ran ${ran.line}`);
-        await A.waitNode(A.byText(/^Ran \/compact keep the plan$/), 20_000, "command in chat");
+        await sleep(1500);
+        // v14 item 2/3: the app adds no "Ran …" line of its own (forge prints none).
+        assert(!A.find(A.byText(/^Ran \//)), "an app-made 'Ran /…' line in the chat");
         shot("93-command-ran-dark");
         await typeInto("chat-composer", "/tasks");
         A.hideKeyboard();
@@ -982,6 +984,13 @@ function steps(ctx) {
         const { endedId } = E.readState();
         await A.tap(rowOf(endedId), "closed row");
         await A.waitNode(A.byId("chat-composer"), 30_000, "composer");
+        {
+          // v14 item 3: no app-made sentences (pi shows neither).
+          await sleep(1500);
+          const nodes = A.dump();
+          assert(!nodes.some(A.byText(/Sending reopens this session/)), "closed hint is back");
+          assert(!nodes.some(A.byText(/Earlier messages are not loaded/)), "earlier-messages note");
+        }
         shot("21-chat-closed-dark");
         await typeInto("chat-composer", "Also mention the migration guide");
         await A.tap(A.byId("chat-send"), "send");
@@ -1130,8 +1139,11 @@ function steps(ctx) {
             await sleep(2500);
             shot(`${n + 1}-fs${tag}-dashboard-dark`);
             {
-              // Item 9: the model stays on every row; at ≥1.5 the title may take two lines.
+              // v14 item 4: at ≥1.3 every row is title (one line) over `model · age` (one line,
+              // muted): the model stays on every row and nothing wraps.
               const dash = A.dump();
+              // Lines of whole rows only: a row half under the composer reports clipped heights.
+              const lines = [];
               for (const r of dash.filter(A.idPrefix("session-row-"))) {
                 if (r.bounds[3] > H || r.bounds[1] < 0) continue;
                 // A row cut by the list's edge (half under the composer) lists only its visible part.
@@ -1143,19 +1155,33 @@ function steps(ctx) {
                 );
                 if (cut) continue;
                 const title = dash.find((t) => t.id === "dashboard-row-title" && inside(t, r));
-                const texts = dash.filter((t) => t.text && inside(t, r) && t !== title);
+                const meta = dash.find((t) => t.id === "dashboard-row-meta" && inside(t, r));
                 assert(title, `row ${r.id}: no title @${scale}`);
-                assert(texts.length >= 2, `row ${r.id} lacks model/age @${scale}`);
+                assert(meta, `row ${r.id}: no model · age line @${scale}`);
+                assert(
+                  / · \d+[smhd]$|^\d+[smhd]$/.test(meta.text),
+                  `row ${r.id} meta "${meta.text}"`,
+                );
+                assert(
+                  meta.bounds[1] >= title.bounds[3] - 2,
+                  `row ${r.id}: meta not under the title`,
+                );
                 const rowW = r.bounds[2] - r.bounds[0];
                 const titleW = title.bounds[2] - title.bounds[0];
-                assert(titleW >= rowW * 0.45, `row ${r.id}: title ${titleW}px of ${rowW}px`);
+                assert(titleW >= rowW * 0.7, `row ${r.id}: title ${titleW}px of ${rowW}px`);
+                lines.push(title, meta);
               }
-              const titles = dash.filter((t) => t.id === "dashboard-row-title");
-              const lineH = Math.min(...titles.map((t) => t.bounds[3] - t.bounds[1]));
-              const twoLine = titles.filter((t) => t.bounds[3] - t.bounds[1] > lineH * 1.5);
-              if (scale >= 1.5) assert(twoLine.length > 0, `no title took a second line @${scale}`);
-              else assert(twoLine.length === 0, `a title wrapped @${scale}`);
-              ctx.notes.push(`font ${scale}: ${twoLine.length} two-line title(s)`);
+              assert(lines.length >= 4, `only ${lines.length / 2} whole row(s) \u0040${scale}`);
+              const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+              const lineH = (id) =>
+                median(lines.filter((t) => t.id === id).map((t) => nodeHeight(t)));
+              const titleH = lineH("dashboard-row-title");
+              const metaH = lineH("dashboard-row-meta");
+              const wrapped = lines.filter(
+                (t) => nodeHeight(t) > (t.id === "dashboard-row-title" ? titleH : metaH) * 1.5,
+              );
+              assert(wrapped.length === 0, `${wrapped.length} row line(s) wrapped @${scale}`);
+              ctx.notes.push(`font ${scale}: every row title / model · age, none wrapped`);
             }
             assert(
               visible(A.find(A.byId("dashboard-send"))),
@@ -1169,13 +1195,43 @@ function steps(ctx) {
             auditControls(ctx, `chat @${scale}`, [["Send", A.byId("chat-send")]]);
             const nodes = A.dump();
             const status = nodes.find(A.byId("session-state"));
-            assert(visible(status), `sub-bar clipped @${scale}`);
-            assert(visible(nodes.find(A.byId("chat-composer"))), `composer off screen @${scale}`);
-            ctx.notes.push(`font ${scale}: sub-bar status "${status.text}" ${status.bounds}`);
+            const composerBox = nodes.find(A.byId("chat-composer"));
+            assert(visible(status), `footer clipped @${scale}`);
+            assert(visible(composerBox), `composer off screen @${scale}`);
+            assert(
+              status.bounds[1] >= composerBox.bounds[3],
+              `footer not under the composer @${scale}: ${status.bounds} vs ${composerBox.bounds}`,
+            );
+            ctx.notes.push(`font ${scale}: footer "${status.text}" ${status.bounds}`);
             const code = nodes.find(A.byId("code-block-scroll"));
             if (code) {
               assert(code.bounds[2] <= W, `code block wider than the screen @${scale}`);
               ctx.notes.push(`font ${scale}: code block scroll ${code.bounds}`);
+            }
+            {
+              // v14 item 4: the model screen at a large font: chips whole, rows unclipped.
+              await typeInto("chat-composer", "/model");
+              A.hideKeyboard();
+              await sleep(500);
+              await A.tap(A.byId("chat-send"), "send /model");
+              await A.waitNode(A.byId("model-list"), 20_000, `model @${scale}`);
+              await sleep(1500);
+              shot(`${tag === "13" ? 68 : 69}-fs${tag}-model-dark`);
+              const model = A.dump();
+              const chips = model.filter(
+                (c) => c.id.startsWith("thinking-") && c.id !== "thinking-levels",
+              );
+              for (const chip of chips)
+                assert(
+                  chip.bounds[0] >= 0 && chip.bounds[2] <= W,
+                  `thinking chip ${chip.id} clipped @${scale}: ${chip.bounds}`,
+                );
+              const tops = new Set(chips.map((c) => c.bounds[1]));
+              ctx.notes.push(
+                `font ${scale}: ${chips.length} thinking chips on ${tops.size} row(s)`,
+              );
+              await back();
+              await A.waitNode(A.byId("chat-composer"), 20_000, `chat again @${scale}`);
             }
             await toDashboard();
             await back();
@@ -1186,18 +1242,22 @@ function steps(ctx) {
             await sleep(600);
             shot(`${n + 3}-fs${tag}-add-host-dark`);
             {
-              // Every auth choice is whole on screen (wraps to a second row rather than clip).
+              // v14 item 4: at ≥1.3 the three ways to sign in are stacked full-width 48dp rows.
               const form = A.dump();
               const pills = ["host-auth-generate", "host-auth-paste", "host-auth-password"].map(
                 (id) => form.find(A.byId(id)),
               );
-              for (const pill of pills)
+              for (const pill of pills) {
                 assert(
                   pill && pill.bounds[0] >= 0 && pill.bounds[2] <= W - 20,
                   `auth choice ${pill?.id} clipped @${scale}: ${pill?.bounds}`,
                 );
+                assert(pill.bounds[2] - pill.bounds[0] >= W * 0.75, `${pill.id} not full width`);
+                assert(nodeHeight(pill) >= 48 * (W / 411.43) - 2, `${pill.id} under 48dp`);
+              }
               const rows = new Set(pills.map((p) => p.bounds[1])).size;
-              ctx.notes.push(`font ${scale}: auth choices on ${rows} row(s)`);
+              assert(rows === 3, `auth choices on ${rows} row(s) @${scale}, want 3 stacked`);
+              ctx.notes.push(`font ${scale}: auth choices stacked on ${rows} rows`);
             }
             auditControls(ctx, `add-host sheet @${scale}`, [
               ["Generate key", A.byId("host-auth-generate")],
@@ -1305,8 +1365,12 @@ function steps(ctx) {
       },
     ],
     [
-      "Password sign-in (password gateway) → trust sheet → dashboard, light",
+      "Password sign-in (password gateway) → trust sheet → dashboard, in the run's theme",
       async () => {
+        // v14 item 11: in the run's own theme (dark run: dark, light run: light); switching the
+        // theme while a sheet is open dismisses the sheet, so each run captures its own.
+        night(true);
+        await sleep(2500);
         const gw = await E.gatewayStart();
         await A.tap(A.byId("hosts-add"), "add host");
         await A.waitNode(A.byId("host-public-key"), 20_000, "add host sheet");
@@ -1315,17 +1379,17 @@ function steps(ctx) {
         await typeInto("host-field-password", gw.password);
         A.hideKeyboard();
         await sleep(600);
-        shot("40-add-host-password-light");
+        shot("40-add-host-password-dark");
         await A.tap(A.byId("host-save"), "save");
         await A.tap(hostRow("Gateway"), "Gateway row", 15_000);
         await A.waitNode(A.byId("host-key-sheet"), 40_000, "trust sheet");
         const digest = E.readState().hostFingerprint.replace(/^SHA256:/, "");
         assert(A.find(A.byText(digest)), "trust sheet does not show the gateway host key");
-        shot("41-trust-host-key-light");
+        shot("41-trust-host-key-dark");
         await A.tap(A.byId("host-key-trust"), "trust");
         await A.waitNode(A.byId("dashboard-summary"), 45_000, "dashboard over password auth");
         await sleep(2500);
-        shot("42-dashboard-password-host-light");
+        shot("42-dashboard-password-host-dark");
         const auth = fs
           .readFileSync(gw.logFile, "utf8")
           .trim()
@@ -1456,9 +1520,9 @@ function steps(ctx) {
       },
     ],
     [
-      "Delete every host → Hosts empty state, light",
+      "Delete every host → Hosts empty state, in the run's theme",
       async () => {
-        night(false);
+        night(true);
         await sleep(1500);
         await toDashboard();
         await back();
@@ -1478,7 +1542,7 @@ function steps(ctx) {
           // until it is clear of Cancel/Save, then tap where it is now.
           await revealAboveFooter("host-delete", "host-save");
           if (first) {
-            shot("54-edit-host-delete-row-light");
+            shot("54-edit-host-delete-row-dark");
             auditControls(ctx, "edit-host sheet", [
               ["sheet title (dialog)", (n) => n.desc.endsWith(", dialog"), { textOnly: true }],
               ["Delete host", A.byId("host-delete")],
@@ -1494,7 +1558,7 @@ function steps(ctx) {
           await openDeleteSheet(label, first);
           if (first) {
             await sleep(800);
-            shot("47-delete-host-confirm-light");
+            shot("47-delete-host-confirm-dark");
             auditControls(ctx, "delete confirm sheet", [
               ["sheet title (dialog)", (n) => n.desc.endsWith(", dialog"), { textOnly: true }],
               ["Cancel", A.byId("host-delete-sheet-cancel")],
@@ -1510,7 +1574,7 @@ function steps(ctx) {
           await A.waitGone(hostRow(label), 15_000, `${label} to go`);
         }
         await A.waitNode(A.byId("hosts-empty"), 15_000, "hosts empty");
-        shot("48-hosts-empty-light");
+        shot("48-hosts-empty-dark");
         E.gatewayStop();
       },
     ],

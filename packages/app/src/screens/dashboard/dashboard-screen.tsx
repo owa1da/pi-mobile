@@ -145,7 +145,6 @@ function SessionsList({ hostId, hostLabel, snapshot, summary }: SessionsListProp
     () => (
       <EmptyState
         title={t("pi.dashboard.emptyTitle", { host: hostLabel })}
-        body={t("pi.dashboard.emptyBody")}
         testID="dashboard-empty"
       />
     ),

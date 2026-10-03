@@ -327,7 +327,7 @@ function SheetFooter({
     return (
       <SheetActions>
         <Button
-          variant="secondary"
+          variant="ghost"
           onPress={onClose}
           style={sheetActionStyles.button}
           testID="forge-sheet-close"

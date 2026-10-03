@@ -1,5 +1,5 @@
-// Session: title, then pi's state and model, then the chat (the transcript rendered with the kept
-// Paseo components) and the composer.
+// Session: the title, the chat (the transcript rendered with the kept Paseo components), the
+// composer, and forge's status line right under it (status-line.md: ONE line under the input).
 
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,6 +16,7 @@ import { failureText } from "@/components/pi/connection-text";
 import { EmptyState } from "@/components/pi/empty-state";
 import { MutedSpinner } from "@/components/pi/icons";
 import { InlineBanner } from "@/components/pi/inline-banner";
+import { NoteRow } from "@/components/pi/note-row";
 import { SessionGlyph } from "@/components/pi/session-glyph";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { useToast } from "@/contexts/toast-context";
@@ -250,7 +251,7 @@ interface SessionBodyProps {
   onReplaced: (pid: number) => void;
 }
 
-/** The session with its remote channel: the sub-bar (with forge's footer), the chat and the sheets. */
+/** The session with its remote channel: the chat, the composer with forge's line under it, the sheets. */
 function SessionBody(props: SessionBodyProps) {
   const { hostId, row, entry, connection, focused, active } = props;
   const channel = useRemoteChannel(hostId, row, entry, active);
@@ -266,12 +267,6 @@ function SessionBody(props: SessionBodyProps) {
   const held = channel.available && inputHeld(channel.state);
   return (
     <>
-      <SessionSubBar
-        row={row}
-        connection={connection}
-        hidden={held}
-        footer={channel.available ? channel.state?.footer : undefined}
-      />
       <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
       <ChatPane
         hostId={hostId}
@@ -378,7 +373,7 @@ function toneStyle(tone: FooterPart["tone"]) {
   return undefined;
 }
 
-function SessionSubBar({
+function SessionFooter({
   row,
   connection,
   hidden,
@@ -397,7 +392,7 @@ function SessionSubBar({
   if (hidden || all.length === 0) return null;
   const dimmed = footerDimmed(connection.status);
   return (
-    <View style={styles.subBar}>
+    <View style={styles.subBar} testID="session-footer">
       <Text
         style={[styles.subBarText, dimmed && styles.subBarQuiet]}
         numberOfLines={1}
@@ -643,9 +638,9 @@ function ChatPaneBody({
   return (
     <View style={FILL}>
       {feed.hasFile ? (
-        <ChatView rows={feed.rows} truncated={feed.truncated} loading={feed.loading} />
+        <ChatView rows={feed.rows} loading={feed.loading} />
       ) : (
-        <EmptyState title={t("pi.session.noFile")} testID="chat-no-file" />
+        <View style={FILL} testID="chat-no-file" />
       )}
       <View style={styles.banners}>
         {waitingBannerVisible(row.state, channel) ? (
@@ -658,9 +653,8 @@ function ChatPaneBody({
           />
         ) : null}
         {notice ? (
-          <InlineBanner
-            tone="muted"
-            message={notice.text}
+          <NoteRow
+            text={notice.text}
             dismissLabel={t("pi.session.dismiss")}
             onDismiss={dismissNotice}
             testID={notice.testID}
@@ -690,12 +684,17 @@ function ChatPaneBody({
           busy={sending}
           canStop={row.live && row.state === "working"}
           onStop={stop}
-          hint={row.live ? undefined : t("pi.session.closedHint")}
           testID="chat-composer"
           sendTestID="chat-send"
           stopTestID="chat-stop"
         />
       </AnswerDock>
+      <SessionFooter
+        row={row}
+        connection={connection}
+        hidden={held}
+        footer={channel.available ? channel.state?.footer : undefined}
+      />
     </View>
   );
 }
@@ -723,11 +722,13 @@ function useReplyAnnouncement(
 const styles = StyleSheet.create((theme) => ({
   screen: { flex: 1, backgroundColor: theme.colors.surface0 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  // forge's line right under the input: the composer's text column, no rule of its own.
   subBar: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: theme.spacing[4],
     paddingBottom: theme.spacing[2],
+    backgroundColor: theme.colors.surface0,
   },
   workingRow: {
     flexDirection: "row",

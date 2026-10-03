@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import {
   Pressable,
   Text,
+  View,
   useWindowDimensions,
   type PressableStateCallbackType,
 } from "react-native";
@@ -30,10 +31,10 @@ export const SessionRow = memo(function SessionRow({ row, hostNow, onPress }: Se
   const title = row.title || t("pi.session.title");
   const model = shortModel(row.model);
   const age = formatAge(row.since, hostNow);
-  // At a large system font the title may take two lines, so the model keeps its place on the row.
+  // At a large system font the row has two lines: the title alone on the first, `model · age` in
+  // muted small text under it, so the model stays on every row and nothing wraps.
   const { fontScale } = useWindowDimensions();
   const large = fontScale >= LARGE_FONT_SCALE;
-  const titleLines = large ? 2 : 1;
 
   return (
     <Pressable
@@ -49,32 +50,58 @@ export const SessionRow = memo(function SessionRow({ row, hostNow, onPress }: Se
       testID={`session-row-${row.sessionId}`}
     >
       <SessionGlyph kind={rowGlyph(row)} />
-      <Text
-        style={[styles.title, !row.live && styles.titleClosed]}
-        numberOfLines={titleLines}
-        ellipsizeMode="tail"
-        textBreakStrategy="simple"
-        testID="dashboard-row-title"
-      >
-        {title}
-      </Text>
-      {model ? (
-        <Text
-          style={[styles.model, large && styles.modelLarge]}
-          numberOfLines={large ? 2 : 1}
-          ellipsizeMode="tail"
-          textBreakStrategy="simple"
-        >
-          {model}
-        </Text>
-      ) : null}
-      <Text style={styles.age}>{age}</Text>
+      {large ? (
+        <View style={styles.stack}>
+          <Text
+            style={[styles.title, styles.titleStacked, !row.live && styles.titleClosed]}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+            textBreakStrategy="simple"
+            testID="dashboard-row-title"
+          >
+            {title}
+          </Text>
+          <Text
+            style={styles.meta}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+            textBreakStrategy="simple"
+            testID="dashboard-row-meta"
+          >
+            {model ? `${model} · ${age}` : age}
+          </Text>
+        </View>
+      ) : (
+        <>
+          <Text
+            style={[styles.title, !row.live && styles.titleClosed]}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+            textBreakStrategy="simple"
+            testID="dashboard-row-title"
+          >
+            {title}
+          </Text>
+          {model ? (
+            <Text
+              style={styles.model}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              textBreakStrategy="simple"
+            >
+              {model}
+            </Text>
+          ) : null}
+          <Text style={styles.age}>{age}</Text>
+        </>
+      )}
     </Pressable>
   );
 });
 
-/** From this system font scale a row's title may wrap onto a second line. */
-const LARGE_FONT_SCALE = 1.5;
+/** From this system font scale the row puts `model · age` on a second line under the title. */
+// 1.25, not 1.3: Android reports the 1.3 setting as a float just under it.
+const LARGE_FONT_SCALE = 1.25;
 
 const styles = StyleSheet.create((theme) => ({
   row: {
@@ -97,8 +124,9 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 22,
   },
   titleClosed: { color: theme.colors.foregroundMuted },
-  // At a large font the model wraps onto two lines in a narrower column, so the title keeps ≥45%.
-  modelLarge: { flexShrink: 1, maxWidth: "26%" },
+  stack: { flex: 1, minWidth: 0, gap: theme.spacing[0.5] },
+  titleStacked: { flexGrow: 0, flexBasis: "auto" },
+  meta: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   model: {
     flexShrink: 0,
     // Natural width; only an absurdly long name (or font scale 2.0) is capped, never the title's room.

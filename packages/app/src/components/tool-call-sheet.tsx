@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useCallback, useMemo } from "react";
 import type { ReactNode } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, useWindowDimensions } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
@@ -91,7 +91,9 @@ export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) 
   const [sheetData, setSheetData] = React.useState<ToolCallSheetData | null>(null);
   const [isSheetOpen, setIsSheetOpen] = React.useState(false);
 
-  const snapPoints = useMemo(() => ["60%", "95%"], []);
+  // Fitted to its content like every other sheet, never above 90% of the screen.
+  const { height: windowHeight } = useWindowDimensions();
+  const maxSheet = Math.floor(windowHeight * 0.9);
 
   const openToolCall = useCallback((data: ToolCallSheetData) => {
     setSheetData(data);
@@ -127,9 +129,9 @@ export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) 
       <ToolCallSheetModal
         ref={bottomSheetRef}
         contextBridge={null}
-        snapPoints={snapPoints}
         index={0}
-        enableDynamicSizing={false}
+        enableDynamicSizing
+        maxDynamicContentSize={maxSheet}
         onChange={handleSheetChange}
         onDismiss={handleToolCallSheetDismiss}
         backdropOpacity={0.5}
@@ -150,6 +152,9 @@ interface ToolCallSheetContentProps {
 
 function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
   const { t } = useTranslation();
+  // A long output scrolls inside its own block, so the sheet rests at its content's height.
+  const { height: windowHeight } = useWindowDimensions();
+  const blockMax = Math.floor(windowHeight * 0.55);
   const {
     toolName,
     displayName,
@@ -186,7 +191,7 @@ function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
           toolName={toolName}
           detail={detail}
           errorText={errorText}
-          fillAvailableHeight
+          maxHeight={blockMax}
           showLoadingSkeleton={showLoadingSkeleton}
         />
       </BottomSheetScrollView>
@@ -198,7 +203,6 @@ function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
 
 const styles = StyleSheet.create((theme) => ({
   container: {
-    flex: 1,
     backgroundColor: theme.colors.surface2,
   },
   header: {
@@ -231,12 +235,10 @@ const styles = StyleSheet.create((theme) => ({
     marginRight: -theme.spacing[1.5],
   },
   content: {
-    flex: 1,
-    minHeight: 0,
     backgroundColor: theme.colors.surface2,
   },
   contentContainer: {
     padding: 0,
-    flexGrow: 1,
+    paddingBottom: theme.spacing[4],
   },
 }));

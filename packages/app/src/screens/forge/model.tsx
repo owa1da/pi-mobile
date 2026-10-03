@@ -5,7 +5,7 @@
 import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { SearchField } from "@/components/ui/search-field";
 import { StyleSheet } from "react-native-unistyles";
 import {
@@ -177,16 +177,7 @@ function ModelList({
       {levels && levels.levels.length > 0 ? (
         <>
           <SectionLabel>{t("pi.forge.model.thinking")}</SectionLabel>
-          <View style={styles.levels} accessibilityRole="radiogroup" testID="thinking-levels">
-            {levels.levels.map((level) => (
-              <LevelChip
-                key={level}
-                level={level}
-                selected={level === levels.level}
-                onPick={onLevel}
-              />
-            ))}
-          </View>
+          <LevelRows levels={levels.levels} current={levels.level} onPick={onLevel} />
         </>
       ) : null}
       <View style={styles.search}>
@@ -278,6 +269,41 @@ const ModelRow = memo(function ModelRow({
   );
 });
 
+/** At a large system font the levels split into two balanced rows (never an orphan chip). */
+const TWO_ROW_FONT_SCALE = 1.15;
+
+/** forge's thinking levels: one row of equal chips, or two balanced rows at a large font. */
+function LevelRows({
+  levels,
+  current,
+  onPick,
+}: {
+  levels: readonly string[];
+  current: string | null | undefined;
+  onPick: (level: string) => void;
+}) {
+  const { fontScale } = useWindowDimensions();
+  const rows = fontScale >= TWO_ROW_FONT_SCALE && levels.length > 3 ? 2 : 1;
+  const per = Math.ceil(levels.length / rows);
+  const chunks: string[][] = [];
+  for (let i = 0; i < levels.length; i += per) chunks.push(levels.slice(i, i + per));
+  return (
+    <View style={styles.levels} accessibilityRole="radiogroup" testID="thinking-levels">
+      {chunks.map((chunk) => (
+        <View key={chunk.join(" ")} style={styles.levelRow}>
+          {chunk.map((level) => (
+            <LevelChip key={level} level={level} selected={level === current} onPick={onPick} />
+          ))}
+          {/* The short row keeps the long row's chip width. */}
+          {Array.from({ length: per - chunk.length }, (_, i) => (
+            <View key={`pad${i}`} style={styles.chipPad} />
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function LevelChip({
   level,
   selected,
@@ -298,20 +324,22 @@ function LevelChip({
       accessibilityLabel={level}
       testID={`thinking-${level}`}
     >
-      <Text style={[styles.chipText, selected && styles.chipTextOn]}>{level}</Text>
+      <Text style={[styles.chipText, selected && styles.chipTextOn]} numberOfLines={1}>
+        {level}
+      </Text>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  // One wrapping row: every level visible, none clipped at the edge, no sideways scroll.
+  // Every level visible on one row of equal chips (two balanced rows at a large font).
   levels: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1.5],
     paddingHorizontal: theme.spacing[4],
     paddingBottom: theme.spacing[2],
   },
+  levelRow: { flexDirection: "row", gap: theme.spacing[1.5] },
+  chipPad: { flex: 1 },
   search: {
     minHeight: MIN_TOUCH,
     flexDirection: "row",
@@ -326,9 +354,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
   },
   chip: {
+    flex: 1,
+    minWidth: 0,
     minHeight: MIN_TOUCH,
-    minWidth: MIN_TOUCH,
-    paddingHorizontal: theme.spacing[3],
+    paddingHorizontal: theme.spacing[1],
     alignItems: "center",
     justifyContent: "center",
     borderRadius: theme.borderRadius.full,

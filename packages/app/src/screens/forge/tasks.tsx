@@ -256,7 +256,7 @@ function AgentTranscript({
   return (
     <View style={styles.fill}>
       <TranscriptProviders>
-        <ChatView rows={feed.rows} truncated={feed.truncated} loading={feed.loading} />
+        <ChatView rows={feed.rows} loading={feed.loading} />
       </TranscriptProviders>
       <Composer
         placeholder={t(composerPlaceholder(working, resumes))}

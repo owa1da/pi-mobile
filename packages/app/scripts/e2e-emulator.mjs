@@ -96,6 +96,7 @@ function tmuxEnv() {
     PI_CODING_AGENT_DIR: AGENT,
     PI_SKIP_VERSION_CHECK: "1",
     FAKE_PI_DELAY_MS: "300",
+    FAKE_PI_BTW_MS: "8000",
   };
   return env;
 }

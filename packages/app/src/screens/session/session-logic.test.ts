@@ -102,6 +102,26 @@ describe("toChatRows", () => {
     expect(toChatRows(items, [], false)[6]).toMatchObject({ phase: "complete" });
   });
 
+  it("drops the host's 'Earlier messages are not loaded.' marker (pi shows nothing)", () => {
+    const rows = toChatRows(
+      [
+        {
+          kind: "notice",
+          id: "earlier",
+          level: "info",
+          text: "Earlier messages are not loaded.",
+          timestamp: 0,
+        },
+        { kind: "notice", id: "n", level: "info", text: "Restored to checkpoint 2", timestamp: 1 },
+      ],
+      [],
+      false,
+    );
+    expect(rows).toEqual([
+      { kind: "notice", key: "n", level: "info", text: "Restored to checkpoint 2" },
+    ]);
+  });
+
   it("appends pending echoes and skips empty text", () => {
     const rows = toChatRows(
       [{ kind: "assistant", id: "a", text: "  ", timestamp: 1 }],

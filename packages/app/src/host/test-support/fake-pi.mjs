@@ -154,6 +154,8 @@ let lastText = resumedLastText;
 const WAIT_TITLE = process.env.FAKE_PI_WAIT_TITLE || "Allow bash?";
 const WAIT_OPTIONS = (process.env.FAKE_PI_WAIT_OPTIONS || "Allow|Deny").split("|").filter(Boolean);
 const REMOTE = process.env.FAKE_PI_REMOTE !== "0";
+/** How long a /btw answer takes (the emulator journey lengthens it to capture the pending state). */
+const BTW_MS = Number(process.env.FAKE_PI_BTW_MS || 1500);
 const remoteRoot = path.join(agentDir, "forge", "remote", String(process.pid));
 const inboxDir = path.join(remoteRoot, "inbox");
 const resultsDir = path.join(remoteRoot, "results");
@@ -690,7 +692,7 @@ function runSide(action, args) {
           btw = { open: true, pending: false, question, error: null };
         }
         writeRecord();
-      }, 1500).unref();
+      }, BTW_MS).unref();
       return ok();
     }
     case "btw.close":
@@ -1176,8 +1178,8 @@ function runCommand(args) {
     openPromptDialog({ kind: "select", title: "MCP server", options: MCP_OPTIONS });
     return { code: "ok" };
   }
+  // forge's command.run prints nothing of its own: the command's own output is what shows.
   log({ kind: "remote", action: "command.run", by: "app", line });
-  notice(`Ran ${line}`);
   return { code: "ok" };
 }
 

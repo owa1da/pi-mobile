@@ -10,9 +10,6 @@ import { splitFingerprint } from "@/stores/tofu";
 import { describeHostKeyAlgorithm } from "@/utils/host-key-algorithm";
 import { SheetActions, sheetActionStyles } from "./sheet-actions";
 
-const TRUST_SNAP_POINTS = ["55%"];
-const MISMATCH_SNAP_POINTS = ["70%", "90%"];
-
 function Fingerprint({
   label,
   keyType,
@@ -113,7 +110,7 @@ export function HostKeyTrustSheet({
       visible={visible}
       onClose={onCancel}
       footer={footer}
-      snapPoints={TRUST_SNAP_POINTS}
+      fitContent
       testID="host-key-sheet"
     >
       <View style={styles.body}>
@@ -185,7 +182,7 @@ export function HostKeyMismatchSheet({
       visible={visible}
       onClose={onCancel}
       footer={footer}
-      snapPoints={MISMATCH_SNAP_POINTS}
+      fitContent
       testID="host-key-mismatch-sheet"
     >
       <View style={styles.body}>

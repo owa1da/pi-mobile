@@ -48,6 +48,7 @@ export function dump() {
           cls: attr(tag, "class"),
           checked: attr(tag, "checked") === "true",
           selected: attr(tag, "selected") === "true",
+          focused: attr(tag, "focused") === "true",
           enabled: attr(tag, "enabled") !== "false",
           clickable: attr(tag, "clickable") === "true",
           longClickable: attr(tag, "long-clickable") === "true",
