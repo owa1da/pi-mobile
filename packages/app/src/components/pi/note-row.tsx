@@ -62,6 +62,12 @@ export const NoteRow = memo(function NoteRow({
       <View style={styles.body}>
         <Text style={textStyle} numberOfLines={open ? undefined : 1} selectable={open}>
           {open ? text.trimEnd() : head}
+          {/* The expand cue: inline, so a head cut at the width shows one ellipsis, not two. */}
+          {expandable && !open ? (
+            <Text style={styles.more} testID={testID ? `${testID}-more` : "note-more"}>
+              {" …"}
+            </Text>
+          ) : null}
         </Text>
         <Text
           style={[textStyle, styles.measure]}
@@ -119,6 +125,7 @@ const styles = StyleSheet.create((theme) => ({
   body: { flex: 1, minWidth: 0 },
   text: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.base, lineHeight: 20 },
   textError: { color: theme.colors.statusDanger },
+  more: { color: theme.colors.foregroundMuted },
   measure: { position: "absolute", left: 0, right: 0, top: 0, opacity: 0 },
   dismiss: {
     width: MIN_TOUCH,

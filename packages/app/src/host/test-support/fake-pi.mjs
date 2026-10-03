@@ -793,8 +793,9 @@ function runWake(action, args) {
               {
                 label: "Credits",
                 ratio: null,
+                // forge's credits meter (_lib/usage/openrouter.ts): what is left, no detail.
                 value: "$12.34 left",
-                detail: "$37.66 used of $50.00",
+                detail: null,
                 resetsAt: null,
               },
             ],

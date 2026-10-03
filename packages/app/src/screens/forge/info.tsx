@@ -8,6 +8,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { ActionBar, sheetActionStyles } from "@/components/pi/sheet-actions";
 import { Button } from "@/components/ui/button";
+import { MIN_TOUCH } from "@/styles/touch";
 import {
   accountHeading,
   accountNote,
@@ -115,10 +116,10 @@ export function UsageView({ channel }: ForgeViewProps) {
       {channel.available && !action.unsupported ? (
         <ActionBar>
           <Button
-            variant="default"
+            variant="ghost"
             onPress={pressRefresh}
             loading={action.busy === "usage.refresh"}
-            style={sheetActionStyles.button}
+            style={[sheetActionStyles.button, styles.quiet]}
             testID="usage-refresh"
           >
             {t("pi.forge.usage.refresh")}
@@ -276,6 +277,8 @@ function keyedSections(sections: CostSection[]): KeyedSection[] {
 
 const styles = StyleSheet.create((theme) => ({
   fill: { flex: 1 },
+  // A quiet text action at the touch floor (forge's `r to refresh` is a hint, not a slab).
+  quiet: { minHeight: MIN_TOUCH },
   account: {
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[4],

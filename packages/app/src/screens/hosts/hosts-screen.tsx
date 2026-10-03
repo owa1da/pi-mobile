@@ -176,7 +176,8 @@ export function HostsScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScreenHeader left={title} right={addButton} />
+      {/* The empty state's own Add host is the one way in; no second + over it. */}
+      <ScreenHeader left={title} right={loaded && hosts.length > 0 ? addButton : undefined} />
       {body}
       {form ? (
         <HostFormSheet

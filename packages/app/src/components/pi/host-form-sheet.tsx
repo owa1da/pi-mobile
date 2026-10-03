@@ -150,6 +150,7 @@ function AddressFields({ form }: { form: HostForm }) {
             <FormTextInput
               initialValue={fields.username}
               onChangeText={onChange.username}
+              placeholder={t("pi.hostForm.usernamePlaceholder")}
               autoCapitalize="none"
               autoCorrect={false}
               accessibilityLabel={t("pi.hostForm.username")}

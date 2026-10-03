@@ -438,8 +438,14 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
             `thinking chip ${chip.id} clipped: ${chip.bounds}`,
           );
         const tops = new Set(chips.map((n) => n.bounds[1]));
-        // v14 item 7: every level on one row at 1080px (no orphan chip).
-        assert(tops.size === 1, `thinking chips on ${tops.size} rows`);
+        // v15 item 7: pi's six levels as 3×2 at font scale 1.0 (as at 2.0).
+        assert(chips.length === 6, `${chips.length} thinking chips (pi has 6)`);
+        assert(tops.size === 2, `thinking chips on ${tops.size} rows (3×2 expected)`);
+        for (const top of tops)
+          assert(
+            chips.filter((n) => n.bounds[1] === top).length === 3,
+            "the thinking chips' rows are not 3 and 3",
+          );
         ctx.notes.push(`thinking chips: ${chips.length} on ${tops.size} row(s)`);
         shot("118-model-dark");
         auditControls(ctx, "model", [
@@ -678,6 +684,15 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await openSession(sessionIdOf(w.core.pid));
         await slash("rewind");
         await A.waitNode(A.byId("forge-update"), 20_000, "Update forge (rewind)");
+        {
+          // v15 item 4: the header's back arrow is the only way back (no second Back button).
+          const nodes = A.dump();
+          assert(!nodes.some(A.byId("forge-update-back")), "the extra Back button is shown");
+          const backs = nodes.filter(
+            (n) => n.clickable && (n.text === "Back" || n.desc === "Back"),
+          );
+          assert(backs.length === 1, `${backs.length} Back controls on the Update forge screen`);
+        }
         shot("134-update-forge-screen-dark");
         await leave();
         await slash("pause");

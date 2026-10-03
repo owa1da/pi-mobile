@@ -340,6 +340,9 @@ function steps(ctx) {
       "Fresh launch shows the Hosts empty state",
       async () => {
         await A.waitNode(A.byId("hosts-empty"), 30_000, "hosts empty");
+        // v15 item 8: the empty state's Add host is the only way in; no header + over it.
+        assert(!A.find(A.byId("hosts-add")), "the header + is shown over the empty hosts list");
+        assert(A.find(A.byId("hosts-add-empty")), "the empty state has no Add host");
         shot("01-hosts-empty-dark");
       },
     ],
@@ -492,12 +495,20 @@ function steps(ctx) {
         for (const id of ["user-message-timestamp", "user-message-copy", "assistant-turn-copy"])
           assert(!A.find(A.byId(id)), `chat shows ${id}`);
         const nodes = A.dump();
-        for (const label of [
-          "Thinking",
-          "Context compacted",
-          "Let me look at how sessions are checked.",
-        ])
+        for (const label of ["Thinking", "Let me look at how sessions are checked."])
           assert(nodes.some(A.byText(label)), `missing ${label}`);
+        {
+          // v15 item 1: forge's compaction row (`✻ Compacted …`), not a hairline divider.
+          const row = nodes.find(A.byId("chat-compaction"));
+          assert(row && row.desc === "Compacted", `compaction row "${row?.desc}"`);
+          assert(!nodes.some(A.byText(/Context compacted/)), "the old Context compacted divider");
+          const listBox = nodes.find(A.byId("chat-list"));
+          assert(
+            listBox && row.bounds[3] - row.bounds[1] <= 160,
+            `compaction row is ${row.bounds[3] - row.bounds[1]}px tall (one line expected)`,
+          );
+          ctx.notes.push(`compaction row: "${row.desc}" ${row.bounds}`);
+        }
         for (const desc of [
           /^Shell, git log/,
           /^Search, redirect/,
@@ -660,6 +671,20 @@ function steps(ctx) {
           `custom dialog has actions: ${actions.map((x) => x.desc || x.id)}`,
         );
         assert(nodes.some(A.byText("MCP servers")), "custom dialog title missing");
+        {
+          // v15 item 2: forge refuses cancel on a custom dialog, so the panel has no action; it
+          // must not block the chat: the list stays above it, most of the screen, scrollable.
+          const list = nodes.find(A.byId("chat-list"));
+          const [, sh] = A.screenSize();
+          assert(list && panel, "chat list or panel missing with a custom dialog");
+          assert(list.bounds[3] <= panel.bounds[1] + 2, "the custom panel covers the chat list");
+          assert(
+            list.bounds[3] - list.bounds[1] >= sh * 0.45,
+            `chat list only ${list.bounds[3] - list.bounds[1]}px tall under a custom dialog`,
+          );
+          assert(list.scrollable, "the chat list is not scrollable under a custom dialog");
+          ctx.notes.push(`custom dialog: list ${list.bounds}, panel ${panel.bounds}`);
+        }
         shot("86-prompt-custom-dark");
         E.control(pid, { op: "clear" });
         await A.waitGone(A.byId("prompt-panel"), 20_000, "custom to close");
@@ -1574,6 +1599,7 @@ function steps(ctx) {
           await A.waitGone(hostRow(label), 15_000, `${label} to go`);
         }
         await A.waitNode(A.byId("hosts-empty"), 15_000, "hosts empty");
+        assert(!A.find(A.byId("hosts-add")), "the header + is shown over the empty hosts list");
         shot("48-hosts-empty-dark");
         E.gatewayStop();
       },

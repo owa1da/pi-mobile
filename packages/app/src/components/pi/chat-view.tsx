@@ -14,7 +14,7 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { AssistantMessage, CompactionMarker, ToolCall, UserMessage } from "@/components/message";
+import { AssistantMessage, ToolCall, UserMessage } from "@/components/message";
 import type { ChatRow } from "@/screens/session/chat-rows";
 import { MutedSpinner, ThemedChevronDown, ThemedChevronRight, mutedColor } from "./icons";
 import { MIN_TOUCH } from "@/styles/touch";
@@ -172,7 +172,7 @@ const ChatRowView = memo(function ChatRowView({ row }: { row: ChatRow }) {
     case "notice":
       return <NoteRow tone={row.level} text={row.text} />;
     case "compaction":
-      return <CompactionMarker status="completed" />;
+      return <CompactionRow summary={row.summary} />;
     case "divider":
       return <DividerRow label={row.label} summary={row.summary} />;
   }
@@ -206,6 +206,61 @@ function ThinkingRow({ text, live }: { text: string; live: boolean }) {
     </View>
   );
 }
+
+/**
+ * forge's compaction event (look.md, `_lib/look/compaction.ts`): one grey system row,
+ * `✻ Compacted`, "Compacted" bold, at the message column. Tap expands pi's summary, where the
+ * terminal's `(ctrl+o to expand)` hint stands; the trailing `…` is that cue.
+ */
+const CompactionRow = memo(function CompactionRow({ summary }: { summary?: string }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const toggle = useCallback(() => setOpen((value) => !value), []);
+  const body = summary?.trim() ?? "";
+  const state = useMemo(() => ({ expanded: open }), [open]);
+  const line = (
+    <View style={styles.compactLine}>
+      <Text style={styles.compactText} importantForAccessibility="no">
+        {COMPACTED_GLYPH}
+      </Text>
+      <Text style={styles.compactText} numberOfLines={1}>
+        <Text style={styles.compactBold}>{t("pi.session.compacted")}</Text>
+        {body && !open ? <Text testID="chat-compaction-more">{" …"}</Text> : null}
+      </Text>
+    </View>
+  );
+  if (!body)
+    return (
+      <View
+        style={styles.compact}
+        accessible
+        accessibilityLabel={t("pi.session.compacted")}
+        testID="chat-compaction"
+      >
+        {line}
+      </View>
+    );
+  return (
+    <Pressable
+      onPress={toggle}
+      style={styles.compact}
+      accessibilityRole="button"
+      accessibilityState={state}
+      accessibilityLabel={t("pi.session.compacted")}
+      testID="chat-compaction"
+    >
+      {line}
+      {open ? (
+        <Text style={styles.compactSummary} selectable>
+          {body}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
+});
+
+/** pi's spark (GLYPH.spark), the compaction row's mark. */
+const COMPACTED_GLYPH = "✻";
 
 function DividerRow({ label, summary }: { label: string; summary?: string }) {
   return (
@@ -268,6 +323,27 @@ const styles = StyleSheet.create((theme) => ({
     paddingLeft: theme.spacing[3],
     borderLeftWidth: 1,
     borderLeftColor: theme.colors.border,
+  },
+  // Same family as the note rows: grey, one line, the mark at the message column.
+  compact: {
+    minHeight: MIN_TOUCH,
+    justifyContent: "center",
+    paddingVertical: theme.spacing[1],
+    gap: theme.spacing[2],
+  },
+  compactLine: { flexDirection: "row", alignItems: "flex-start", gap: theme.spacing[2] },
+  compactText: {
+    flexShrink: 1,
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.base,
+    lineHeight: 20,
+  },
+  compactBold: { fontWeight: theme.fontWeight.semibold },
+  compactSummary: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 19,
+    paddingLeft: theme.spacing[6],
   },
   divider: { paddingVertical: theme.spacing[3], gap: theme.spacing[1] },
   dividerLine: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },

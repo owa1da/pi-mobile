@@ -75,14 +75,11 @@ export function ForgeFrame({
 /** The screen's area is absent, or forge answered unknown-action. */
 export function UpdateForge() {
   const { t } = useTranslation();
-  // Not a lone line in a dead centre: what is missing, why, and the way back.
+  // What is missing and why; the header's back arrow is the way back.
   return (
     <EmptyState
       title={t("pi.remote.errors.unknown-action")}
       body={t("pi.forge.updateBody")}
-      actionLabel={t("pi.forge.back")}
-      onAction={router.back}
-      actionTestID="forge-update-back"
       testID="forge-update"
     />
   );

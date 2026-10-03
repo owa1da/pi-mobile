@@ -46,7 +46,7 @@ const HIDDEN_FROM_A11Y = {
   maxFontSizeMultiplier: 1.3,
 } as const;
 
-function Spinner() {
+function Spinner({ running }: { running?: boolean }) {
   const reduced = useReducedMotion();
   const current = useSyncExternalStore(
     reduced ? noSubscribe : subscribe,
@@ -54,14 +54,21 @@ function Spinner() {
     zero,
   );
   return (
-    <Text style={[styles.glyph, styles.working]} {...HIDDEN_FROM_A11Y}>
+    <Text style={[styles.glyph, running ? styles.running : styles.working]} {...HIDDEN_FROM_A11Y}>
       {glyphFor("working", reduced, current)}
     </Text>
   );
 }
 
-export const SessionGlyph = memo(function SessionGlyph({ kind }: { kind: GlyphKind }) {
-  if (kind === "working") return <Spinner />;
+export const SessionGlyph = memo(function SessionGlyph({
+  kind,
+  running,
+}: {
+  kind: GlyphKind;
+  /** The working row's spinner: pi's working colour (forge 75), not the rows' grey. */
+  running?: boolean;
+}) {
+  if (kind === "working") return <Spinner running={running} />;
   return (
     <Text
       style={[styles.glyph, isDotGlyph(kind) && styles.dot, styles[kind]]}
@@ -84,6 +91,14 @@ const styles = StyleSheet.create((theme) => ({
   dot: { fontSize: theme.fontSize.sm },
   needs: { color: theme.colors.statusWarning },
   working: { color: theme.colors.foregroundMuted },
+  // Light: the palette's blue 600 (5.2:1 on white); the light running dot is 3.6:1, too pale for
+  // the verb beside it. Dark: the running dot itself (7:1).
+  running: {
+    color:
+      theme.colorScheme === "light"
+        ? theme.colors.palette.blue[600]
+        : theme.colors.statusDotRunning,
+  },
   scheduled: { color: theme.colors.foregroundMuted },
   live: { color: theme.colors.statusSuccess },
   closed: { color: theme.colors.statusSuccess },

@@ -18,7 +18,7 @@ export type ChatRow =
       error?: string;
     }
   | { kind: "notice"; key: string; level: "info" | "warning" | "error"; text: string }
-  | { kind: "compaction"; key: string }
+  | { kind: "compaction"; key: string; summary?: string }
   | { kind: "divider"; key: string; label: string; summary?: string };
 
 /** chat.ts marks a transcript read from the middle of its file with this notice. */
@@ -146,7 +146,12 @@ function itemRow(item: ChatItem, isLast: boolean, working: boolean): ChatRow | n
       if (isEarlierMarker(item.id, item.text)) return null;
       return { kind: "notice", key: item.id, level: item.level, text: item.text };
     case "divider":
-      if (item.label === COMPACTION_LABEL) return { kind: "compaction", key: item.id };
+      if (item.label === COMPACTION_LABEL)
+        return {
+          kind: "compaction",
+          key: item.id,
+          ...(item.summary ? { summary: item.summary } : {}),
+        };
       return { kind: "divider", key: item.id, label: item.label, summary: item.summary };
   }
 }

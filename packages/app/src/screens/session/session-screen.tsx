@@ -434,7 +434,7 @@ function useSecondTick(on: boolean): void {
 
 /**
  * pi's working row, as forge's look draws it above the input: the spinner, the verb, then the run's
- * clock in grey (`✻ Working… (4s)`). The app cannot see forge's per-run verb or token count, so it
+ * clock in grey (`✻ Working… (4s)`): spinner and verb in the working colour, the clock muted. The app cannot see forge's per-run verb or token count, so it
  * shows pi's own verb and the clock only.
  */
 function WorkingRow({ hostId, since }: { hostId: string; since: number }) {
@@ -448,7 +448,7 @@ function WorkingRow({ hostId, since }: { hostId: string; since: number }) {
       accessibilityLabel={t("pi.session.workingLabel", { clock })}
       testID="chat-working"
     >
-      <SessionGlyph kind="working" />
+      <SessionGlyph kind="working" running />
       <Text style={styles.workingText} numberOfLines={1}>
         {t("pi.session.working")}
         <Text style={styles.workingClock}>{` (${clock})`}</Text>
@@ -737,7 +737,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[3],
     paddingBottom: theme.spacing[2],
   },
-  workingText: { flex: 1, color: theme.colors.foreground, fontSize: theme.fontSize.base },
+  // forge: the spinner and verb in pi's working sky blue (75), the clock in grey (246).
+  // Light uses the palette's blue 600 (5.2:1 on white; the light running dot is 3.6:1).
+  workingText: {
+    flex: 1,
+    color:
+      theme.colorScheme === "light"
+        ? theme.colors.palette.blue[600]
+        : theme.colors.statusDotRunning,
+    fontSize: theme.fontSize.base,
+  },
   workingClock: { color: theme.colors.foregroundMuted },
   subBarText: { flex: 1, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   subBarQuiet: { color: theme.colors.foregroundExtraMuted },

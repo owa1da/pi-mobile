@@ -5,7 +5,7 @@
 import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { SearchField } from "@/components/ui/search-field";
 import { StyleSheet } from "react-native-unistyles";
 import {
@@ -270,9 +270,7 @@ const ModelRow = memo(function ModelRow({
 });
 
 /** At a large system font the levels split into two balanced rows (never an orphan chip). */
-const TWO_ROW_FONT_SCALE = 1.15;
-
-/** forge's thinking levels: one row of equal chips, or two balanced rows at a large font. */
+/** forge's thinking levels: two balanced rows of equal chips (3×2 for pi's six), at every font size. */
 function LevelRows({
   levels,
   current,
@@ -282,8 +280,7 @@ function LevelRows({
   current: string | null | undefined;
   onPick: (level: string) => void;
 }) {
-  const { fontScale } = useWindowDimensions();
-  const rows = fontScale >= TWO_ROW_FONT_SCALE && levels.length > 3 ? 2 : 1;
+  const rows = levels.length > 3 ? 2 : 1;
   const per = Math.ceil(levels.length / rows);
   const chunks: string[][] = [];
   for (let i = 0; i < levels.length; i += per) chunks.push(levels.slice(i, i + per));
@@ -332,7 +329,7 @@ function LevelChip({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  // Every level visible on one row of equal chips (two balanced rows at a large font).
+  // Every level visible: two balanced rows of equal chips.
   levels: {
     gap: theme.spacing[1.5],
     paddingHorizontal: theme.spacing[4],
@@ -357,7 +354,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minWidth: 0,
     minHeight: MIN_TOUCH,
-    paddingHorizontal: theme.spacing[1],
+    paddingHorizontal: theme.spacing[3],
     alignItems: "center",
     justifyContent: "center",
     borderRadius: theme.borderRadius.full,
