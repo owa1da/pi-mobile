@@ -1,0 +1,67 @@
+PiSsh iOS third-party notices
+
+libssh2 1.11.1
+Copyright the libssh2 project and its contributors.
+BSD-3-Clause; complete license in libssh2/COPYING and individual source headers.
+Source: https://libssh2.org/download/libssh2-1.11.1.tar.gz
+Archive SHA256: d9ec76cbe34db98eec3539fe2c899d26b0c837cb3eb466a56b0f109cabf658f7
+Release/tag: https://github.com/libssh2/libssh2/tree/libssh2-1.11.1
+This directory contains the release's include/*.h and src/*.{c,h}.
+
+Local modifications (semantic changes marked PiSsh in the affected files):
+- src/chacha.h removes one trailing blank line to pass git diff --check; no
+  code or license text is changed.
+- src/channel.c initializes a newly opened channel's exit_status to -1, rather
+  than implicit zero, to preserve the JS contract for absent SSH exit-status.
+- src/kex.c frees the old server_hostkey before replacing it during ECDH and
+  curve25519 rekey. The DH path already does this in the upstream release.
+- src/mac.c makes the integrated AES-GCM MAC return free_key=1: it does not
+  retain the generated MAC key. Otherwise each exchange leaks that buffer.
+- src/openssl.c frees key_fromdata_ctx, peer_key and bn_ctx in the OpenSSL 3
+  ECDH shared-secret function's cleanup path. They are temporary owned objects.
+The latter three changes fix leaks reproduced by the portable ASan/LSan tests.
+- src/openssl.h includes through PiSshOpenSSL.h's namespace macro: the CocoaPod
+  selects OpenSSL.framework directly; portable builds use ordinary OpenSSL
+  headers. No crypto behavior changes. This avoids filesystem-case collisions
+  and shadowing of the framework's modular headers.
+Additional PiSsh nonblocking lifecycle delta (upstream archive hashes unchanged):
+- include/libssh2.h and src/session.c expose two local worker-only extensions:
+  session_pending_operation reports pending ciphertext or key exchange (not an
+  ordinary inbound wait); session_abort is terminal no-I/O destruction after
+  socket shutdown. Abort marks the socket disconnected before channel cleanup,
+  discards pending ciphertext, and uses the normal resource destructors. It
+  checks the destructor result rather than abandoning a session on EAGAIN.
+- src/transport.c rejects sends on a disconnected session before entering KEX
+  or comparing pending packet addresses; abort cannot resume any network I/O.
+- src/channel.c keeps an outbound/KEX EAGAIN visible rather than masking it with
+  buffered channel payload. The core can then resume exactly that API before
+  another operation starts a competing packet or rekey.
+- src/channel.c also keeps channel writes in their input-draining state when
+  a global-request reply is partially sent. Retrying cannot skip that reply
+  and replace it with channel data; a deterministic reply-backpressure test
+  exercises both EAGAIN and partial socket writes.
+- src/channel.c and src/libssh2_priv.h keep the five-byte EOF packet in the
+  channel, not on the stack: transport's pointer-identity continuation contract
+  requires stable storage across retries and EOF calls nested inside close.
+- src/packet.c only treats positive transport results as packet types and keeps
+  waiting when a reply belongs to another channel. A zero/no-packet result must
+  not match the packet-type string terminator, and an unmatched reply must not
+  become a fatal -1. Deterministic packet-wait regressions preserve both cases.
+These changes are exercised by Linux --wrap=send EAGAIN/partial-send tests against
+production core code, including repeated rekey and cancellation under blocked
+sends. No protocol checks, host pin checks, or signature verification are removed.
+
+OpenSSL 3.6.2
+Copyright The OpenSSL Project Authors. All Rights Reserved.
+Apache-2.0; full license in OpenSSL-LICENSE.txt.
+License source: https://github.com/openssl/openssl/blob/openssl-3.6.2/LICENSE.txt
+Distributed as OpenSSL-Universal CocoaPod 3.6.2000 (exact dependency).
+Packaging: https://github.com/krzyzanowskim/OpenSSL/tree/3.6.2000
+Podspec: https://github.com/krzyzanowskim/OpenSSL/blob/3.6.2000/OpenSSL-Universal.podspec
+Binary: https://github.com/krzyzanowskim/OpenSSL/releases/download/3.6.2000/OpenSSL.xcframework.zip
+Binary SHA256: 37846a8bd302cb2443eff47f1045ab844d0cd40bf82cc6159cfad9aa5c3eff9e
+The XCFramework contains ios-arm64 and ios-arm64_x86_64-simulator slices.
+It is downloaded by CocoaPods, not committed here. ../PiSshOpenSSL.h selects the
+framework namespace explicitly; no forwarding headers shadow that namespace.
+
+These notices and licenses are included in the PiSshLicenses resource bundle.

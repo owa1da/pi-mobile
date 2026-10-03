@@ -21,6 +21,7 @@ export default {
   expo: {
     name: variant.name,
     slug: "pi-mobile",
+    owner: "owaida",
     version: nativeReleaseVersion.appVersion,
     // Rotation is allowed: chat and code read wider in landscape.
     orientation: "default",
@@ -31,7 +32,9 @@ export default {
     ios: {
       supportsTablet: true,
       infoPlist: {
-        ITSAppUsesNonExemptEncryption: false,
+        NSLocalNetworkUsageDescription: "Connect to your SSH hosts on your local network.",
+        // Complete Apple's export-compliance review for the shipped SSH library before
+        // declaring an encryption exemption. An omitted flag leaves the questionnaire open.
       },
       bundleIdentifier: variant.packageId,
       buildNumber: nativeReleaseVersion.iosBuildNumber,
@@ -95,6 +98,9 @@ export default {
     },
     extra: {
       router: {},
+      eas: {
+        projectId: "d2696fae-ad1a-472f-9b34-8aeb34f66b20",
+      },
     },
   },
 };

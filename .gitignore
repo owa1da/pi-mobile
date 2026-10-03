@@ -14,6 +14,16 @@ result
 .env.local
 .env.test.local
 .env*.local
+# Keep local configuration and signing material out of EAS source uploads too.
+.env.*
+!.env.example
+!.env.sample
+.tmp/
+.secrets/
+credentials.json
+*.p8
+*.p12
+*.mobileprovision
 .dev.vars
 **/.dev.vars
 
@@ -41,6 +51,8 @@ tsconfig.tsbuildinfo
 
 # Testing
 coverage/
+__pycache__/
+*.py[cod]
 
 # Playwright
 test-results/

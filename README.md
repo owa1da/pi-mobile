@@ -1,26 +1,29 @@
 # Pi mobile
 
-A minimal Android/iOS app to manage [pi](https://github.com/earendil-works/pi) coding-agent sessions
-on your own machine over SSH.
+A minimal mobile app to manage [pi](https://github.com/earendil-works/pi) coding-agent sessions
+on your own machine over direct SSH. Based on Paseo.
 
 ## What it is
 
-The phone connects to your machine with SSH and works with the pi sessions already running there.
-pi and forge keep running unchanged in tmux, and nothing is installed on the host. The app runs
-plain shell commands over the SSH connection to list sessions, read their chat, send prompts and
-attach to a session's terminal.
+Choose an SSH host, see your sessions, and open a conversation. pi keeps running in tmux on the
+host. The app reads session files and uses forge's remote channel for native questions, command
+screens, and actions. **There is no terminal view, relay, or separate mobile daemon.**
 
-## Requirements on the host
+## Host requirements
 
-- `sshd` reachable from the phone
-- tmux ≥ 3.0
-- pi installed
-- the forge extension pack (it provides the session registry the dashboard reads)
+- An SSH server reachable from the phone
+- tmux ≥ 3.0 and pi installed
+- Forge, including the remote-channel extension for native answering and command screens
 
-## Development
+The remote-channel work is currently on a separate forge branch. Installing the mobile app does
+not merge or update forge automatically. An older forge installation cannot provide those remote
+features. Bare MCP manager/custom dialogs are not yet answerable from the phone; supported MCP
+login, logout, and reconnect dialogs use native answering.
+
+## Development and checks
 
 ```bash
-npm install
+npm ci
 npm run build:highlight
 cd packages/app
 npx tsgo --noEmit
@@ -28,15 +31,51 @@ npx vitest run --project unit
 npx vitest run --project integration
 ```
 
-The integration tests run against a private tmux server and a fake `pi` in a temporary directory.
-The SSH test also needs `/usr/sbin/sshd`.
+Integration tests use temporary agent directories, private tmux servers, and loopback SSH
+fixtures. Some tests need `/usr/sbin/sshd` and an installed pi; the real-pi test loads the isolated
+forge worktree specified by `PIM_E2E_FORGE`, never the live `~/.pi/forge`.
 
-## Building the app
+## iOS builds
 
-TODO: APK build instructions.
+This app includes custom native SSH code and **cannot run in Expo Go**. Expo project:
+[`@owaida/pi-mobile`](https://expo.dev/accounts/owaida/projects/pi-mobile).
+
+From `packages/app`, while signed into Expo:
+
+```bash
+# Compile for the simulator; no Apple signing credentials needed.
+npx eas-cli@latest build --platform ios --profile ios-simulator
+
+# Signed device build for TestFlight; Apple developer signing setup required.
+npx eas-cli@latest build --platform ios --profile production
+```
+
+A simulator build cannot be installed through TestFlight. Only submit a verified, signed device
+build, using its explicit build ID:
+
+```bash
+npx eas-cli@latest submit --platform ios --id <BUILD_ID>
+```
+
+App Store Connect must have a matching `com.owa1da.pimobile` app record. Before testing, complete
+Apple's encryption/export-compliance questions and add the tester to an internal TestFlight
+group. Do not share Apple passwords or verification codes in chat. Subsequent uploads need a
+higher iOS build number; the current local version policy does not auto-increment it.
+
+**iOS verification is in progress.** Cloud compilation and real-iPhone checks are required
+before claiming it ready. Portable SSH tests and the device checklist are documented in
+[`modules/pi-ssh/ios/README.md`](packages/app/modules/pi-ssh/ios/README.md).
+
+## Android builds
+
+The Android app has been tested in an emulator. EAS profile `production-apk` creates an APK;
+`production` creates a store bundle. Device installation still needs a build for the phone's
+architecture and the appropriate signing key, rather than the existing emulator test APK.
 
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 Based on [Paseo](https://github.com/getpaseo/paseo) by Mohamed Boudra.
+Third-party SSH licenses are preserved in each native module; the iOS app bundles libssh2 and
+OpenSSL notices in `PiSshLicenses.bundle`.
