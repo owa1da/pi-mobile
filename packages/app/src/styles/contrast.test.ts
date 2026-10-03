@@ -32,6 +32,10 @@ function pairs(theme: Theme): [string, string, string, number][] {
     ["armed Ctrl label (surface0 on foreground)", c.surface0, c.foreground, BODY],
     ["selected tab label on surface3", c.foreground, c.surface3, BODY],
     ["primary button text on accent", c.accentForeground, c.accent, BODY],
+    // Disabled controls are exempt from 1.4.3, but the label must still be readable as a label.
+    ["disabled button label on surface2", c.foregroundExtraMuted, c.surface2, LARGE_OR_UI],
+    ["neutral chat chip text on surface2", c.foreground, c.surface2, BODY],
+    ["neutral chat chip icon (muted) on surface2", c.foregroundMuted, c.surface2, LARGE_OR_UI],
   ];
 }
 

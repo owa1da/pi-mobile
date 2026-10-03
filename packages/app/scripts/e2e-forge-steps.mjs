@@ -94,6 +94,22 @@ export async function sendLine(line) {
   await A.tap(A.byId("chat-send"), `send ${line}`);
 }
 
+/** Where an open sheet's top sits, as a fraction of the screen's height (0 = top). */
+export function sheetTopFraction(sheetId) {
+  const node = A.find(A.byId(sheetId));
+  assert(node, `${sheetId} not on screen`);
+  const [, H] = A.screenSize();
+  return node.bounds[1] / H;
+}
+
+/** A content-fitted sheet rests at its content's height, never at a fixed 90% (item 3). */
+export async function assertSheetRests(sheetId, minTop, notes) {
+  await sleep(900);
+  const top = sheetTopFraction(sheetId);
+  notes?.push(`${sheetId} top at ${(top * 100).toFixed(0)}% of the screen`);
+  assert(top >= minTop, `${sheetId} rests too tall: top at ${(top * 100).toFixed(0)}%`);
+}
+
 /** Back to the session's chat. */
 export async function leave() {
   await kbDown();
@@ -139,7 +155,8 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
           20_000,
           "footer items in the sub-bar",
         );
-        assert(/Fake 1 · medium · ctx/.test(sub.text), `footer: "${sub.text}"`);
+        // Exactly forge's segments: no state word or glyph before the model (item 1).
+        assert(sub.text.startsWith("Fake 1 · medium · ctx"), `footer: "${sub.text}"`);
         ctx.notes.push(`forge footer: "${sub.text}"`);
         shot("100-forge-footer-dark");
         await slash("rewind");
@@ -217,11 +234,18 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       "Forge: /side opens a marked second chat with its own composer, then closes",
       async () => {
         await slash("side");
-        await A.waitNode(A.byId("side-badge"), 20_000, "side badge");
         await A.waitNode(A.byId("side-composer"), 20_000, "side composer");
+        await A.waitNode(A.byId("side-empty"), 20_000, "side before its first message");
+        {
+          // forge's side draws nothing before its first message: no chip, no intro (item 2).
+          const nodes = A.dump();
+          assert(!nodes.some(A.byText(/^Side conversation$/)), "the side chip is back");
+          assert(!nodes.some(A.byText(/runs next to this one/)), "the side intro is back");
+          assert(!nodes.some(A.byId("side-badge")), "the side badge is back");
+        }
         shot("109-side-empty-dark");
         const since = mark();
-        await typeChecked("side-composer", "What is a token bucket", "side-badge");
+        await typeChecked("side-composer", "What is a token bucket", "side-composer");
         await kbDown();
         await A.tap(A.byId("side-send"), "side send");
         const ev = await acted("side.open", since);
@@ -248,7 +272,8 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         shot("111a-btw-pending-dark");
         await A.waitNode(A.byId("btw-item-0"), 20_000, "btw answer");
         await A.waitNode(A.byText(/A token bucket holds/), 10_000, "answer text");
-        await A.waitNode(A.byId("btw-close"), 10_000, "Close (forge's panel is open)");
+        // One way out, as forge's panel (Esc to close): the header's Back only (item 10).
+        assert(!A.find(A.byId("btw-close")), "btw shows a second exit (Close)");
         shot("111-btw-answer-dark");
         await A.tap(A.byId("btw-fork"), "fork");
         await acted("btw.fork", since);
@@ -276,11 +301,13 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         assert(!A.find(A.byText(/Unknown provider/)), "the raw provider error leaks");
         assert(A.find(A.byId("btw-error")), "no btw-error block");
         shot("113a-btw-error-dark");
-        auditControls(ctx, "btw", [["Close", A.byId("btw-close")]]);
+        auditControls(ctx, "btw", [["Clear", A.byId("btw-clear")]]);
         const s1 = mark();
-        await A.tap(A.byId("btw-close"), "close the btw panel");
+        // Leaving the screen closes forge's panel, as Esc does there.
+        await leave();
         await acted("btw.close", s1);
-        await A.waitGone(A.byId("btw-close"), 10_000, "btw panel closed");
+        await slash("btw");
+        await A.waitNode(A.byId("btw-item-0"), 20_000, "history again");
         await A.tap(A.byId("btw-clear"), "clear");
         await A.waitNode(A.byId("btw-clear-sheet-confirm"), 10_000, "clear confirm");
         await sleep(600);
@@ -337,7 +364,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /model as forge's picker (pins until you type, no Recent, name-only rows, chips on one row)",
+      "Forge: /model as forge's picker (pins until you type, no Recent, name-only rows, chips wrap whole)",
       async () => {
         await slash("model");
         await A.waitNode(A.byId("thinking-high"), 20_000, "thinking levels");
@@ -353,8 +380,18 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         const chips = nodes.filter(
           (n) => n.id.startsWith("thinking-") && n.id !== "thinking-levels",
         );
+        // Item 7: one wrapping row, every chip whole on screen, no sideways scroll.
+        const [sw] = A.screenSize();
+        const levelsBox = nodes.find(A.byId("thinking-levels"));
+        assert(chips.length >= 3, `only ${chips.length} thinking chips`);
+        assert(!levelsBox?.scrollable, "the thinking chips scroll sideways");
+        for (const chip of chips)
+          assert(
+            chip.bounds[0] >= 0 && chip.bounds[2] <= sw && chip.bounds[3] - chip.bounds[1] >= 100,
+            `thinking chip ${chip.id} clipped: ${chip.bounds}`,
+          );
         const tops = new Set(chips.map((n) => n.bounds[1]));
-        assert(chips.length >= 3 && tops.size === 1, `thinking chips on ${tops.size} rows`);
+        ctx.notes.push(`thinking chips: ${chips.length} on ${tops.size} row(s)`);
         shot("118-model-dark");
         auditControls(ctx, "model", [
           ["thinking chip", A.byId("thinking-high")],
@@ -434,6 +471,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
           minutes === "30" && message === "waiting for CI",
           `pause fields "${minutes}" / "${message}"`,
         );
+        await assertSheetRests("pause-sheet", 0.3, ctx.notes);
         shot("123-pause-sheet-dark");
         auditControls(ctx, "pause sheet", [["Pause", A.byId("forge-sheet-submit")]]);
         await A.tap(A.byId("forge-sheet-submit"), "Pause");
@@ -450,11 +488,19 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
           "the wake-up in the footer",
         );
         {
-          // Item 1: forge's drop order. The line is too long for a phone, so whole parts go
-          // (the effort first) and the right-most item stays whole: never "◷ wakes i…".
+          // forge's drop order: parts go whole (the effort first, never without its model) and the
+          // right-most item stays whole: never "◷ wakes i…". Without the old state word the
+          // whole line may now fit; either way it is forge's segments only.
           const line = A.find(A.byId("session-state"))?.text ?? "";
-          assert(!line.includes(" · high · "), `the effort should go first: "${line}"`);
           assert(/ · ◷ wakes in (29|30)m$/.test(line), `the wake item was cut: "${line}"`);
+          assert(
+            !line.includes(" · high · ") || line.startsWith("Sonnet 5 · high"),
+            `the effort shows without its model: "${line}"`,
+          );
+          assert(
+            !/^(Idle|Working|Needs input)/.test(line),
+            `a state word in the footer: "${line}"`,
+          );
           ctx.notes.push(`footer fitted: "${line}"`);
         }
         await slash("pause");
@@ -497,6 +543,9 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
             await acted("export.run", since, (e) => e.args?.overwrite === true && e.code === "ok");
           }
           await A.waitNode(A.byText(/\/notes\/session\.md$/), 15_000, "exported path");
+          // The result settles the sheet back to its content (no keyboard, no 90%).
+          assert(!A.keyboardShown(), "the keyboard stayed up over the export result");
+          await assertSheetRests("export-sheet", 0.55, ctx.notes);
           if (!overwrite) shot("125-export-done-dark");
           await A.tap(A.byId("forge-sheet-close"), "Done");
           await A.waitGone(A.byId("forge-sheet-close"), 10_000, "export sheet to close");
@@ -515,6 +564,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
           "the name did not land in its field",
         );
         await kbDown();
+        await assertSheetRests("rename-sheet", 0.55, ctx.notes);
         shot("127-rename-dark");
         await A.tap(A.byId("forge-sheet-submit"), "Rename");
         await acted("session.rename", since, (e) => e.args?.name === "Rate limiter");

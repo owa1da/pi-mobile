@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { Text, View } from "react-native";
+import { Keyboard, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { SheetActions, sheetActionStyles } from "@/components/pi/sheet-actions";
@@ -28,7 +28,7 @@ import {
 } from "@/remote/views";
 import type { RemoteChannel } from "@/screens/session/use-remote-channel";
 import { useForgeAction } from "./parts";
-import { sheetSnapPoints } from "./sheet-layout";
+import { FIELD_SHEETS } from "./sheet-layout";
 
 export type SheetTool = Extract<
   NativeTool,
@@ -232,6 +232,7 @@ function SheetBody({
 
   const header = useMemo(() => ({ title: kind ? t(`pi.forge.titles.${kind}`) : "" }), [kind, t]);
   const done = kind === "export" && result !== null;
+  useKeyboardGoesOnResult(done);
   const footer = useMemo(
     () =>
       kind ? (
@@ -255,7 +256,8 @@ function SheetBody({
       visible={sheet !== null}
       onClose={onClose}
       footer={footer}
-      snapPoints={sheetSnapPoints(kind)}
+      fitContent
+      expandWithKeyboard={expandsWithKeyboard(kind, done)}
       testID={kind ? `${kind}-sheet` : undefined}
     >
       <View style={styles.body}>
@@ -287,6 +289,18 @@ function SheetBody({
       </View>
     </AdaptiveModalSheet>
   );
+}
+
+/** A result replaces the form: the keyboard goes, and the fitted sheet settles to the result. */
+function useKeyboardGoesOnResult(done: boolean) {
+  useEffect(() => {
+    if (done) Keyboard.dismiss();
+  }, [done]);
+}
+
+/** A sheet with a text field rises to 90% with the keyboard; once it shows a result it does not. */
+function expandsWithKeyboard(kind: SheetTool | undefined, done: boolean): boolean {
+  return Boolean(kind && FIELD_SHEETS.has(kind)) && !done;
 }
 
 function SheetFooter({

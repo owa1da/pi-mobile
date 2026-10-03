@@ -8,8 +8,6 @@ import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { SheetActions, sheetActionStyles } from "./sheet-actions";
 
-const SNAP_POINTS = ["34%"];
-
 interface ConfirmSheetProps {
   visible: boolean;
   title: string;
@@ -64,7 +62,7 @@ export function ConfirmSheet({
       onClose={onCancel}
       onDismiss={onDismiss}
       footer={footer}
-      snapPoints={SNAP_POINTS}
+      fitContent
       testID={testID}
     >
       <View style={styles.body}>

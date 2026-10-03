@@ -83,11 +83,6 @@ export function SideView({ hostId, channel, active, params }: ForgeViewProps) {
   const ready = !unavailable && channel.loaded;
   return (
     <ForgeFrame title={t("pi.forge.titles.side")} right={right}>
-      <View style={styles.badgeRow}>
-        <Text style={styles.badge} testID="side-badge">
-          {t("pi.forge.side.badge")}
-        </Text>
-      </View>
       <SideBody unavailable={unavailable} loaded={channel.loaded} open={open} feed={feed} />
       <ErrorLine message={action.error} onDismiss={action.clearError} />
       {ready ? (
@@ -114,15 +109,10 @@ function SideBody({
   open: boolean;
   feed: ReturnType<typeof useChatFeed>;
 }) {
-  const { t } = useTranslation();
   if (unavailable) return <UpdateForge />;
   if (!loaded) return <Loading />;
-  if (!open)
-    return (
-      <View style={styles.fill}>
-        <Text style={forgeStyles.intro}>{t("pi.forge.side.empty")}</Text>
-      </View>
-    );
+  // forge's side draws nothing before its first message: the input's placeholder says it.
+  if (!open) return <View style={styles.fill} testID="side-empty" />;
   return (
     <TranscriptProviders>
       <ChatView rows={feed.rows} truncated={feed.truncated} loading={feed.loading} />
@@ -170,20 +160,17 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
   useEffect(() => {
     if (known && !remotePending && (remoteError || !btw?.question)) setPending(null);
   }, [btw?.question, known, remoteError, remotePending]);
-  const closePanel = useCallback(() => void run("btw.close", {}), [run]);
-  const right = useMemo(
-    () =>
-      panelOpen ? (
-        <Button
-          variant="ghost"
-          onPress={closePanel}
-          loading={action.busy === "btw.close"}
-          testID="btw-close"
-        >
-          {t("pi.forge.btw.close")}
-        </Button>
-      ) : null,
-    [action.busy, closePanel, panelOpen, t],
+  // forge's panel has one way out (Esc to close): here it is leaving the screen, by the header's
+  // arrow or the system back, which closes forge's panel as Esc does.
+  const panelOpenRef = useRef(panelOpen);
+  panelOpenRef.current = panelOpen;
+  const sendRef = useRef(channel.send);
+  sendRef.current = channel.send;
+  useEffect(
+    () => () => {
+      if (panelOpenRef.current) void sendRef.current("btw.close", {}).catch(() => undefined);
+    },
+    [],
   );
   useEffect(() => {
     if (!channel.loaded || history === null || !seed.current) return;
@@ -194,7 +181,10 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
 
   const fork = useCallback(async () => {
     const out = await run("btw.fork", {});
-    if (out.ok) openForge(hostId, row.sessionId, "side", {}, true);
+    if (!out.ok) return;
+    // forge closed its panel with the fork: leaving for the side sends no second close.
+    panelOpenRef.current = false;
+    openForge(hostId, row.sessionId, "side", {}, true);
   }, [hostId, row.sessionId, run]);
   const clear = useCallback(async () => {
     setConfirmClear(false);
@@ -218,7 +208,7 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
     );
   const hasAnswers = (history?.length ?? 0) > 0;
   return (
-    <ForgeFrame title={t("pi.forge.titles.btw")} right={right}>
+    <ForgeFrame title={t("pi.forge.titles.btw")}>
       {body}
       <ErrorLine message={action.error} onDismiss={action.clearError} />
       {channel.available && !action.unsupported ? (
@@ -374,20 +364,6 @@ function BtwActions({
 const styles = StyleSheet.create((theme) => ({
   fill: { flex: 1 },
   composer: {},
-  badgeRow: {
-    flexDirection: "row",
-    paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[2],
-  },
-  badge: {
-    paddingHorizontal: theme.spacing[2],
-    paddingVertical: 2,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.surface2,
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    overflow: "hidden",
-  },
   exchange: {
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[4],

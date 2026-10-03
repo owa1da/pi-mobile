@@ -159,21 +159,31 @@ export function CostView({ channel }: ForgeViewProps) {
                 {section.title}
               </Text>
             ) : null}
-            {section.rows.map((row) => (
-              <View
-                key={row.key}
-                style={[styles.costRow, row.indent && styles.indent]}
-                accessible
-                accessibilityLabel={row.value ? `${row.label}, ${row.value}` : row.label}
-              >
-                <Text style={styles.label}>{row.label}</Text>
-                {row.value ? (
-                  <Text style={styles.value} selectable>
-                    {row.value}
-                  </Text>
-                ) : null}
-              </View>
-            ))}
+            {section.rows.map((row) => {
+              // A long value (the session file's path) goes under its label, left-aligned, so it
+              // never wraps ragged against the right edge.
+              const stacked = isLongValue(row.value);
+              return (
+                <View
+                  key={row.key}
+                  style={[
+                    styles.costRow,
+                    stacked && styles.costRowStacked,
+                    row.indent && styles.indent,
+                  ]}
+                  accessible
+                  accessibilityLabel={row.value ? `${row.label}, ${row.value}` : row.label}
+                  testID={stacked ? "cost-row-stacked" : undefined}
+                >
+                  <Text style={styles.label}>{row.label}</Text>
+                  {row.value ? (
+                    <Text style={[styles.value, stacked && styles.valueStacked]} selectable>
+                      {row.value}
+                    </Text>
+                  ) : null}
+                </View>
+              );
+            })}
           </View>
         ))}
       </ScrollView>
@@ -228,6 +238,13 @@ export function ChangelogView({ channel }: ForgeViewProps) {
 }
 
 const MIN_ROW = 48;
+
+/** Values longer than this (a path, an id) sit under their label instead of beside it. */
+const STACK_AT = 28;
+
+function isLongValue(value: string | null | undefined): boolean {
+  return Boolean(value && (value.length > STACK_AT || value.includes("/")));
+}
 
 type KeyedSection = Omit<CostSection, "rows"> & {
   key: string;
@@ -306,6 +323,14 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.border,
   },
+  costRowStacked: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    justifyContent: "center",
+    gap: theme.spacing[1],
+    paddingVertical: theme.spacing[3],
+  },
+  valueStacked: { flex: 0, textAlign: "left" },
   indent: { paddingLeft: theme.spacing[8] },
   markdown: { paddingHorizontal: theme.spacing[4], paddingVertical: theme.spacing[3] },
 }));

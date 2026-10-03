@@ -29,42 +29,49 @@ export function waitingBannerVisible(rowState: SessionRow["state"], channel: Cha
   return state.view === "dialog";
 }
 
-export type SubBarStatus =
-  | { kind: "state"; key: `pi.session.state.${SessionRow["state"]}` }
-  /** An optimistic send is in flight: the spinner in the composer and this word agree. */
-  | { kind: "pending"; key: "pi.session.state.sending" }
-  | {
-      kind: "connection";
-      key: `pi.session.connection.${"connecting" | "offline"}`;
-    }
-  /** The connection banner is up and already says it: the sub-bar shows identity only. */
-  | { kind: "quiet" };
-
 /**
- * What the sub-bar says. A session's state is only known while the connection is live; while a
- * reconnecting/failed banner is showing the sub-bar does not repeat it (no state word at all).
+ * The footer under the composer is forge's status line and nothing else (status-line.md): no state
+ * word. While the connection is not live its facts are stale, so they are drawn dimmed.
  */
-export function subBarStatus(
-  connection: ConnectionStatus,
-  rowState: SessionRow["state"],
-  sending = false,
-): SubBarStatus {
-  if (connection === "connected") {
-    if (sending && rowState !== "working" && rowState !== "waiting")
-      return { kind: "pending", key: "pi.session.state.sending" };
-    return { kind: "state", key: `pi.session.state.${rowState}` };
-  }
-  if (connection === "reconnecting" || connection === "failed") return { kind: "quiet" };
-  if (connection === "connecting")
-    return { kind: "connection", key: "pi.session.connection.connecting" };
-  return { kind: "connection", key: "pi.session.connection.offline" };
+export function footerDimmed(connection: ConnectionStatus): boolean {
+  return connection !== "connected";
 }
 
 /**
- * A part of the sub-bar line, measured. `state` is the app's state word (forge's line has none: it
- * stands where forge keeps its keys, given up last); the rest are forge's footer kinds.
+ * The answer dock holds the input's place: pi's dialog, or an ask item that blocks pi. forge draws
+ * no status line then ("while a panel has the input's place … there is no line"), and no working
+ * row while an ask_user question keeps the agent waiting on you (look.md).
  */
-export type LineKind = "state" | "thinking" | "model" | "cost" | "context" | "item";
+export function inputHeld(state: RemoteState | undefined): boolean {
+  if (!state) return false;
+  if (state.prompt) return true;
+  return (state.questions ?? []).some((q) => q.status === "open" && q.blocking);
+}
+
+/**
+ * pi's working row (look.md "The working row"): shown while pi runs a turn, above the input, never
+ * while the dock holds the input or while the connection is not live (the state would be stale).
+ */
+export function workingRowVisible(
+  rowState: SessionRow["state"],
+  connection: ConnectionStatus,
+  held: boolean,
+): boolean {
+  return rowState === "working" && connection === "connected" && !held;
+}
+
+/** The working row's clock, as forge writes it: `4s`, `1m 14s`, `1h 2m`. */
+export function workingClock(sinceMs: number, nowMs: number): string {
+  const seconds = Math.max(0, Math.floor((nowMs - sinceMs) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return seconds % 60 === 0 ? `${minutes}m` : `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+}
+
+/** A part of the footer line, measured: forge's footer kinds. */
+export type LineKind = "thinking" | "model" | "cost" | "context" | "item";
 
 export interface MeasuredPart {
   kind: LineKind;
@@ -73,7 +80,7 @@ export interface MeasuredPart {
 
 /**
  * forge's `LINE_DROP_ORDER` (`_lib/status-line/format.ts`) for the parts it sends: effort, model,
- * cost, context, then the items (right-most first); the state word last, as forge's keys.
+ * cost, context, then the items (right-most first).
  */
 export const LINE_DROP_ORDER: readonly LineKind[] = [
   "thinking",
@@ -81,7 +88,6 @@ export const LINE_DROP_ORDER: readonly LineKind[] = [
   "cost",
   "context",
   "item",
-  "state",
 ];
 
 /** A part shown only next to a part of another kind (the effort with its model). */

@@ -1,53 +1,90 @@
 import { describe, expect, it } from "vitest";
 import {
   fitLine,
+  footerDimmed,
+  inputHeld,
   lineWidth,
-  subBarStatus,
   waitingBannerVisible,
+  workingClock,
+  workingRowVisible,
   type ChannelView,
   type LineKind,
 } from "./chrome";
 import type { RemoteState } from "@/remote/types";
 
-describe("subBarStatus", () => {
-  it("shows the session state while connected", () => {
-    expect(subBarStatus("connected", "idle")).toEqual({
-      kind: "state",
-      key: "pi.session.state.idle",
-    });
-    expect(subBarStatus("connected", "waiting")).toMatchObject({ key: "pi.session.state.waiting" });
+describe("footerDimmed", () => {
+  it("draws forge's line plainly while connected, dimmed otherwise (stale facts)", () => {
+    expect(footerDimmed("connected")).toBe(false);
+    for (const status of ["connecting", "reconnecting", "failed", "idle"] as const)
+      expect(footerDimmed(status)).toBe(true);
+  });
+});
+
+describe("inputHeld", () => {
+  const base: RemoteState = {
+    v: 1,
+    pid: 1,
+    sessionId: "s",
+    rev: 1,
+    updatedAt: 0,
+    view: "main",
+    draft: false,
+  };
+  const q = (blocking: boolean, status: "open" | "answered-unsent" = "open") => ({
+    id: "q",
+    blocking,
+    askedAt: 0,
+    status,
+    items: [],
   });
 
-  it("names the connection instead of a stale state", () => {
-    expect(subBarStatus("connecting", "working")).toEqual({
-      kind: "connection",
-      key: "pi.session.connection.connecting",
-    });
-    expect(subBarStatus("idle", "idle")).toEqual({
-      kind: "connection",
-      key: "pi.session.connection.offline",
-    });
+  it("is held while pi's dialog or a blocking ask item has the input's place", () => {
+    expect(inputHeld(undefined)).toBe(false);
+    expect(inputHeld(base)).toBe(false);
+    expect(
+      inputHeld({
+        ...base,
+        view: "dialog",
+        prompt: {
+          id: "p",
+          kind: "confirm",
+          title: "Overwrite?",
+          message: null,
+          options: [],
+          placeholder: null,
+          prefill: null,
+          answerable: true,
+          held: false,
+          since: 0,
+        },
+      }),
+    ).toBe(true);
+    expect(inputHeld({ ...base, questions: [q(true)] })).toBe(true);
   });
 
-  it("stays quiet while the connection banner already says it", () => {
-    expect(subBarStatus("reconnecting", "idle")).toEqual({ kind: "quiet" });
-    expect(subBarStatus("failed", "working", true)).toEqual({ kind: "quiet" });
+  it("is not held by a non-blocking or answered question (the composer stays)", () => {
+    expect(inputHeld({ ...base, questions: [q(false)] })).toBe(false);
+    expect(inputHeld({ ...base, questions: [q(true, "answered-unsent")] })).toBe(false);
   });
+});
 
-  it("says Sending while an optimistic send is in flight, then the real state", () => {
-    expect(subBarStatus("connected", "idle", true)).toEqual({
-      kind: "pending",
-      key: "pi.session.state.sending",
-    });
-    expect(subBarStatus("connected", "working", true)).toMatchObject({
-      key: "pi.session.state.working",
-    });
-    expect(subBarStatus("connected", "waiting", true)).toMatchObject({
-      key: "pi.session.state.waiting",
-    });
-    expect(subBarStatus("connected", "idle", false)).toMatchObject({
-      key: "pi.session.state.idle",
-    });
+describe("workingRowVisible", () => {
+  it("shows only while pi works, connected, and the input is not held", () => {
+    expect(workingRowVisible("working", "connected", false)).toBe(true);
+    expect(workingRowVisible("idle", "connected", false)).toBe(false);
+    expect(workingRowVisible("waiting", "connected", false)).toBe(false);
+    expect(workingRowVisible("working", "connected", true)).toBe(false);
+    expect(workingRowVisible("working", "reconnecting", false)).toBe(false);
+  });
+});
+
+describe("workingClock", () => {
+  it("writes the run's clock as forge does", () => {
+    expect(workingClock(0, 4_900)).toBe("4s");
+    expect(workingClock(0, 74_000)).toBe("1m 14s");
+    expect(workingClock(0, 120_000)).toBe("2m");
+    expect(workingClock(0, 3_720_000)).toBe("1h 2m");
+    expect(workingClock(10_000, 0)).toBe("0s");
   });
 });
 
@@ -112,9 +149,8 @@ describe("waitingBannerVisible", () => {
 describe("fitLine (forge's LINE_DROP_ORDER)", () => {
   const p = (kind: LineKind, width: number, name: string = kind) => ({ kind, width, name });
   const names = (parts: { name: string }[]) => parts.map((part) => part.name);
-  // Idle · Sonnet 5 · high · ctx 18%/200k · ~$0.126 · ◷ wakes in 30m
+  // Sonnet 5 · high · ctx 18%/200k · ~$0.126 · ◷ wakes in 30m (no state word: forge has none)
   const line = [
-    p("state", 30),
     p("model", 60),
     p("thinking", 30),
     p("context", 80),
@@ -129,12 +165,12 @@ describe("fitLine (forge's LINE_DROP_ORDER)", () => {
 
   it("drops the effort first, whole, before any item is cut", () => {
     const room = lineWidth(line, SEP) - 20;
-    expect(names(fitLine(line, room, SEP))).toEqual(["state", "model", "context", "cost", "wake"]);
+    expect(names(fitLine(line, room, SEP))).toEqual(["model", "context", "cost", "wake"]);
   });
 
   it("drops the model with its effort, then the cost, keeping context and items", () => {
-    // state 30 + context 80 + wake 100 + 2 seps = 230
-    expect(names(fitLine(line, 240, SEP))).toEqual(["state", "context", "wake"]);
+    // context 80 + wake 100 + 1 sep = 190
+    expect(names(fitLine(line, 200, SEP))).toEqual(["context", "wake"]);
   });
 
   it("never shows the effort without its model", () => {
@@ -145,17 +181,17 @@ describe("fitLine (forge's LINE_DROP_ORDER)", () => {
   });
 
   it("brings back a dropped part that fits again in the room left", () => {
-    // Items go before the state; with room for state + cost only, cost comes back.
-    expect(names(fitLine(line, 90, SEP))).toEqual(["state", "cost"]);
+    // Context goes before the items; with room for the wake item and the cost, cost comes back.
+    expect(names(fitLine(line, 160, SEP))).toEqual(["cost", "wake"]);
   });
 
   it("drops the right-most item first", () => {
-    const items = [p("state", 30), p("item", 50, "shell"), p("item", 100, "wake")];
-    expect(names(fitLine(items, 95, SEP))).toEqual(["state", "shell"]);
+    const items = [p("context", 30), p("item", 50, "shell"), p("item", 100, "wake")];
+    expect(names(fitLine(items, 95, SEP))).toEqual(["context", "shell"]);
   });
 
   it("keeps the most important part alone when nothing fits, for the caller to cut", () => {
-    expect(names(fitLine(line, 10, SEP))).toEqual(["state"]);
+    expect(names(fitLine(line, 10, SEP))).toEqual(["wake"]);
     expect(names(fitLine([p("model", 60), p("thinking", 30)], 10, SEP))).toEqual(["model"]);
   });
 });

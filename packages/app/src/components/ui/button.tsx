@@ -84,6 +84,7 @@ const accentForegroundIconMapping = (theme: Theme) => ({
 const destructiveForegroundIconMapping = (theme: Theme) => ({
   iconColor: theme.colors.destructiveForeground,
 });
+const disabledIconMapping = (theme: Theme) => ({ iconColor: theme.colors.foregroundExtraMuted });
 
 const styles = StyleSheet.create((theme) => {
   const geometry = createControlGeometry(theme);
@@ -133,8 +134,14 @@ const styles = StyleSheet.create((theme) => {
     pressed: {
       opacity: 0.85,
     },
-    disabled: {
-      opacity: theme.opacity[50],
+    // Disabled is a state of its own in tokens (never a 50% fade of the variant, which read as a
+    // washed-out accent): a quiet surface2 fill with extra-muted text, in both themes.
+    disabledFilled: {
+      backgroundColor: theme.colors.surface2,
+      borderColor: theme.colors.surface2,
+    },
+    textDisabled: {
+      color: theme.colors.foregroundExtraMuted,
     },
     text: {
       color: theme.colors.foreground,
@@ -185,6 +192,9 @@ export function Button({
 >) {
   const [hovered, setHovered] = useState(false);
   const isDisabled = disabled || loading;
+  // A loading button keeps its variant (the spinner says it is busy); only a disabled one greys out.
+  const showDisabled = Boolean(disabled) && !loading;
+  const filled = variant !== "ghost" && variant !== "outline";
 
   let variantStyle: ViewStyle;
   if (variant === "default") {
@@ -220,10 +230,10 @@ export function Button({
       sizeStyle,
       variantStyle,
       pressed ? styles.pressed : null,
-      isDisabled ? styles.disabled : null,
+      showDisabled && filled ? styles.disabledFilled : null,
       style,
     ],
-    [sizeStyle, variantStyle, isDisabled, style],
+    [sizeStyle, variantStyle, showDisabled, filled, style],
   );
 
   const resolvedTextStyle = useMemo(
@@ -235,8 +245,9 @@ export function Button({
       variant === "ghost" ? styles.textGhost : null,
       textStyle,
       isGhostHovered ? styles.textGhostHovered : null,
+      showDisabled ? styles.textDisabled : null,
     ],
-    [size, variant, textStyle, isGhostHovered],
+    [size, variant, textStyle, isGhostHovered, showDisabled],
   );
 
   const accessibilityState = useMemo(
@@ -245,6 +256,9 @@ export function Button({
   );
 
   function resolveIconMapping() {
+    if (showDisabled) {
+      return disabledIconMapping;
+    }
     if (variant === "default") {
       return accentForegroundIconMapping;
     }

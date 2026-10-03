@@ -23,7 +23,7 @@ import type { SessionRow } from "@/host/types";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
 import { useReportPlace } from "@/navigation/place-restorer";
 import { restoredSessionOutcome } from "@/navigation/restore-place";
-import { rowGlyph, shortModel } from "@/screens/dashboard/view-model";
+import { shortModel } from "@/screens/dashboard/view-model";
 import {
   connectionStore,
   refreshSessions,
@@ -34,9 +34,18 @@ import {
 import { findRow, type SessionsEntry } from "@/stores/sessions-store";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
+import { hostNow } from "@/remote/for-service";
 import { useAnnounceOnChange, announce } from "@/components/pi/use-announce";
 import { latestReply, nextReplyAnnouncement, previewText } from "./announce";
-import { fitLine, subBarStatus, waitingBannerVisible, type LineKind } from "./chrome";
+import {
+  fitLine,
+  footerDimmed,
+  inputHeld,
+  waitingBannerVisible,
+  workingClock,
+  workingRowVisible,
+  type LineKind,
+} from "./chrome";
 import { friendlyHostError, type FriendlyError } from "./send-errors";
 import { useChatFeed } from "./use-chat-feed";
 import { AnswerDock, openIdsOf } from "./answer-dock";
@@ -127,8 +136,6 @@ export function SessionScreen() {
   const appActive = useAppActive();
   const connected = connection.status === "connected";
   const { row, leaving } = useSessionPlace(params, entry, focused);
-  // An optimistic send in flight (until the next listing shows pi's state): the sub-bar says so.
-  const [sendPending, setSendPending] = useState(false);
   const seen = useRef(false);
   if (row) seen.current = true;
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
@@ -154,8 +161,6 @@ export function SessionScreen() {
         connection={connection}
         focused={focused}
         active={focused && appActive}
-        sendPending={sendPending}
-        onPendingChange={setSendPending}
         onReplaced={following.follow}
       />
     );
@@ -242,8 +247,6 @@ interface SessionBodyProps {
   connection: HostConnectionState;
   focused: boolean;
   active: boolean;
-  sendPending: boolean;
-  onPendingChange: (pending: boolean) => void;
   onReplaced: (pid: number) => void;
 }
 
@@ -260,12 +263,13 @@ function SessionBody(props: SessionBodyProps) {
     [hostId, row.sessionId],
   );
   const closeSheet = useCallback(() => setSheet(null), []);
+  const held = channel.available && inputHeld(channel.state);
   return (
     <>
       <SessionSubBar
         row={row}
         connection={connection}
-        sending={props.sendPending}
+        hidden={held}
         footer={channel.available ? channel.state?.footer : undefined}
       />
       <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
@@ -274,7 +278,8 @@ function SessionBody(props: SessionBodyProps) {
         row={row}
         entry={entry}
         active={active}
-        onPendingChange={props.onPendingChange}
+        connection={connection}
+        held={held}
         channel={channel}
         openNative={openNative}
       />
@@ -291,17 +296,12 @@ function SessionBody(props: SessionBodyProps) {
 }
 
 /**
- * The sub-bar's parts: the state word, then forge's status line when it publishes one (exactly the
- * desktop's facts), else the row's model. Each part gets a stable key (its text, numbered on repeats).
+ * The footer's parts: forge's status line when it publishes one (exactly the desktop's facts, no
+ * state word), else the row's model. Each part gets a stable key (its text, numbered on repeats).
  */
-function keyedParts(
-  word: string | null,
-  parts: FooterPart[],
-  model: string | undefined,
-): SubBarPart[] {
-  let shown: Unkeyed[] = parts;
-  if (shown.length === 0) shown = model ? [{ text: model, kind: "model" }] : [];
-  const all: Unkeyed[] = word ? [{ text: word, kind: "state" }, ...shown] : shown;
+function keyedParts(parts: FooterPart[], model: string | undefined): SubBarPart[] {
+  let all: Unkeyed[] = parts;
+  if (all.length === 0) all = model ? [{ text: model, kind: "model" }] : [];
   const seen = new Map<string, number>();
   return all.map((part) => {
     const count = seen.get(part.text) ?? 0;
@@ -381,45 +381,35 @@ function toneStyle(tone: FooterPart["tone"]) {
 function SessionSubBar({
   row,
   connection,
-  sending,
+  hidden,
   footer,
 }: {
   row: SessionRow;
   connection: HostConnectionState;
-  sending: boolean;
+  /** The answer dock holds the input's place: forge draws no line then. */
+  hidden: boolean;
   /** forge's status-line items (model · effort · ctx · cost), when it publishes them. */
   footer?: RemoteFooter | null;
 }) {
-  const { t } = useTranslation();
-  const model = shortModel(row.model);
-  // While the connection is not live the last-known state is stale: name the connection instead,
-  // or (banner up) say nothing and keep only the session's identity, dimmed.
-  const status = subBarStatus(connection.status, row.state, sending);
-  const quiet = status.kind === "quiet";
-  const word = quiet ? null : t(status.key);
-  // forge's status line when it publishes one (exactly the desktop's facts), else the row's model.
-  const all = keyedParts(word, footerParts(footer), model);
+  // forge's line and nothing else; while the connection is not live its facts are stale: dimmed.
+  const all = keyedParts(footerParts(footer), shortModel(row.model));
   const fitted = useFittedParts(all);
-  let glyph = rowGlyph(row);
-  if (status.kind === "pending") glyph = "working";
-  else if (status.kind !== "state") glyph = "gone";
+  if (hidden || all.length === 0) return null;
+  const dimmed = footerDimmed(connection.status);
   return (
     <View style={styles.subBar}>
-      <View style={styles.subBarMeta}>
-        <SessionGlyph kind={glyph} />
-        <Text
-          style={[styles.subBarText, quiet && styles.subBarQuiet]}
-          numberOfLines={1}
-          onLayout={fitted.onRoom}
-          testID="session-state"
-        >
-          {fitted.shown.map((part, index) => (
-            <Text key={part.key} style={toneStyle(part.tone)}>
-              {index === 0 ? part.text : ` · ${part.text}`}
-            </Text>
-          ))}
-        </Text>
-      </View>
+      <Text
+        style={[styles.subBarText, dimmed && styles.subBarQuiet]}
+        numberOfLines={1}
+        onLayout={fitted.onRoom}
+        testID="session-state"
+      >
+        {fitted.shown.map((part, index) => (
+          <Text key={part.key} style={toneStyle(part.tone)}>
+            {index === 0 ? part.text : ` · ${part.text}`}
+          </Text>
+        ))}
+      </Text>
       <View
         style={styles.measure}
         pointerEvents="none"
@@ -437,12 +427,49 @@ function SessionSubBar({
   );
 }
 
+/** Ticks once a second while `on` (the working row's clock). */
+function useSecondTick(on: boolean): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!on) return undefined;
+    const timer = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [on]);
+}
+
+/**
+ * pi's working row, as forge's look draws it above the input: the spinner, the verb, then the run's
+ * clock in grey (`✻ Working… (4s)`). The app cannot see forge's per-run verb or token count, so it
+ * shows pi's own verb and the clock only.
+ */
+function WorkingRow({ hostId, since }: { hostId: string; since: number }) {
+  const { t } = useTranslation();
+  useSecondTick(true);
+  const clock = workingClock(since, hostNow(connectionStore.getState().getService(hostId)));
+  return (
+    <View
+      style={styles.workingRow}
+      accessible
+      accessibilityLabel={t("pi.session.workingLabel", { clock })}
+      testID="chat-working"
+    >
+      <SessionGlyph kind="working" />
+      <Text style={styles.workingText} numberOfLines={1}>
+        {t("pi.session.working")}
+        <Text style={styles.workingClock}>{` (${clock})`}</Text>
+      </Text>
+    </View>
+  );
+}
+
 interface ChatPaneProps {
   hostId: string;
   row: SessionRow;
   entry: SessionsEntry | undefined;
   active: boolean;
-  onPendingChange: (pending: boolean) => void;
+  connection: HostConnectionState;
+  /** The answer dock holds the input's place (no working row then). */
+  held: boolean;
   channel: RemoteChannel;
   /** A `/` name the app opens natively (a screen or a sheet). */
   openNative: (tool: NativeTool, arg: string) => void;
@@ -468,7 +495,8 @@ function ChatPaneBody({
   hostId,
   row,
   active,
-  onPendingChange,
+  connection,
+  held,
   channel,
   openNative,
 }: ChatPaneProps) {
@@ -546,19 +574,12 @@ function ChatPaneBody({
       const pendingId = feed.addPending(text);
       sendingRef.current = true;
       setSending(true);
-      onPendingChange(true);
-      const settle = () => {
-        onPendingChange(false);
-        return undefined;
-      };
       try {
         await service.sendPrompt(row, text);
         feed.boost();
-        // "Sending…" holds until the listing shows pi's new state (Working, or a quick reply).
-        void refreshSessions(hostId).then(settle, settle);
+        void refreshSessions(hostId);
         return true;
       } catch (error) {
-        settle();
         // Never re-echo or resend: when the outcome is unknown, the chat refresh shows whether it
         // arrived; the text goes back into the composer only for the user to decide.
         feed.removePending(pendingId);
@@ -575,16 +596,7 @@ function ChatPaneBody({
         setSending(false);
       }
     },
-    [
-      channel.available,
-      channel.state?.commands,
-      feed,
-      hostId,
-      onPendingChange,
-      openNative,
-      row,
-      runCommand,
-    ],
+    [channel.available, channel.state?.commands, feed, hostId, openNative, row, runCommand],
   );
 
   const stop = useCallback(() => {
@@ -664,6 +676,9 @@ function ChatPaneBody({
           />
         ) : null}
       </View>
+      {workingRowVisible(row.state, connection.status, held) ? (
+        <WorkingRow hostId={hostId} since={row.since} />
+      ) : null}
       <AnswerDock channel={channel} answers={answers}>
         <Composer
           commands={channel.available ? channel.state?.commands : undefined}
@@ -711,17 +726,18 @@ const styles = StyleSheet.create((theme) => ({
   subBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[3],
     paddingHorizontal: theme.spacing[4],
     paddingBottom: theme.spacing[2],
   },
-  subBarMeta: {
-    flex: 1,
-    minWidth: 0,
+  workingRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    paddingBottom: theme.spacing[2],
   },
+  workingText: { flex: 1, color: theme.colors.foreground, fontSize: theme.fontSize.base },
+  workingClock: { color: theme.colors.foregroundMuted },
   subBarText: { flex: 1, color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   subBarQuiet: { color: theme.colors.foregroundExtraMuted },
   measure: {

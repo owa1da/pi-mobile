@@ -177,13 +177,7 @@ function ModelList({
       {levels && levels.levels.length > 0 ? (
         <>
           <SectionLabel>{t("pi.forge.model.thinking")}</SectionLabel>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.levels}
-            accessibilityRole="radiogroup"
-            testID="thinking-levels"
-          >
+          <View style={styles.levels} accessibilityRole="radiogroup" testID="thinking-levels">
             {levels.levels.map((level) => (
               <LevelChip
                 key={level}
@@ -192,7 +186,7 @@ function ModelList({
                 onPick={onLevel}
               />
             ))}
-          </ScrollView>
+          </View>
         </>
       ) : null}
       <View style={styles.search}>
@@ -310,8 +304,10 @@ function LevelChip({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // One wrapping row: every level visible, none clipped at the edge, no sideways scroll.
   levels: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[4],
     paddingBottom: theme.spacing[2],

@@ -51,6 +51,7 @@ export function dump() {
           enabled: attr(tag, "enabled") !== "false",
           clickable: attr(tag, "clickable") === "true",
           longClickable: attr(tag, "long-clickable") === "true",
+          scrollable: attr(tag, "scrollable") === "true",
           pkg: attr(tag, "package"),
           bounds: b ? [Number(b[1]), Number(b[2]), Number(b[3]), Number(b[4])] : [0, 0, 0, 0],
         });

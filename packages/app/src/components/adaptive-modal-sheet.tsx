@@ -11,7 +11,7 @@ import {
   findNodeHandle,
   useWindowDimensions,
 } from "react-native";
-import type { DimensionValue, StyleProp, ViewStyle } from "react-native";
+import type { DimensionValue, LayoutChangeEvent, StyleProp, ViewStyle } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import {
@@ -30,9 +30,11 @@ import { ArrowLeft, Search, X } from "lucide-react-native";
 import {
   IsolatedBottomSheetModal,
   type ContextBridge,
+  type IsolatedBottomSheetModalRef,
   useIsolatedBottomSheetVisibility,
 } from "@/components/ui/isolated-bottom-sheet-modal";
 import {
+  fitSnapPoints,
   getBottomSheetVisibleContentHeight,
   getCompactSheetSafeAreaPadding,
 } from "@/components/adaptive-modal-sheet-layout";
@@ -500,6 +502,13 @@ export interface AdaptiveModalSheetProps {
   footer?: ReactNode;
   footerContainerStyle?: StyleProp<ViewStyle>;
   snapPoints?: string[];
+  /**
+   * Phone portrait: rest at the content's height (max 90%) instead of fixed snap points; the sheet
+   * follows its content as it changes (a result replacing a form settles it back down).
+   */
+  fitContent?: boolean;
+  /** With `fitContent`: rise to 90% only while the keyboard is up (a sheet with a text field). */
+  expandWithKeyboard?: boolean;
   testID?: string;
   /** Override the max width of the desktop card. */
   desktopMaxWidth?: number;
@@ -518,16 +527,56 @@ export interface AdaptiveModalSheetProps {
   contextBridge?: ContextBridge | null;
 }
 
+/** Height changes smaller than this (dp) are pixel-grid rounding, not new content. */
+const FIT_TOLERANCE = 2;
+
+interface FitHeights {
+  header: number;
+  body: number;
+  footer: number;
+}
+
+/** Measures a content-fitted sheet's header, body content and footer. */
+function useFitHeights() {
+  const [heights, setHeights] = useState<FitHeights>({ header: 0, body: 0, footer: 0 });
+  const measure = useCallback(
+    (key: keyof FitHeights) => (e: LayoutChangeEvent) => {
+      const h = e.nativeEvent.layout.height;
+      // Hysteresis: moving the sheet re-rounds its layout to the pixel grid, which changes a
+      // measured height by a fraction of a dp; following that would move the sheet again, forever.
+      setHeights((prev) =>
+        Math.abs(prev[key] - h) < FIT_TOLERANCE ? prev : { ...prev, [key]: h },
+      );
+    },
+    [],
+  );
+  const onHeader = useMemo(() => measure("header"), [measure]);
+  const onBody = useMemo(() => measure("body"), [measure]);
+  const onFooter = useMemo(() => measure("footer"), [measure]);
+  return { heights, onHeader, onBody, onFooter };
+}
+
 /** Phone sheets: near full height in landscape, width capped at 640dp and centered. */
-function useHandheldSheetLayout(snapPoints: string[] | undefined) {
+function useHandheldSheetLayout(
+  snapPoints: string[] | undefined,
+  fit: { heights: FitHeights; expand: boolean } | null,
+) {
   const isHandheld = useIsHandheld();
   const isCompact = useIsCompactFormFactor();
   const windowSize = useWindowDimensions();
   const landscape = isHandheld && windowSize.width > windowSize.height;
-  const resolved = useMemo(
-    () => (landscape ? LANDSCAPE_SNAP_POINTS : (snapPoints ?? ["65%", "90%"])),
-    [landscape, snapPoints],
-  );
+  const fitHeights = fit?.heights;
+  const fitExpand = fit?.expand ?? false;
+  const resolved = useMemo((): (string | number)[] => {
+    if (landscape) return LANDSCAPE_SNAP_POINTS;
+    if (fitHeights)
+      return fitSnapPoints({
+        ...fitHeights,
+        windowHeight: windowSize.height,
+        expandWithKeyboard: fitExpand,
+      });
+    return snapPoints ?? ["65%", "90%"];
+  }, [fitExpand, fitHeights, landscape, snapPoints, windowSize.height]);
   const sideMargin =
     isHandheld && windowSize.width > HANDHELD_SHEET_MAX_WIDTH
       ? (windowSize.width - HANDHELD_SHEET_MAX_WIDTH) / 2
@@ -536,7 +585,121 @@ function useHandheldSheetLayout(snapPoints: string[] | undefined) {
     () => (sideMargin > 0 ? { marginHorizontal: sideMargin } : undefined),
     [sideMargin],
   );
-  return { isMobile: isCompact || isHandheld, snapPoints: resolved, style };
+  return { isMobile: isCompact || isHandheld, snapPoints: resolved, style, landscape };
+}
+
+/** A content-fitted phone sheet: its measured heights, snap points and whether it fits at all. */
+function useFittedSheet(
+  snapPoints: string[] | undefined,
+  fitContent: boolean | undefined,
+  expandWithKeyboard: boolean | undefined,
+) {
+  const fitMeasure = useFitHeights();
+  const expand = Boolean(expandWithKeyboard);
+  const handheldSheet = useHandheldSheetLayout(
+    snapPoints,
+    fitContent ? { heights: fitMeasure.heights, expand } : null,
+  );
+  const fit = Boolean(fitContent) && handheldSheet.isMobile && !handheldSheet.landscape;
+  return { fitMeasure, handheldSheet, fit, expand };
+}
+
+/**
+ * A fitted sheet rose to 90% for the keyboard: it settles back to its content's height as soon as
+ * the keyboard goes, however it went (Back closes the keyboard without blurring the field).
+ */
+function useSettleOnKeyboardHide(
+  sheetRef: (instance: IsolatedBottomSheetModalRef | null) => void,
+  fitWithKeyboard: boolean,
+  visible: boolean,
+) {
+  const active = fitWithKeyboard && visible && !isWeb;
+  const modalRef = useRef<IsolatedBottomSheetModalRef | null>(null);
+  const composed = useCallback(
+    (instance: IsolatedBottomSheetModalRef | null) => {
+      modalRef.current = instance;
+      sheetRef(instance);
+    },
+    [sheetRef],
+  );
+  useEffect(() => {
+    if (!active) return undefined;
+    const sub = Keyboard.addListener("keyboardDidHide", () => modalRef.current?.snapToIndex(0));
+    return () => sub.remove();
+  }, [active]);
+  return composed;
+}
+
+interface MobileSheetBodyProps {
+  header: SheetHeader;
+  onClose: () => void;
+  testID?: string;
+  bodyStyle?: StyleProp<ViewStyle>;
+  contentStyle?: StyleProp<ViewStyle>;
+  bodyClearanceStyle: ViewStyle;
+  scrollable: boolean;
+  /** Content-fitted: header, body and footer are measured, and the body keeps its natural height. */
+  fit: boolean;
+  onHeader: (e: LayoutChangeEvent) => void;
+  onBody: (e: LayoutChangeEvent) => void;
+  onFooter: (e: LayoutChangeEvent) => void;
+  footer?: ReactNode;
+  footerContainerStyle?: StyleProp<ViewStyle>;
+  footerClearanceStyle: ViewStyle;
+  children: ReactNode;
+}
+
+function MobileSheetBody({
+  header,
+  onClose,
+  testID,
+  bodyStyle,
+  contentStyle,
+  bodyClearanceStyle,
+  scrollable,
+  fit,
+  onHeader,
+  onBody,
+  onFooter,
+  footer,
+  footerContainerStyle,
+  footerClearanceStyle,
+  children,
+}: MobileSheetBodyProps) {
+  const grow = fit ? null : styles.contentGrow;
+  return (
+    <>
+      <View onLayout={fit ? onHeader : undefined}>
+        <SheetHeaderView header={header} onClose={onClose} testID={testID} />
+      </View>
+      <View style={[styles.compactStaticContent, bodyStyle]}>
+        {scrollable ? (
+          <ScrollView
+            style={styles.bottomSheetVisibleScroll}
+            contentContainerStyle={fit ? undefined : SCROLL_CONTENT_GROW}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Fitted: the body keeps its natural height, so it can be measured. */}
+            <View style={[grow, bodyClearanceStyle]} onLayout={fit ? onBody : undefined}>
+              <SheetContent style={[grow, contentStyle]}>{children}</SheetContent>
+            </View>
+          </ScrollView>
+        ) : (
+          <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
+            <SheetContent style={[styles.compactStaticContent, contentStyle]}>
+              {children}
+            </SheetContent>
+          </View>
+        )}
+      </View>
+      {footer ? (
+        <View style={footerClearanceStyle} onLayout={fit ? onFooter : undefined}>
+          <View style={[styles.footer, footerContainerStyle]}>{footer}</View>
+        </View>
+      ) : null}
+    </>
+  );
 }
 
 export function AdaptiveModalSheet({
@@ -548,6 +711,8 @@ export function AdaptiveModalSheet({
   footer,
   footerContainerStyle,
   snapPoints,
+  fitContent,
+  expandWithKeyboard,
   testID,
   desktopMaxWidth,
   desktopHeight,
@@ -561,7 +726,11 @@ export function AdaptiveModalSheet({
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   // A phone in landscape is "md" wide but still a phone: sheets rise from the bottom there too.
-  const handheldSheet = useHandheldSheetLayout(snapPoints);
+  const { fitMeasure, handheldSheet, fit, expand } = useFittedSheet(
+    snapPoints,
+    fitContent,
+    expandWithKeyboard,
+  );
   const isMobile = handheldSheet.isMobile;
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardVisibility(visible);
@@ -580,7 +749,10 @@ export function AdaptiveModalSheet({
   );
   // Safe-area clearance is a separate layer: it must not replace the caller's
   // padding (including an explicit zero), and the footer owns it when present.
-  const bodyClearanceStyle = { paddingBottom: compactSafeAreaPadding.contentPaddingBottom ?? 0 };
+  const bodyClearanceStyle = useMemo(
+    () => ({ paddingBottom: compactSafeAreaPadding.contentPaddingBottom ?? 0 }),
+    [compactSafeAreaPadding.contentPaddingBottom],
+  );
   const footerClearanceStyle = useMemo(
     () => ({ paddingBottom: compactSafeAreaPadding.footerPaddingBottom ?? 0 }),
     [compactSafeAreaPadding.footerPaddingBottom],
@@ -607,6 +779,7 @@ export function AdaptiveModalSheet({
     isEnabled: isMobile || !isWeb,
     onClose,
   });
+  const composedSheetRef = useSettleOnKeyboardHide(sheetRef, fit && expand, visible);
   const [shouldRenderWeb, setShouldRenderWeb] = useState(visible);
   const [isWebClosing, setIsWebClosing] = useState(false);
   const modalLayer = useGlobalWebOverlayLayer("modal", isWeb && !isMobile && shouldRenderWeb);
@@ -672,35 +845,29 @@ export function AdaptiveModalSheet({
 
   if (isMobile) {
     const sheetContent = (
-      <>
-        <SheetHeaderView header={header} onClose={onClose} testID={testID} />
-        <View style={[styles.compactStaticContent, bodyStyle]}>
-          {scrollable ? (
-            <ScrollView
-              style={styles.bottomSheetVisibleScroll}
-              contentContainerStyle={SCROLL_CONTENT_GROW}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={[styles.contentGrow, bodyClearanceStyle]}>
-                <SheetContent style={[styles.contentGrow, contentStyle]}>{children}</SheetContent>
-              </View>
-            </ScrollView>
-          ) : (
-            <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
-              <SheetContent style={[styles.compactStaticContent, contentStyle]}>
-                {children}
-              </SheetContent>
-            </View>
-          )}
-        </View>
-        {footerView}
-      </>
+      <MobileSheetBody
+        header={header}
+        onClose={onClose}
+        testID={testID}
+        bodyStyle={bodyStyle}
+        contentStyle={contentStyle}
+        bodyClearanceStyle={bodyClearanceStyle}
+        scrollable={scrollable}
+        fit={fit}
+        onHeader={fitMeasure.onHeader}
+        onBody={fitMeasure.onBody}
+        onFooter={fitMeasure.onFooter}
+        footer={footer}
+        footerContainerStyle={footerContainerStyle}
+        footerClearanceStyle={footerClearanceStyle}
+      >
+        {children}
+      </MobileSheetBody>
     );
 
     return (
       <IsolatedBottomSheetModal
-        ref={sheetRef}
+        ref={composedSheetRef}
         contextBridge={contextBridge}
         snapPoints={resolvedSnapPoints}
         index={0}

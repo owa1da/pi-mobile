@@ -98,14 +98,14 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     maxWidth: SEARCH_FIELD_MAX_WIDTH,
     paddingHorizontal: theme.spacing[3],
-    borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.surface1,
+    // The same filled field as every form input: surface2, no border; focus shows the accent ring.
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface2,
     borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
+    borderColor: "transparent",
   },
   fieldFocused: {
     borderColor: theme.colors.borderAccent,
-    backgroundColor: theme.colors.surface2,
   },
   input: {
     flex: 1,

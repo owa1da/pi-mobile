@@ -113,13 +113,8 @@ export const en = {
     },
     session: {
       title: "Session",
-      state: {
-        idle: "Idle",
-        working: "Working",
-        waiting: "Needs input",
-        closed: "Closed",
-        sending: "Sending…",
-      },
+      working: "Working…",
+      workingLabel: "pi is working, {{clock}}",
       stateWord: {
         needs: "needs input",
         working: "working",
@@ -263,8 +258,6 @@ export const en = {
         truncated: "This diff is too long to show in full.",
       },
       side: {
-        badge: "Side conversation",
-        empty: "A side conversation runs next to this one without changing it.",
         close: "Close",
         placeholder: "Message the side…",
         openPlaceholder: "Start a side conversation…",
@@ -284,7 +277,6 @@ export const en = {
         fork: "Fork into side",
         clearTitle: "Clear earlier history?",
         clearBody: "Earlier questions and answers leave this list.",
-        close: "Close",
       },
       tasks: {
         empty: "No background tasks.",

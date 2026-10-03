@@ -160,7 +160,8 @@ const mutedForegroundColorMapping = (theme: Theme) => ({
   color: theme.colors.mutedForeground,
 });
 const destructiveColorMapping = (theme: Theme) => ({ color: theme.colors.destructive });
-const infoColorMapping = (theme: Theme) => ({ color: theme.colors.palette.blue[300] });
+// Info rows in the transcript are neutral (the inline banner's muted tone): the app has one accent.
+const infoColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const warningColorMapping = (theme: Theme) => ({ color: theme.colors.palette.amber[500] });
 const WEB_TOOLCALL_SHIMMER_KEYFRAME_CSS = `
   @keyframes ${WEB_TOOLCALL_SHIMMER_ANIMATION_NAME} {
@@ -1869,7 +1870,7 @@ const notificationStylesheet = StyleSheet.create((theme) => ({
     marginBottom: theme.spacing[1],
   },
   infoBg: {
-    backgroundColor: "rgba(147, 197, 253, 0.1)",
+    backgroundColor: theme.colors.surface2,
   },
   warningBg: {
     backgroundColor: "rgba(245, 158, 11, 0.1)",

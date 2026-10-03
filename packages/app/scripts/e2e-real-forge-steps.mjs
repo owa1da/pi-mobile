@@ -11,6 +11,7 @@ import path from "node:path";
 import * as A from "./e2e-adb.mjs";
 import * as E from "./e2e-emulator.mjs";
 import {
+  assertSheetRests,
   deleteChars,
   kbDown,
   leave,
@@ -168,6 +169,7 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
         await typeChecked("pause-reason", "waiting for CI", "pause-sheet");
         await typeChecked("pause-value", "30", "pause-sheet");
         await kbDown();
+        await assertSheetRests("pause-sheet", 0.3, ctx.notes);
         shot("148-real-pause-dark");
         await A.tap(A.byId("forge-sheet-submit"), "Pause");
         const woke = await forgeState((s) => Boolean(s.wake), "wake set");
@@ -195,6 +197,7 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
         await A.tap(A.byId("forge-sheet-submit"), "Export");
         await A.waitNode(A.byText(/\/notes\/real\.md$/), 20_000, "exported path");
         assert(fs.existsSync(path.join(cwd, "notes", "real.md")), "real.md not written");
+        await assertSheetRests("export-sheet", 0.55, ctx.notes);
         shot("150-real-export-done-dark");
         await A.tap(A.byId("forge-sheet-close"), "Done");
         await A.waitGone(A.byId("forge-sheet-close"), 10_000, "export sheet to close");
@@ -283,9 +286,10 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
         );
         assert(A.find(A.byId("btw-error")), "no btw-error block");
         shot("155-real-btw-error-dark");
-        await A.tap(A.byId("btw-close"), "close the btw panel");
+        assert(!A.find(A.byId("btw-close")), "btw shows a second exit (Close)");
+        // Back is the one way out: it closes forge's panel, as Esc does in the terminal.
+        await leave();
         await forgeState((s) => s.btw?.open !== true && s.view === "main", "btw panel closed");
-        await A.waitGone(A.byId("btw-close"), 10_000, "Close gone");
         await toDashboard();
       },
     ],

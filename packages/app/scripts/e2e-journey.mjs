@@ -249,7 +249,24 @@ function sweepClickables(ctx, screen, nodes) {
     const h = (y2 - y1) / ctx.dp;
     const name = spokenName(node, nodes);
     if (name && Math.min(w, h) >= MIN_TARGET_DP) continue;
-    ctx.sweep.push({ screen, id: node.id, cls: node.cls, name, wDp: round1(w), hDp: round1(h) });
+    // A node cut by a scrolling ancestor's edge (half scrolled out) reports its visible part only:
+    // recorded as clipped, not as a small target.
+    const clipped = nodes.some(
+      (s) =>
+        s.scrollable &&
+        s !== node &&
+        inside(node, s) &&
+        (node.bounds[1] === s.bounds[1] || node.bounds[3] === s.bounds[3]),
+    );
+    ctx.sweep.push({
+      screen,
+      id: node.id,
+      cls: node.cls,
+      name,
+      wDp: round1(w),
+      hDp: round1(h),
+      ...(clipped || h <= 0 ? { clipped: true } : {}),
+    });
   }
 }
 
@@ -263,7 +280,11 @@ async function safeHideKeyboard() {
   if (!A.keyboardShown()) return;
   A.key(A.KEY.BACK);
   await sleep(800);
-  assert(A.find(A.byId("session-state")), "Back to close the keyboard left the session");
+  const nodes = A.dump();
+  assert(
+    nodes.some((n) => ["chat-list", "chat-composer", "prompt-panel"].includes(n.id)),
+    "Back to close the keyboard left the session",
+  );
 }
 
 /** Scrolls the answer panel's body until `pred`'s node is fully inside it; returns the node. */
@@ -526,6 +547,8 @@ function steps(ctx) {
           !nodes.some(A.byId("chat-waiting-banner")),
           "the passive banner shows over the dialog",
         );
+        // forge draws no status line while a dialog holds the input's place (status-line.md).
+        assert(!nodes.some(A.byId("session-state")), "the footer shows while pi's dialog is open");
         const terminal = nodes.find((n) => /terminal/i.test(n.text) || /terminal/i.test(n.desc));
         assert(!terminal, `the session mentions a terminal: "${terminal?.text || terminal?.desc}"`);
         for (const [i, label] of ["Allow", "Allow always", "Deny"].entries())
@@ -895,17 +918,14 @@ function steps(ctx) {
         await A.tap(A.byId("chat-send"), "send");
         shot("17-chat-sent-optimistic-dark");
         {
-          // While the composer is busy (the send in flight) the sub-bar never says Idle.
+          // The footer is forge's line only: never a state word (Idle, Sending…, Working).
           const sent = A.dump();
           const stateText = sent.find(A.byId("session-state"))?.text ?? "";
-          const composer = sent.find(A.byId("chat-composer"));
           assert(
-            !(composer && !composer.enabled && stateText.startsWith("Idle")),
-            `sub-bar says "${stateText}" while the composer is still sending`,
+            !/^(Idle|Sending|Working|Needs input)\b/.test(stateText),
+            `footer starts with a state word: "${stateText}"`,
           );
-          ctx.notes.push(
-            `sub-bar right after send: "${stateText}" (composer ${composer?.enabled ? "ready" : "sending"})`,
-          );
+          ctx.notes.push(`footer right after send: "${stateText}"`);
         }
         A.hideKeyboard();
         await A.waitNode(A.byText(/^echo: Add a fourth/), 20_000, "reply");
@@ -926,6 +946,23 @@ function steps(ctx) {
         const n = eventCount("working");
         await A.tap(rowOf(sessionIdOf("working")), "working row");
         const stop = await A.waitNode(A.byId("chat-stop"), 30_000, "stop button");
+        {
+          // pi's working row above the composer (look.md), not a word in the footer.
+          const working = await A.waitNode(A.byId("chat-working"), 15_000, "working row");
+          assert(
+            /^pi is working, \d+(s|m)/.test(working.desc),
+            `working row label "${working.desc}"`,
+          );
+          const nodes = A.dump();
+          const composer = nodes.find(A.byId("chat-composer"));
+          assert(
+            composer && working.bounds[3] <= composer.bounds[1] + 2,
+            "the working row is not above the composer",
+          );
+          const foot = nodes.find(A.byId("session-state"))?.text ?? "";
+          assert(!/Working|Idle|Needs input/.test(foot), `footer has a state word: "${foot}"`);
+          ctx.notes.push(`working row: "${working.desc}"; footer "${foot}"`);
+        }
         shot("19-chat-working-stop-dark");
         auditControls(ctx, "chat (working)", [["Stop", A.byId("chat-stop")]]);
         A.tapNode(stop);
@@ -1092,6 +1129,34 @@ function steps(ctx) {
             await A.waitNode(A.byId("dashboard-composer"), 45_000, `dashboard @${scale}`);
             await sleep(2500);
             shot(`${n + 1}-fs${tag}-dashboard-dark`);
+            {
+              // Item 9: the model stays on every row; at ≥1.5 the title may take two lines.
+              const dash = A.dump();
+              for (const r of dash.filter(A.idPrefix("session-row-"))) {
+                if (r.bounds[3] > H || r.bounds[1] < 0) continue;
+                // A row cut by the list's edge (half under the composer) lists only its visible part.
+                const cut = dash.some(
+                  (sc) =>
+                    sc.scrollable &&
+                    inside(r, sc) &&
+                    (r.bounds[1] === sc.bounds[1] || r.bounds[3] === sc.bounds[3]),
+                );
+                if (cut) continue;
+                const title = dash.find((t) => t.id === "dashboard-row-title" && inside(t, r));
+                const texts = dash.filter((t) => t.text && inside(t, r) && t !== title);
+                assert(title, `row ${r.id}: no title @${scale}`);
+                assert(texts.length >= 2, `row ${r.id} lacks model/age @${scale}`);
+                const rowW = r.bounds[2] - r.bounds[0];
+                const titleW = title.bounds[2] - title.bounds[0];
+                assert(titleW >= rowW * 0.45, `row ${r.id}: title ${titleW}px of ${rowW}px`);
+              }
+              const titles = dash.filter((t) => t.id === "dashboard-row-title");
+              const lineH = Math.min(...titles.map((t) => t.bounds[3] - t.bounds[1]));
+              const twoLine = titles.filter((t) => t.bounds[3] - t.bounds[1] > lineH * 1.5);
+              if (scale >= 1.5) assert(twoLine.length > 0, `no title took a second line @${scale}`);
+              else assert(twoLine.length === 0, `a title wrapped @${scale}`);
+              ctx.notes.push(`font ${scale}: ${twoLine.length} two-line title(s)`);
+            }
             assert(
               visible(A.find(A.byId("dashboard-send"))),
               `dashboard send off screen @${scale}`,
@@ -1401,6 +1466,14 @@ function steps(ctx) {
           const id = await hostIdOf(label);
           await A.tap(A.byId(`host-edit-${id}`), `edit ${label}`);
           await A.waitNode(A.byId("host-field-label"), 15_000, "edit sheet");
+          if (first) {
+            // Item 11: the Host field is a full 48dp target when it is not scrolled under the
+            // header (the sweep's 40dp was the scrolled sheet clipping it).
+            await sleep(600);
+            auditControls(ctx, "edit-host sheet (top)", [
+              ["Host field", A.byId("host-field-host")],
+            ]);
+          }
           // uiautomator lists the button even while it sits behind the sticky footer, so scroll
           // until it is clear of Cancel/Save, then tap where it is now.
           await revealAboveFooter("host-delete", "host-save");
