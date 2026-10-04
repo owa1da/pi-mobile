@@ -54,10 +54,18 @@ A simulator build cannot be installed through TestFlight. Only submit a verified
 build, using its explicit build ID:
 
 ```bash
-npx eas-cli@latest submit --platform ios --id <BUILD_ID>
+npx eas-cli@latest submit --platform ios --id <BUILD_ID> --non-interactive --wait
 ```
 
-App Store Connect must have a matching `com.owa1da.pimobile` app record. Before testing, complete
+The matching `com.owa1da.pimobile` App Store Connect app is `6818914669`, recorded in
+`eas.json`. Once EAS has the submission key, builds/uploads need no user interaction unless
+Apple authentication expires. Check Apple's processing directly instead of refreshing the UI:
+
+```bash
+npx eas-cli@latest submit:status --platform ios --non-interactive
+```
+
+Before testing, complete
 Apple's encryption/export-compliance questions and add the tester to an internal TestFlight
 group. Do not share Apple passwords or verification codes in chat. Subsequent uploads need a
 higher iOS build number. EAS production iOS builds auto-increment the tracked counter in
@@ -65,8 +73,8 @@ higher iOS build number. EAS production iOS builds auto-increment the tracked co
 one checkout so numbers cannot be reused. Simulator builds do not increment it, and Android
 keeps its existing package-version-derived versionCode.
 
-**iOS verification is in progress.** Cloud compilation and real-iPhone checks are required
-before claiming it ready. Portable SSH tests and the device checklist are documented in
+**Real-iPhone verification is still required.** Simulator and signed store builds passed;
+installation, SSH, LAN permissions and phone lifecycle checks remain before claiming it ready. Portable SSH tests and the device checklist are documented in
 [`modules/pi-ssh/ios/README.md`](packages/app/modules/pi-ssh/ios/README.md).
 
 ## Android builds

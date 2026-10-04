@@ -40,6 +40,10 @@ test("only device iOS builds increment the tracked local counter", () => {
   assert.match(staticConfig.expo.ios.buildNumber, /^[1-9]\d*$/);
 });
 
+test("production submission targets the verified App Store Connect app", () => {
+  assert.equal(eas.submit.production.ios.ascAppId, "6818914669");
+});
+
 test("Expo loads the persisted counter through the real config loader", () => {
   const { getConfig } = require("expo/config");
   const { exp } = getConfig(appDir, { skipSDKVersionRequirement: true });
