@@ -1,17 +1,18 @@
 # CLAUDE.md
 
 Pi (pi-mobile) is a minimal Expo / React Native app that manages "pi" coding-agent sessions on a
-host over direct SSH. Nothing is installed on the host: pi runs unchanged in tmux and the app
-reads forge procs files, pi session `.jsonl` files and tmux panes over SSH. Based on Paseo by
-Mohamed Boudra (Apache-2.0); see LICENSE and NOTICE.
+host over direct SSH. pi keeps running in tmux; the app reads forge state and session `.jsonl`
+files and sends native remote actions over SSH exec. The host needs Forge's remote-channel
+support, not a daemon or relay. There is no terminal UI, PTY, or terminal-emulation code.
+Based on Paseo by Mohamed Boudra (Apache-2.0); see LICENSE and NOTICE.
 
 ## Repository map
 
 - `packages/app` — the Expo app (Expo 54, RN 0.81, expo-router 6, react-native-unistyles 3; `@/` = `packages/app/src`)
-  - `src/app/` — routes: `index.tsx` (hosts), `h/[hostId]/index.tsx` (dashboard), `h/[hostId]/s/[sessionId].tsx` (session)
+  - `src/app/` — routes: `index.tsx` (hosts), `h/[hostId]/index.tsx` (dashboard), `h/[hostId]/s/[sessionId].tsx` (session), `h/[hostId]/f/[sessionId]/[tool].tsx` (native Forge tools)
   - `src/ssh/`, `modules/pi-ssh/` — SSH client (native module + Node test double)
   - `src/host/` — host service: procs/session parsing, tmux commands
-  - `src/components/` — design-system primitives (`ui/`), chat rendering (`message.tsx`, `tool-call-*`, `markdown/`), terminal (`terminal-emulator-webview.native.tsx`)
+  - `src/components/` — design-system primitives (`ui/`), chat rendering (`message.tsx`, `tool-call-*`, `markdown/`); `src/screens/forge/` — native Forge command and question screens
   - `src/styles/` — theme tokens + unistyles config; `src/appearance/` — theme/font application
 - `packages/highlight` — syntax highlighter used by code blocks (build with `npm run build:highlight`)
 
@@ -27,7 +28,6 @@ Read the relevant one before building UI.
 - `cd packages/app && npm run typecheck` — tsgo
 - `cd packages/app && npx vitest run --project unit` — unit tests (node env, `test-stubs/`)
 - `cd packages/app && npx vitest run --project integration` — real tmux/sh/sshd tests, serial
-- `cd packages/app && npm run build:terminal-webview` — regenerate the xterm webview HTML
 - `npm run knip`, `npm run lint`, `npm run format`
 
 ## Rules
