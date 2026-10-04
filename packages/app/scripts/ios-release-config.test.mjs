@@ -40,6 +40,13 @@ test("only device iOS builds increment the tracked local counter", () => {
   assert.match(staticConfig.expo.ios.buildNumber, /^[1-9]\d*$/);
 });
 
+test("future builds retain the owner-approved encryption declaration", () => {
+  for (const buildNumber of ["2", "3", "37"]) {
+    const result = configure({ config: { ios: { buildNumber } } });
+    assert.equal(result.ios.infoPlist.ITSAppUsesNonExemptEncryption, false);
+  }
+});
+
 test("production submission targets the verified App Store Connect app", () => {
   assert.equal(eas.submit.production.ios.ascAppId, "6818914669");
 });
@@ -48,5 +55,6 @@ test("Expo loads the persisted counter through the real config loader", () => {
   const { getConfig } = require("expo/config");
   const { exp } = getConfig(appDir, { skipSDKVersionRequirement: true });
   assert.equal(exp.ios.buildNumber, staticConfig.expo.ios.buildNumber);
+  assert.equal(exp.ios.infoPlist.ITSAppUsesNonExemptEncryption, false);
   assert.equal(exp.extra.eas.projectId, "d2696fae-ad1a-472f-9b34-8aeb34f66b20");
 });

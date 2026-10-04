@@ -32,8 +32,10 @@ export default ({ config }) => ({
     supportsTablet: true,
     infoPlist: {
       NSLocalNetworkUsageDescription: "Connect to your SSH hosts on your local network.",
-      // Complete Apple's export-compliance review for the shipped SSH library before
-      // declaring an encryption exemption. An omitted flag leaves the questionnaire open.
+      // Owner-approved policy: published standard SSH/OpenSSL encryption, private
+      // TestFlight use, no App Store distribution in France. Review this declaration
+      // before changing encryption or distribution scope.
+      ITSAppUsesNonExemptEncryption: false,
     },
     bundleIdentifier: variant.packageId,
     buildNumber: config.ios?.buildNumber ?? "1",

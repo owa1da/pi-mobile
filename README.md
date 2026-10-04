@@ -65,10 +65,12 @@ Apple authentication expires. Check Apple's processing directly instead of refre
 npx eas-cli@latest submit:status --platform ios --non-interactive
 ```
 
-Before testing, complete
-Apple's encryption/export-compliance questions and add the tester to an internal TestFlight
-group. Do not share Apple passwords or verification codes in chat. Subsequent uploads need a
-higher iOS build number. EAS production iOS builds auto-increment the tracked counter in
+The owner approved the encryption declaration for this and future builds:
+`ITSAppUsesNonExemptEncryption: false`, based on published standard SSH/OpenSSL encryption,
+private TestFlight use, and no App Store distribution in France. Reassess before changing
+cryptography or distribution scope; do not assume this covers a future public release.
+Add the intended tester to an internal TestFlight group. Do not share Apple passwords or
+verification codes in chat. Subsequent uploads need a higher iOS build number. EAS production iOS builds auto-increment the tracked counter in
 `packages/app/app.json`; commit that update after each build. Run device builds serially from
 one checkout so numbers cannot be reused. Simulator builds do not increment it, and Android
 keeps its existing package-version-derived versionCode.
