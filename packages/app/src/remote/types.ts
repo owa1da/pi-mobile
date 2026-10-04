@@ -144,6 +144,8 @@ export interface RemoteState {
   view: string;
   /** The main editor holds unsent text. */
   draft: boolean;
+  /** Native draft-independent input, absent on older Forge builds. */
+  input?: { submit: boolean; maxBytes: number };
   /** undefined: the area is absent (not implemented by this forge build); null: no dialog open. */
   prompt?: RemotePrompt | null;
   questions?: AskQuestion[];
@@ -160,6 +162,7 @@ export interface RemoteState {
 // ---------- actions ----------
 
 export type RemoteAction =
+  | "input.submit"
   | "prompt.respond"
   | "ask.answer"
   | "ask.dismiss"
@@ -205,6 +208,7 @@ export interface AskAnswer {
 
 /** Typed args for the actions this wave uses; the rest take a plain object. */
 export interface RemoteActionArgs {
+  "input.submit": { text: string };
   "prompt.respond": { id: string; value?: string; cancel?: boolean };
   "ask.answer": { id: string; answers: (AskAnswer | null)[] };
   "ask.dismiss": { id: string };
@@ -217,6 +221,8 @@ export type ArgsOf<A extends RemoteAction> = A extends keyof RemoteActionArgs
 
 export interface RemoteExpect {
   rev?: number;
+  /** The session selected by the user, never a replacement sharing its PID. */
+  sessionId?: string;
 }
 
 /** The inbox file `<nonce>.json`. */

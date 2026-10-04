@@ -14,11 +14,11 @@ function lookup(key: string): unknown {
 }
 
 describe("friendlyHostError", () => {
-  it("shows the draft refusal without mentioning a terminal", () => {
+  it("explains missing native capability without claiming a desktop draft blocks sending", () => {
     const friendly = friendlyHostError(new PaneBusyError("draft", DRAFT_MESSAGE));
     expect(friendly).toEqual({ key: "pi.session.errors.pane-busy-draft" });
     expect(lookup(friendly.key)).toBe(DRAFT_MESSAGE);
-    expect(DRAFT_MESSAGE).not.toMatch(/terminal/i);
+    expect(DRAFT_MESSAGE).not.toMatch(/terminal|unsent draft|send or clear/i);
   });
 
   it("tells copy mode and a missing prompt apart", () => {

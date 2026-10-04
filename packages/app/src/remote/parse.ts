@@ -350,6 +350,13 @@ export function parseRemoteState(input: unknown, pid?: number): RemoteState | un
     updatedAt: finite(obj.updatedAt) ?? 0,
     view: line(obj.view, 120) || "main",
     draft: obj.draft === true,
+    ...(isObj(obj.input) &&
+    typeof obj.input.submit === "boolean" &&
+    typeof obj.input.maxBytes === "number" &&
+    Number.isInteger(obj.input.maxBytes) &&
+    obj.input.maxBytes > 0
+      ? { input: { submit: obj.input.submit, maxBytes: obj.input.maxBytes } }
+      : {}),
     ...parseAreas(obj),
   };
 }

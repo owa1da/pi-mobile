@@ -992,6 +992,7 @@ function writeRemoteState() {
     updatedAt: Date.now(),
     view: openDialog ? "dialog" : "main",
     draft: draftLine.trim() !== "",
+    input: { submit: true, maxBytes: 60 * 1024 },
     prompt: openDialog,
     questions: asks,
     footer: footerState(),
@@ -1184,6 +1185,21 @@ function runCommand(args) {
   return { code: "ok" };
 }
 
+function submitInput(args) {
+  if (
+    typeof args.text !== "string" ||
+    !args.text.trim() ||
+    Buffer.byteLength(args.text) > 60 * 1024
+  )
+    return { code: "invalid", message: "nonempty text up to 61440 bytes required" };
+  if (openDialog || asks.some((q) => q.blocking))
+    return { code: "refused", message: "answer the dialog first", data: { reason: "busy" } };
+  log({ kind: "remote", action: "input.submit", by: "app", text: args.text });
+  if (args.text === "/quit") setTimeout(quit, 1800);
+  else submit(args.text, false);
+  return { code: "ok" };
+}
+
 function act(message) {
   if (!isObject(message) || typeof message.action !== "string")
     return { code: "invalid", message: "not an action" };
@@ -1192,7 +1208,8 @@ function act(message) {
   if (
     isObject(message.expect) &&
     typeof message.expect.rev === "number" &&
-    message.expect.rev !== rev
+    message.expect.rev !== rev &&
+    message.action !== "input.submit"
   )
     return { code: "stale", message: "the state changed" };
   const args = isObject(message.args) ? message.args : {};
@@ -1207,6 +1224,8 @@ function act(message) {
       closeAsk(question, "app", null);
       return { code: "ok" };
     }
+    case "input.submit":
+      return submitInput(args);
     case "command.run":
       return runCommand(args);
     default:

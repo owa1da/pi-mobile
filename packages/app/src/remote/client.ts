@@ -3,7 +3,7 @@
 // says `"remote": 1`; the agent dir comes from the host probe.
 
 import { wrapForAnyShell } from "@/host/commands";
-import { base64EncodeText } from "@/host/encoding";
+import { base64EncodeText, utf8ByteLength } from "@/host/encoding";
 import type { SessionRow } from "@/host/types";
 import { RemoteError, errorFromResult } from "./errors";
 import { parseRemoteResult, parseRemoteState } from "./parse";
@@ -27,9 +27,12 @@ import {
 
 /** How long the app waits for forge's result before giving up (the contract's 30 s). */
 export const RESULT_WAIT_MS = 30_000;
+/** Forge's inbox limit includes JSON escaping and the envelope, not just text. */
+export const MAX_INBOX_BYTES = 64 * 1024;
 
 /** The row fields the channel needs: the process and whether its forge speaks the protocol. */
-export type RemoteRow = Pick<SessionRow, "pid" | "live" | "remote">;
+export type RemoteRow = Pick<SessionRow, "pid" | "live" | "remote"> &
+  Partial<Pick<SessionRow, "sessionId">>;
 
 export interface RemoteClientDeps {
   /** Runs a POSIX sh script on the host; resolves its stdout (rejects on a transport failure). */
@@ -88,6 +91,19 @@ function stepMs(step: { polls: number; interval: string }): number {
   return Math.ceil(step.polls * Number(step.interval) * 1000);
 }
 
+function bindSession(
+  row: RemoteRow,
+  action: RemoteAction,
+  expect: RemoteExpect | undefined,
+): RemoteExpect | undefined {
+  const sessionId = expect?.sessionId ?? row.sessionId;
+  if (action === "input.submit" && !sessionId?.trim())
+    throw new RemoteError("invalid", "input.submit requires a target session identity");
+  if (row.sessionId !== undefined && sessionId !== row.sessionId)
+    throw new RemoteError("stale", "The target session changed; the prompt was not sent");
+  return sessionId !== undefined ? { ...expect, sessionId } : expect;
+}
+
 export function createRemoteClient(deps: RemoteClientDeps): RemoteClient {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? realSleep;
@@ -129,11 +145,14 @@ export function createRemoteClient(deps: RemoteClientDeps): RemoteClient {
       const out = await run(readStateScript(agentDir, row.pid, tag), 15_000);
       const body = framed(out, tag, "STATE");
       if (body === undefined) return undefined;
-      return parseRemoteState(body, row.pid);
+      const state = parseRemoteState(body, row.pid);
+      if (row.sessionId !== undefined && state?.sessionId !== row.sessionId) return undefined;
+      return state;
     },
 
     async send(row, action, args, expect) {
       const pid = pidOf(row);
+      const boundExpect = bindSession(row, action, expect);
       const agentDir = await deps.agentDir();
       const nonce = nonceOf();
       const message: InboxAction = {
@@ -142,8 +161,14 @@ export function createRemoteClient(deps: RemoteClientDeps): RemoteClient {
         writtenAt: Math.round(now()),
         action,
         args,
-        ...(expect ? { expect } : {}),
+        ...(boundExpect ? { expect: boundExpect } : {}),
       };
+      const payload = JSON.stringify(message);
+      if (utf8ByteLength(payload) > MAX_INBOX_BYTES)
+        throw new RemoteError(
+          "invalid",
+          `The remote request is over ${MAX_INBOX_BYTES} UTF-8 bytes including JSON escaping; shorten the prompt.`,
+        );
       const started = Date.now();
       const tag = nonceOf();
       const out = await run(
@@ -151,7 +176,7 @@ export function createRemoteClient(deps: RemoteClientDeps): RemoteClient {
           agentDir,
           pid,
           nonce,
-          payloadB64: base64EncodeText(JSON.stringify(message)),
+          payloadB64: base64EncodeText(payload),
           tag,
           polls: FIRST.polls,
           interval: FIRST.interval,

@@ -10,12 +10,10 @@ import { SSH_ERROR_CODES, SshError } from "@/ssh/errors";
 import type { SshConnection } from "@/ssh/types";
 
 import { makeNonce, startScript, wrapForAnyShell } from "./commands";
-import { HostOutcomeUnknownError, PaneBusyError } from "./errors";
+import { HostOutcomeUnknownError } from "./errors";
 import { createSandbox, FAKE_PI, type FakeEvent, type Sandbox } from "./test-support/sandbox";
 import { createHostService, type PiHostService } from "./service";
 import { HostError, type SessionRow } from "./types";
-
-const hex = (s: string) => Buffer.from(s, "utf8").toString("hex");
 
 async function rowFor(
   sb: Sandbox,
@@ -110,7 +108,7 @@ describe("host service on an isolated tmux server", () => {
       10_000,
       "fake pi start",
     );
-    expect(start.argv).toEqual(["--model", "prov/model-x", "--thinking", "high", "--", prompt]);
+    expect(start.argv).toEqual(["--model", "prov/model-x", "--thinking", "high"]);
     expect(start.cwd).toBe(sb.home);
     expect(start.pane).toBe(started.pane);
     expect(start.agentEnv).toBe(sb.agentDir);
@@ -143,8 +141,8 @@ describe("host service on an isolated tmux server", () => {
       10_000,
       "second start",
     );
-    // forge: a prompt starting with @ gets a leading space; no --model/--thinking when not given.
-    expect(start2.argv).toEqual(["--", " @file.ts what is this"]);
+    // Prompts no longer enter argv, so @file is literal text; no model/thinking flags when absent.
+    expect(start2.argv).toEqual([]);
     expect(sb.tmux("list-windows", "-t", "pi", "-F", "#{window_name}").trim().split("\n")).toEqual(
       expect.arrayContaining(["its-HOME-id", "file.ts-what-is"]),
     );
@@ -157,7 +155,7 @@ describe("host service on an isolated tmux server", () => {
     );
   });
 
-  it("sends a hostile multi-line prompt by bracketed paste + Enter", async () => {
+  it("sends a hostile multi-line prompt through native input without touching terminal keys", async () => {
     const started = await svc.startSession({ cwd: sb.home });
     await sb.waitForEvent(started.pid, (e) => e.kind === "start", 10_000, "start");
     const row = await rowFor(sb, svc, (r) => r.pid === started.pid, "empty session row");
@@ -167,16 +165,16 @@ describe("host service on an isolated tmux server", () => {
     await svc.sendPrompt(row, text);
     const submit = await sb.waitForEvent(started.pid, (e) => e.kind === "submit", 5000, "submit");
     expect(submit.text).toBe(text);
-    expect(submit.pasted).toBe(true);
+    expect(submit.pasted).toBe(false);
     const input = sb
       .events(started.pid)
       .filter((e) => e.kind === "input")
       .map((e) => e.hex)
       .join("");
-    expect(input).toBe(`${hex("\x1b[200~")}${hex(text)}${hex("\x1b[201~")}0d`);
+    expect(input).toBe("");
   });
 
-  it("refuses while pi shows a dialog, and while the pane is in copy mode", async () => {
+  it("refuses while pi shows a dialog, but safely sends natively while the pane is in copy mode", async () => {
     const started = await svc.startSession({ prompt: "hello", cwd: sb.home });
     let row = await rowFor(
       sb,
@@ -200,7 +198,8 @@ describe("host service on an isolated tmux server", () => {
     row = await rowFor(sb, svc, (r) => r.pid === started.pid && r.state === "idle", "idle again");
 
     sb.tmux("copy-mode", "-t", started.pane);
-    await expectHostError(svc.sendPrompt(row, "nope"), "pane-busy");
+    await svc.sendPrompt(row, "during copy mode");
+    expect(submitTexts(sb, started.pid)).toContain("during copy mode");
     sb.tmux("send-keys", "-t", started.pane, "-X", "cancel");
     await svc.sendPrompt(row, "after copy mode");
     const texts = await sb.waitFor(
@@ -212,6 +211,32 @@ describe("host service on an isolated tmux server", () => {
       "submit after copy mode",
     );
     expect(texts).not.toContain("nope");
+  });
+
+  it("legacy sending reports compatibility/reload for empty and nonempty editors without touching drafts", async () => {
+    const legacy = createSandbox();
+    legacy.env.FAKE_PI_REMOTE = "0";
+    try {
+      const service = legacy.service();
+      const started = await service.startSession({ cwd: legacy.home });
+      const row = await rowFor(legacy, service, (r) => r.pid === started.pid, "legacy row");
+      await expect(service.sendPrompt(row, "mobile")).rejects.toMatchObject({
+        message: expect.stringContaining("voluntarily reload"),
+      });
+      legacy.tmux("send-keys", "-t", started.pane, "-l", "desktop α");
+      await legacy.waitFor(
+        () => legacy.tmux("capture-pane", "-p", "-t", started.pane).includes("desktop α"),
+        5000,
+        "legacy draft",
+      );
+      await expect(service.sendPrompt(row, "mobile")).rejects.toMatchObject({
+        message: expect.stringContaining("voluntarily reload"),
+      });
+      expect(legacy.tmux("capture-pane", "-p", "-t", started.pane)).toContain("desktop α");
+      expect(submitTexts(legacy, started.pid)).toEqual([]);
+    } finally {
+      legacy.cleanup();
+    }
   });
 
   it("aborts with a single Escape only while working, at most once a second", async () => {
@@ -270,7 +295,7 @@ describe("host service on an isolated tmux server", () => {
     expect(ev.find((e) => e.kind === "start")?.argv).toEqual(["--session", live.sessionFile]);
     expect(ev.find((e) => e.kind === "submit")).toMatchObject({
       text: "follow-up\nwith two lines",
-      pasted: true,
+      pasted: false,
     });
     expect(
       sb.tmux("display-message", "-p", "-t", resumed.tmux!.pane, "#{window_name}").trim(),
@@ -304,13 +329,13 @@ describe("host service on an isolated tmux server", () => {
     expect(fs.existsSync(path.join(sb.procsDir, `${started.pid}.json`))).toBe(true);
   });
 
-  it("starts a prompt over 8 KiB empty, then pastes it once pi is ready", async () => {
+  it("starts a prompt over 8 KiB empty, then submits it natively once pi is ready", async () => {
     const big = `${"x".repeat(9000)}\nend`;
     const started = await svc.startSession({ prompt: big, cwd: sb.home });
     await sb.waitForEvent(started.pid, (e) => e.kind === "submit", 10_000, "big submit");
     const ev = sb.events(started.pid);
     expect(ev.find((e) => e.kind === "start")?.argv).toEqual([]);
-    expect(ev.find((e) => e.kind === "submit")).toMatchObject({ text: big, pasted: true });
+    expect(ev.find((e) => e.kind === "submit")).toMatchObject({ text: big, pasted: false });
     await expectHostError(
       svc.startSession({ prompt: "y".repeat(1024 * 1024 + 1) }),
       "prompt-too-large",
@@ -478,7 +503,7 @@ describe("wave 5 fixes on an isolated tmux server", () => {
     expect(sb.tmux("list-windows", "-a", "-F", "#{window_id}")).toBe(windowsBefore);
   });
 
-  it("never glues onto an unsent draft: refuses (pane-busy draft), then sends once it is cleared", async () => {
+  it("native send preserves an actual desktop draft and submits only mobile text once", async () => {
     const started = await svc.startSession({ prompt: "draft host", cwd: sb.home });
     const row = await rowFor(
       sb,
@@ -486,29 +511,16 @@ describe("wave 5 fixes on an isolated tmux server", () => {
       (r) => r.pid === started.pid && r.state === "idle" && r.messages >= 2,
       "idle",
     );
-    sb.tmux("send-keys", "-t", started.pane, "-l", "half typed");
+    sb.tmux("send-keys", "-t", started.pane, "-l", "half typed α");
     await sb.waitFor(
-      () => sb.tmux("capture-pane", "-p", "-t", started.pane).includes("half typed"),
+      () => sb.tmux("capture-pane", "-p", "-t", started.pane).includes("half typed α"),
       5000,
       "draft drawn",
     );
-    await expect(svc.sendPrompt(row, "from phone")).rejects.toSatisfy(
-      (e: unknown) => e instanceof PaneBusyError && e.reason === "draft" && e.code === "pane-busy",
-    );
-    // The draft is untouched.
-    expect(sb.tmux("capture-pane", "-p", "-t", started.pane)).toContain("half typed");
-    expect(submitTexts(sb, started.pid)).not.toContain("from phone");
-    sb.tmux("send-keys", "-t", started.pane, "C-u");
-    await svc.sendPrompt(row, "from phone");
-    const texts = await sb.waitFor(
-      () => {
-        const t = submitTexts(sb, started.pid);
-        return t.includes("from phone") ? t : undefined;
-      },
-      5000,
-      "submit after clear",
-    );
-    expect(texts.filter((t) => t?.includes("half typed"))).toHaveLength(0);
+    await svc.sendPrompt(row, "from phone\n日本語");
+    expect(sb.tmux("capture-pane", "-p", "-t", started.pane)).toContain("half typed α");
+    expect(submitTexts(sb, started.pid).filter((t) => t === "from phone\n日本語")).toHaveLength(1);
+    expect(submitTexts(sb, started.pid).filter((t) => t?.includes("half typed"))).toHaveLength(0);
   });
 
   it("strips control sequences: an ESC[201~ mid-prompt cannot end the paste", async () => {
@@ -516,26 +528,31 @@ describe("wave 5 fixes on an isolated tmux server", () => {
     const row = await rowFor(sb, svc, (r) => r.pid === started.pid, "row");
     await svc.sendPrompt(row, "a\x1b[201~b\r\nc\x07d");
     const submit = await sb.waitForEvent(started.pid, (e) => e.kind === "submit", 5000, "submit");
-    expect(submit).toMatchObject({ text: "a[201~b\ncd", pasted: true });
+    expect(submit).toMatchObject({ text: "a[201~b\ncd", pasted: false });
     const input = sb
       .events(started.pid)
       .filter((e) => e.kind === "input")
       .map((e) => e.hex)
       .join("");
-    expect(input).toBe(`${hex("\x1b[200~")}${hex("a[201~b\ncd")}${hex("\x1b[201~")}0d`);
+    expect(input).toBe("");
   });
 
   it("reports a send whose result never came back as outcome-unknown", async () => {
     const started = await svc.startSession({ prompt: "timeouts", cwd: sb.home });
     const row = await rowFor(sb, svc, (r) => r.pid === started.pid && r.messages >= 2, "row");
-    let mode: "timeout" | "killed" | "pass" = "pass";
+    let mode: "timeout" | "killed" | "read-timeout" | "pass" = "pass";
     const conn: SshConnection = {
       exec: (command, options) => {
-        if (mode === "timeout")
-          return Promise.reject(
-            new SshError(SSH_ERROR_CODES.TIMEOUT, "Command timed out after 30000ms"),
-          );
-        if (mode === "killed") return Promise.resolve({ stdout: "", stderr: "", exitCode: 124 });
+        const scriptB64 = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d/.exec(command)?.[1] ?? "";
+        const isNativeSend = Buffer.from(scriptB64, "base64").toString("utf8").includes("NOINBOX");
+        if (mode === "read-timeout")
+          return Promise.reject(new SshError(SSH_ERROR_CODES.TIMEOUT, "Read timed out"));
+        if (mode === "timeout" && isNativeSend)
+          return sb.connection.exec(command, options).then(() => {
+            throw new SshError(SSH_ERROR_CODES.TIMEOUT, "Command timed out after 30000ms");
+          });
+        if (mode === "killed" && isNativeSend)
+          return Promise.resolve({ stdout: "", stderr: "", exitCode: 124 });
         return sb.connection.exec(command, options);
       },
       onClose: (l) => sb.connection.onClose(l),
@@ -550,10 +567,11 @@ describe("wave 5 fixes on an isolated tmux server", () => {
     await wrapped.probe();
     mode = "timeout";
     await expect(wrapped.sendPrompt(row, "maybe")).rejects.toBeInstanceOf(HostOutcomeUnknownError);
+    expect(submitTexts(sb, started.pid).filter((text) => text === "maybe")).toHaveLength(1);
     mode = "killed";
     await expect(wrapped.sendPrompt(row, "maybe")).rejects.toBeInstanceOf(HostOutcomeUnknownError);
     // Reads are not mutating: a timed-out listing is an ordinary failure.
-    mode = "timeout";
+    mode = "read-timeout";
     await expect(wrapped.listSessions()).rejects.not.toBeInstanceOf(HostOutcomeUnknownError);
   });
 

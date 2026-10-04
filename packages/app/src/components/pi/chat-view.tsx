@@ -1,14 +1,22 @@
 // Bottom-anchored transcript: an inverted list that stays pinned to the newest output unless the
 // reader scrolled up (then a "Latest" pill brings them back). Renders the kept Paseo components.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type RefObject,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   FlatList,
   Pressable,
   Text,
   View,
-  type LayoutChangeEvent,
   type ListRenderItem,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -21,24 +29,28 @@ import { MIN_TOUCH } from "@/styles/touch";
 import { NoteRow } from "./note-row";
 
 const SHOW_JUMP_AFTER = 400;
-/** The Latest pill's own band under the list (the touch-floor pill and its margins). */
-const JUMP_BAND = MIN_TOUCH + 16;
-/** The band comes and goes only once scrolling has settled, never mid-fling. */
+/** Toggle the overlay only once scrolling has settled, never mid-fling. */
 const SETTLE_MS = 180;
 const MAINTAIN_POSITION = { minIndexForVisible: 0, autoscrollToTopThreshold: 96 };
 
 interface ChatViewProps {
   rows: ChatRow[];
   loading: boolean;
+  /** Inverted-list header: beneath the newest output, inside the scrollable transcript. */
+  activity?: ReactElement | null;
 }
 
-export function ChatView({ rows, loading }: ChatViewProps) {
+export function ChatView({ rows, loading, activity }: ChatViewProps) {
   const { t } = useTranslation();
   const listRef = useRef<FlatList<ChatRow>>(null);
   const data = useMemo(() => newestFirst(rows), [rows]);
-  const { away, onScroll, onListLayout, jump } = useJumpBand(listRef);
+  const { away, onScroll, jump } = useJumpToLatest(listRef);
+  const activityHeader = useMemo(
+    () => (activity ? <View style={styles.rowWrap}>{activity}</View> : null),
+    [activity],
+  );
 
-  if (loading && rows.length === 0) {
+  if (loading && rows.length === 0 && !activity) {
     return (
       <View style={styles.center} accessible accessibilityLabel={t("pi.session.loadingChat")}>
         <MutedSpinner size="small" />
@@ -48,13 +60,14 @@ export function ChatView({ rows, loading }: ChatViewProps) {
 
   return (
     <View style={styles.fill}>
-      <View style={styles.fill} onLayout={onListLayout}>
+      <View style={styles.fill}>
         <FlatList
           ref={listRef}
           inverted
           data={data}
           keyExtractor={keyOf}
           renderItem={renderRow}
+          ListHeaderComponent={activityHeader}
           contentContainerStyle={styles.content}
           maintainVisibleContentPosition={MAINTAIN_POSITION}
           onScroll={onScroll}
@@ -67,7 +80,7 @@ export function ChatView({ rows, loading }: ChatViewProps) {
         />
       </View>
       {away ? (
-        <View style={styles.jumpBand}>
+        <View style={styles.jumpOverlay} pointerEvents="box-none" testID="chat-latest-overlay">
           <Pressable
             onPress={jump}
             style={styles.jump}
@@ -84,16 +97,11 @@ export function ChatView({ rows, loading }: ChatViewProps) {
   );
 }
 
-/**
- * The Latest pill never covers the transcript: it sits in its own band under the list. The band
- * is added (or removed) once scrolling settles, and the list's offset moves by the band's height
- * in the same step, so the rows on screen stay where they were.
- */
-function useJumpBand(listRef: RefObject<FlatList<ChatRow> | null>) {
+/** Latest overlays the transcript; visibility never changes its viewport or scroll offset. */
+function useJumpToLatest(listRef: RefObject<FlatList<ChatRow> | null>) {
   const [away, setAway] = useState(false);
   const offset = useRef(0);
   const awayRef = useRef(false);
-  const height = useRef<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -111,22 +119,10 @@ function useJumpBand(listRef: RefObject<FlatList<ChatRow> | null>) {
       setAway(next);
     }, SETTLE_MS);
   }, []);
-  // The list's viewport changed by the band: keep the same rows at the same place on screen.
-  const onListLayout = useCallback(
-    (event: LayoutChangeEvent) => {
-      const next = event.nativeEvent.layout.height;
-      const prev = height.current;
-      height.current = next;
-      if (prev === null || Math.abs(prev - next) !== JUMP_BAND) return;
-      const target = Math.max(0, offset.current + (prev - next));
-      if (offset.current > 0) listRef.current?.scrollToOffset({ offset: target, animated: false });
-    },
-    [listRef],
-  );
   const jump = useCallback(() => {
     listRef.current?.scrollToOffset({ offset: 0, animated: true });
   }, [listRef]);
-  return { away, onScroll, onListLayout, jump };
+  return { away, onScroll, jump };
 }
 
 const keyOf = (row: ChatRow) => row.key;
@@ -289,10 +285,12 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: "center",
     paddingHorizontal: theme.spacing[4],
   },
-  jumpBand: {
-    height: JUMP_BAND,
+  jumpOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: theme.spacing[2],
     alignItems: "center",
-    justifyContent: "center",
   },
   jump: {
     alignSelf: "center",
@@ -300,7 +298,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     minHeight: MIN_TOUCH,
+    minWidth: MIN_TOUCH,
     paddingHorizontal: theme.spacing[4],
+    paddingVertical: theme.spacing[2],
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.surface2,
     borderWidth: 1,

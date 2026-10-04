@@ -1,6 +1,10 @@
-// HostService over one SshConnection. Every call is one `exec` of a POSIX sh script (see
-// commands.ts) except probe (once, cached) and the resume-then-send path of sendPrompt.
+// Host service over SSH exec: native remote input for supported Forge sessions,
+// tmux is used for opening sessions and aborting, never for sending prompt text.
 
+import { hasRemote } from "@/remote/client";
+import { RemoteError } from "@/remote/errors";
+import { remoteFor } from "@/remote/for-service";
+import type { RemoteState } from "@/remote/types";
 import { SSH_ERROR_CODES } from "@/ssh/errors";
 import type { SshConnection } from "@/ssh/types";
 
@@ -10,14 +14,13 @@ import {
   listingScript,
   makeNonce,
   probeScript,
-  sendScript,
   startScript,
   windowName,
   wrapForAnyShell,
   wrapWithHostTimeout,
   parseStartedLine,
 } from "./commands";
-import { base64EncodeText, utf8ByteLength } from "./encoding";
+import { utf8ByteLength } from "./encoding";
 import { DRAFT_MESSAGE, HostOutcomeUnknownError, PaneBusyError } from "./errors";
 import { buildSnapshot, parseListing } from "./procs";
 import { sanitizePrompt } from "./sanitize";
@@ -32,10 +35,8 @@ import {
   type StartedSession,
 } from "./types";
 
-/** tmux's command message limit is 16 KiB; forge hands at most this much to a new window's argv. */
-export const MAX_ARGV_PROMPT_BYTES = 8 * 1024;
-/** Prompts are pasted through a tmux buffer; anything larger is refused. */
-export const MAX_PROMPT_BYTES = 1024 * 1024;
+/** Native input's text cap; the complete escaped inbox JSON must also fit 64 KiB. */
+export const MAX_PROMPT_BYTES = 60 * 1024;
 export const ABORT_INTERVAL_MS = 1000;
 /** A mutating script is killed on the host this many seconds before the phone's exec timeout. */
 const HOST_TIMEOUT_MARGIN_S = 5;
@@ -146,9 +147,7 @@ interface PaneTarget {
   sessionId: string;
 }
 
-type Reopened =
-  | { kind: "live"; row: SessionRow }
-  | { kind: "resumed"; started: StartedSession; delivered: boolean };
+type Reopened = { kind: "live"; row: SessionRow } | { kind: "resumed"; started: StartedSession };
 
 class HostServiceImpl implements PiHostService {
   private env: HostEnvironmentDetails | undefined;
@@ -364,13 +363,10 @@ class HostServiceImpl implements PiHostService {
       throw new HostError("prompt-too-large", `The prompt is over ${MAX_PROMPT_BYTES} bytes`);
     const env = await this.ensureProbe();
     const hasPrompt = prompt.trim().length > 0;
-    // forge: over 8 KiB cannot go through tmux's argv; start empty, then paste once pi is ready.
-    const large = hasPrompt && bytes > MAX_ARGV_PROMPT_BYTES;
+    // Start empty: even a new session may acquire a desktop draft during startup.
     const argv = this.piArgv(env);
     if (input.model) argv.push("--model", input.model);
     if (input.thinking) argv.push("--thinking", input.thinking);
-    // pi reads `@x` as a file argument even after `--`.
-    if (hasPrompt && !large) argv.push("--", prompt.startsWith("@") ? ` ${prompt}` : prompt);
     const nonce = makeNonce();
     const timeoutMs = this.options.readyTimeoutMs ?? 30_000;
     const out = await this.run(
@@ -384,35 +380,35 @@ class HostServiceImpl implements PiHostService {
         env: env.forwardEnv,
         serverEnv: env.serverEnv,
         argv,
-        ...(large ? { waitReady: { procsDir: env.procsDir, timeoutMs }, pasteStdin: true } : {}),
+        ...(hasPrompt ? { waitReady: { procsDir: env.procsDir, timeoutMs, soft: true } } : {}),
       }),
       {
-        ...(large ? { stdin: base64EncodeText(prompt) } : {}),
         timeoutMs: timeoutMs + 30_000,
         mutating: true,
       },
     );
-    return this.parseStart(out, nonce, large);
+    const started = this.parseStart(out, nonce, false);
+    if (hasPrompt) await this.sendPrompt(await this.registeredRow(started.pid), prompt);
+    return started;
   }
 
   private async resume(
     env: HostEnvironmentDetails,
     row: Pick<SessionRow, "sessionId" | "sessionFile" | "cwd">,
-    prompt?: string,
+    options: { requireCwd?: boolean },
   ): Promise<StartedSession> {
     if (!row.sessionFile)
       throw new HostError("not-found", "This session has no session file to resume");
     const nonce = makeNonce();
     const timeoutMs = this.options.readyTimeoutMs ?? 30_000;
-    const send = prompt !== undefined;
     const out = await this.run(
       startScript({
         nonce,
         tmux: env.tmuxPath,
         socket: env.tmuxSocket,
         cwd: this.expandHome(env, row.cwd),
-        // With a prompt to paste, a missing folder is refused: pi would ask about it and swallow the paste.
-        cwdFallbackHome: !send,
+        // Sending must not silently change the session's working folder.
+        cwdFallbackHome: !options.requireCwd,
         windowName: "pi-resume",
         env: env.forwardEnv,
         serverEnv: env.serverEnv,
@@ -421,46 +417,39 @@ class HostServiceImpl implements PiHostService {
         requireFile: row.sessionFile,
         refuseLive: { procsDir: env.procsDir, sessionId: row.sessionId },
         // Without a prompt, still wait (softly) for the registration, so a second resume finds it live.
-        waitReady: send
-          ? { procsDir: env.procsDir, sessionId: row.sessionId, timeoutMs }
-          : {
-              procsDir: env.procsDir,
-              sessionId: row.sessionId,
-              timeoutMs: Math.min(timeoutMs, SOFT_READY_MS),
-              soft: true,
-            },
-        ...(send ? { pasteStdin: true } : {}),
+        waitReady: {
+          procsDir: env.procsDir,
+          sessionId: row.sessionId,
+          timeoutMs: Math.min(timeoutMs, SOFT_READY_MS),
+          soft: true,
+        },
       }),
       {
-        ...(send ? { stdin: base64EncodeText(prompt) } : {}),
         timeoutMs: timeoutMs + 30_000,
         mutating: true,
       },
     );
-    return this.parseStart(out, nonce, send);
+    return this.parseStart(out, nonce, false);
   }
 
   /** The reopen in flight for this session, or a new one: never two pi processes for one session. */
-  private reopenOnce(
-    sessionId: string,
-    make: () => Promise<Reopened>,
-  ): { promise: Promise<Reopened>; joined: boolean } {
+  private reopenOnce(sessionId: string, make: () => Promise<Reopened>): Promise<Reopened> {
     const existing = this.reopening.get(sessionId);
-    if (existing) return { promise: existing, joined: true };
+    if (existing) return existing;
     const promise = make();
     this.reopening.set(sessionId, promise);
     const clear = () => {
       if (this.reopening.get(sessionId) === promise) this.reopening.delete(sessionId);
     };
     promise.then(clear, clear);
-    return { promise, joined: false };
+    return promise;
   }
 
-  /** Live elsewhere now? Else resume it (pasting `prompt` once ready, when given). */
+  /** Live elsewhere now? Else resume empty; explicit sends wait for the native channel. */
   private async reopen(
     env: HostEnvironmentDetails,
     row: Pick<SessionRow, "sessionId" | "sessionFile" | "cwd">,
-    prompt?: string,
+    options: { requireCwd?: boolean } = {},
   ): Promise<Reopened> {
     const snapshot = await this.listSessions();
     const live = snapshot.rows.find((r) => r.live && r.sessionId === row.sessionId);
@@ -468,16 +457,14 @@ class HostServiceImpl implements PiHostService {
     const closed = snapshot.rows.find((r) => r.sessionId === row.sessionId);
     const sessionFile = closed?.sessionFile ?? row.sessionFile;
     if (!sessionFile)
-      throw prompt !== undefined
-        ? new HostError(
-            "session-closed",
-            "This session is closed and has no session file to resume",
-          )
-        : new HostError("not-found", "This session has no session file to resume");
+      throw new HostError(
+        "session-closed",
+        "This session is closed and has no session file to resume",
+      );
     const target = { sessionId: row.sessionId, sessionFile, cwd: closed?.cwd ?? row.cwd };
     try {
-      const started = await this.resume(env, target, prompt);
-      return { kind: "resumed", started, delivered: prompt !== undefined };
+      const started = await this.resume(env, target, options);
+      return { kind: "resumed", started };
     } catch (error) {
       // The host refused: another pi has it open (started elsewhere a moment ago).
       if (!(error instanceof HostError) || error.code !== "session-live") throw error;
@@ -492,7 +479,7 @@ class HostServiceImpl implements PiHostService {
     if (row.live)
       throw new HostError("session-live", "This session is open; it cannot be resumed twice");
     const env = await this.ensureProbe();
-    const { promise } = this.reopenOnce(row.sessionId, () => this.reopen(env, row));
+    const promise = this.reopenOnce(row.sessionId, () => this.reopen(env, row));
     const result = await promise;
     if (result.kind === "live")
       throw new HostError("session-live", "This session is open in another pi");
@@ -510,60 +497,101 @@ class HostServiceImpl implements PiHostService {
     return { pid: row.pid, pane: row.tmux.pane, socket: row.tmux.socket, sessionId: row.sessionId };
   }
 
-  private async paneCommand(
-    kind: "send" | "abort",
-    env: HostEnvironmentDetails,
-    target: PaneTarget,
-    opts: { stdin?: string; waitMs?: number } = {},
-  ): Promise<string> {
+  private async abortPane(env: HostEnvironmentDetails, target: PaneTarget): Promise<string> {
     const nonce = makeNonce();
-    const waitMs = opts.waitMs ?? 0;
-    const input = {
-      nonce,
-      tmux: env.tmuxPath,
-      socket: target.socket,
-      pane: target.pane,
-      pid: target.pid,
-      sessionId: target.sessionId,
-      procsDir: env.procsDir,
-      waitMs,
-    };
-    const out = await this.run(kind === "send" ? sendScript(input) : abortScript(input), {
-      ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
-      timeoutMs: 30_000 + 2 * waitMs,
-      mutating: true,
-    });
+    const out = await this.run(
+      abortScript({
+        nonce,
+        tmux: env.tmuxPath,
+        socket: target.socket,
+        pane: target.pane,
+        pid: target.pid,
+        sessionId: target.sessionId,
+        procsDir: env.procsDir,
+      }),
+      { timeoutMs: 30_000, mutating: true },
+    );
     return tagged(out, nonce)[0]?.trim() ?? "";
   }
 
-  private sendResult(status: string): void {
-    switch (status) {
-      case "OK":
-        return;
-      case "WAITING":
-        throw new HostError("waiting-for-input", "pi is asking a question; answer it first");
-      case "BUSY":
-        throw new PaneBusyError(
-          "copy-mode",
-          "The session's tmux pane is in copy mode; leave it (q) on your computer first",
-        );
-      case "DRAFT":
-        throw new PaneBusyError("draft", DRAFT_MESSAGE);
-      case "NOPROMPT":
-        throw new PaneBusyError(
-          "no-prompt",
-          "pi is not showing its prompt (a dialog or page is open); close it on your computer first",
-        );
-      case "NOTMUX":
+  private async registeredRow(pid: number): Promise<SessionRow> {
+    const deadline = Date.now() + (this.options.readyTimeoutMs ?? 30_000);
+    do {
+      const snapshot = await this.listSessions();
+      const row = snapshot.rows.find((r) => r.live && r.pid === pid);
+      if (row && hasRemote(row)) return row;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    } while (Date.now() < deadline);
+    throw new HostError(
+      "session-closed",
+      "Forge's native input channel did not register after opening; the prompt was not sent. Update Forge and voluntarily reload this session on your computer.",
+    );
+  }
+
+  private async readNativeState(
+    row: SessionRow,
+    deadline: number,
+  ): Promise<RemoteState | undefined> {
+    const client = remoteFor(this);
+    let state = await client.readState(row);
+    while (!state || state.input?.submit === false) {
+      const snapshot = await this.listSessions();
+      if (!snapshot.rows.some((r) => r.live && r.pid === row.pid && r.sessionId === row.sessionId))
+        return undefined;
+      if (Date.now() >= deadline)
         throw new HostError(
           "command-failed",
-          "This session does not run in tmux, so the app cannot reach it",
+          "Forge's native input channel did not become ready; the prompt was not sent. Update Forge and voluntarily reload this session on your computer.",
         );
-      case "GONE":
-        throw new HostError("command-failed", "The session's tmux pane is gone");
-      default:
-        throw new HostError("command-failed", "Pasting into the pane failed");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      state = await client.readState(row);
     }
+    return state;
+  }
+
+  private async sendNative(row: SessionRow, text: string): Promise<"OK" | "CLOSED"> {
+    const client = remoteFor(this);
+    const deadline = Date.now() + (this.options.readyTimeoutMs ?? 30_000);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const state = await this.readNativeState(row, deadline);
+      if (!state) return "CLOSED";
+      if (state.sessionId !== row.sessionId) return "CLOSED";
+      if (!state.input?.submit)
+        throw new HostError(
+          "command-failed",
+          "This Forge session lacks input.submit. Update Forge and voluntarily reload it on your computer; the desktop draft has not been touched.",
+        );
+      if (utf8ByteLength(text) > state.input.maxBytes)
+        throw new HostError(
+          "prompt-too-large",
+          `Native sending accepts up to ${state.input.maxBytes} UTF-8 bytes; shorten the prompt.`,
+        );
+      try {
+        await client.send(
+          row,
+          "input.submit",
+          { text },
+          { rev: state.rev, sessionId: row.sessionId },
+        );
+        return "OK";
+      } catch (error) {
+        if (!(error instanceof RemoteError)) throw error;
+        // Stale is a preflight refusal: nothing ran. Read fresh gates once, never retry an
+        // accepted action (nor paste) after a timeout, missing result or dropped SSH exec.
+        if (error.code === "stale" && attempt === 0) continue;
+        if (["transport", "timeout", "no-channel"].includes(error.code) || error.code === "error")
+          throw new HostOutcomeUnknownError(`${OUTCOME_UNKNOWN_MESSAGE} (${error.message})`);
+        if (error.code === "invalid" && !error.result)
+          throw new HostError("prompt-too-large", error.detail ?? error.message);
+        if (error.code === "refused" && error.reason === "busy")
+          throw new HostError("waiting-for-input", error.message);
+        throw new HostError("command-failed", error.message);
+      }
+    }
+    throw new HostError(
+      "command-failed",
+      "The session changed before sending; the prompt was not sent",
+    );
   }
 
   async sendPrompt(row: SessionRow, raw: string): Promise<void> {
@@ -572,41 +600,29 @@ class HostServiceImpl implements PiHostService {
     if (utf8ByteLength(text) > MAX_PROMPT_BYTES)
       throw new HostError("prompt-too-large", `The prompt is over ${MAX_PROMPT_BYTES} bytes`);
     const env = await this.ensureProbe();
-    const stdin = base64EncodeText(text);
-    let target: PaneTarget | undefined = row.live ? this.targetOf(row) : undefined;
-    let waitMs = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (target) {
-        const status = await this.paneCommand("send", env, target, { stdin, waitMs });
-        if (status !== "CLOSED") return this.sendResult(status);
-        if (waitMs > 0)
-          throw new HostError(
-            "session-closed",
-            "pi exited right after the session was reopened; the prompt was not sent",
-          );
+      const snapshot = await this.listSessions();
+      let live = snapshot.rows.find((r) => r.live && r.sessionId === row.sessionId);
+      if (!live) {
+        const promise = this.reopenOnce(row.sessionId, () =>
+          this.reopen(env, row, { requireCwd: true }),
+        );
+        const result = await promise;
+        live = result.kind === "live" ? result.row : await this.registeredRow(result.started.pid);
       }
-      // Closed (forge closes finished windows nobody views), or the process went away: is it open
-      // elsewhere now? Else resume it and deliver the prompt there, so a follow-up is never lost.
-      // A resume already in flight for this session is joined, never doubled.
-      const { promise, joined } = this.reopenOnce(row.sessionId, () => this.reopen(env, row, text));
-      const result = await promise;
-      if (result.kind === "resumed") {
-        if (!joined && result.delivered) return;
-        // Joined someone else's resume: deliver this prompt to that pi once it shows its prompt.
-        target = {
-          pid: result.started.pid,
-          pane: result.started.pane,
-          socket: env.tmuxSocket,
-          sessionId: row.sessionId,
-        };
-        waitMs = this.options.readyTimeoutMs ?? 30_000;
-        continue;
-      }
-      if (target && result.row.pid === target.pid) break;
-      target = this.targetOf(result.row);
-      waitMs = 0;
+      if (live.sessionId !== row.sessionId)
+        throw new HostError(
+          "session-closed",
+          "The target session changed; the prompt was not sent",
+        );
+      if (!hasRemote(live)) throw new HostError("command-failed", DRAFT_MESSAGE);
+      const status = await this.sendNative(live, text);
+      if (status === "OK") return;
     }
-    throw new HostError("session-closed", "The session could not be reached");
+    throw new HostError(
+      "session-closed",
+      "The session could not be reached; the prompt was not sent",
+    );
   }
 
   async abort(row: SessionRow): Promise<void> {
@@ -618,7 +634,7 @@ class HostServiceImpl implements PiHostService {
     if (last !== undefined && now - last < ABORT_INTERVAL_MS) return;
     this.lastAbort.set(key, now);
     const env = await this.ensureProbe();
-    const status = await this.paneCommand("abort", env, target);
+    const status = await this.abortPane(env, target);
     switch (status) {
       case "OK":
       case "IDLE":

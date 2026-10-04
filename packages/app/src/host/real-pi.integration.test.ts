@@ -1,5 +1,5 @@
-// The host service against REAL pi + forge (not the fake): readiness before a paste, one user
-// message per prompt, and draft refusal. Isolated: a temp HOME/agent dir (PI_CODING_AGENT_DIR),
+// The host service against REAL pi + forge (not the fake): native readiness, one user
+// message per prompt, and desktop draft preservation. Isolated: a temp HOME/agent dir (PI_CODING_AGENT_DIR),
 // a private tmux socket, forge loaded from a copy ($PIM_E2E_FORGE or the remote-channel
 // worktree, never the live ~/.pi/forge), PI_OFFLINE=1, no auth copied.
 // The only model is a provider at 127.0.0.1:9 (connection refused) with retries off: a prompt is
@@ -11,7 +11,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { PaneBusyError } from "./errors";
 import type { PiHostService } from "./service";
 import { createSandbox, type Sandbox } from "./test-support/sandbox";
 import type { SessionRow } from "./types";
@@ -91,6 +90,7 @@ async function expectUserMessages(sb: Sandbox, file: string, count: number): Pro
 }
 
 const MULTI = "first line of the phone prompt\n  indented second line\n\nfourth line ✓ ünïcødé";
+const DESKTOP_DRAFT = "desktop α\n  second 日本語\n    last  ";
 const BIG = Array.from(
   { length: 160 },
   (_, i) => `line ${i + 1}: the quick brown fox jumps over the lazy dog`,
@@ -108,10 +108,28 @@ describe.skipIf(!REAL_PI || !hasForge)("host service against real pi + forge", (
     sb.env.PI_SKIP_VERSION_CHECK = "1";
     // Real pi writes node's compile cache into TMPDIR (the sandbox) as it exits: keep it out.
     sb.env.NODE_DISABLE_COMPILE_CACHE = "1";
+    const rig = path.join(sb.dir, "draft-rig.ts");
+    fs.writeFileSync(
+      rig,
+      `
+      import { appendFileSync } from "node:fs";
+      export default function(pi) {
+        pi.registerCommand("pimdraft", { handler: async (_args, ctx) => {
+          ctx.ui.setEditorText(${JSON.stringify(DESKTOP_DRAFT)});
+          appendFileSync(${JSON.stringify(path.join(sb.dir, "draft-observed.jsonl"))}, JSON.stringify({ sessionId: ctx.sessionManager.getSessionId(), phase: "desktop", draft: ctx.ui.getEditorText() }) + "\\n");
+          ctx.ui.notify("draft installed", "info");
+        } });
+        pi.on("input", (event, ctx) => {
+          appendFileSync(${JSON.stringify(path.join(sb.dir, "draft-observed.jsonl"))}, JSON.stringify({ sessionId: ctx.sessionManager.getSessionId(), text: event.text, draft: ctx.ui.getEditorText() }) + "\\n");
+        });
+      }
+    `,
+    );
     fs.writeFileSync(
       path.join(sb.agentDir, "settings.json"),
       JSON.stringify({
         packages: [FORGE],
+        extensions: [rig],
         theme: "claude",
         tuiMode: "fullscreen",
         quietStartup: true,
@@ -146,7 +164,7 @@ describe.skipIf(!REAL_PI || !hasForge)("host service against real pi + forge", (
     fs.rmSync(sb.dir, { recursive: true, force: true });
   });
 
-  it("starts with a >8 KiB multi-line prompt: pasted once pi is ready, one user message", async () => {
+  it("starts with a >8 KiB multi-line prompt: native input once pi is ready, one user message", async () => {
     const env = await svc.probe();
     expect(env.piCliPath).toBe(REAL_PI);
     const started = await svc.startSession({ prompt: BIG, cwd: sb.home });
@@ -169,7 +187,8 @@ describe.skipIf(!REAL_PI || !hasForge)("host service against real pi + forge", (
     const started = await svc.startSession({ prompt: "before quit", cwd: sb.home });
     const live = await rowFor(svc, (r) => r.pid === started.pid && r.messages >= 1, "live");
     await expectUserMessages(sb, live.sessionFile!, 1);
-    await svc.sendPrompt(live, "/quit");
+    sb.tmux("send-keys", "-t", live.tmux!.pane, "-l", "/quit");
+    sb.tmux("send-keys", "-t", live.tmux!.pane, "Enter");
     const closed = await rowFor(svc, (r) => r.sessionId === live.sessionId && !r.live, "closed");
     await svc.sendPrompt(closed, MULTI);
     const resumed = await rowFor(svc, (r) => r.sessionId === live.sessionId && r.live, "resumed");
@@ -178,32 +197,42 @@ describe.skipIf(!REAL_PI || !hasForge)("host service against real pi + forge", (
     expect(messages).toEqual(["before quit", MULTI]);
   }, 120_000);
 
-  it("refuses to glue onto a draft in pi's editor, and sends once it is cleared", async () => {
+  it("preserves a multiline Unicode desktop draft verbatim while submitting only mobile text exactly once", async () => {
     const started = await svc.startSession({ cwd: sb.home });
-    const row = await rowFor(svc, (r) => r.pid === started.pid, "registered");
+    const row = await rowFor(svc, (r) => r.pid === started.pid && r.remote === 1, "registered");
     await sb.waitFor(
       () => sb.tmux("capture-pane", "-p", "-t", started.pane).includes("─────"),
       15_000,
       "editor drawn",
     );
-    sb.tmux("send-keys", "-t", started.pane, "-l", "desktop draft");
-    await sb.waitFor(
-      () => sb.tmux("capture-pane", "-p", "-t", started.pane).includes("desktop draft"),
-      5000,
-      "draft drawn",
-    );
-    await expect(svc.sendPrompt(row, "from the phone")).rejects.toSatisfy(
-      (e: unknown) => e instanceof PaneBusyError && e.reason === "draft",
-    );
-    expect(sb.tmux("capture-pane", "-p", "-t", started.pane)).toContain("desktop draft");
-    sb.tmux("send-keys", "-t", started.pane, "C-u");
-    await sb.waitFor(
-      () => !sb.tmux("capture-pane", "-p", "-t", started.pane).includes("desktop draft"),
-      5000,
-      "draft cleared",
-    );
-    await svc.sendPrompt(row, "from the phone");
+    sb.tmux("send-keys", "-t", started.pane, "-l", "/pimdraft");
+    sb.tmux("send-keys", "-t", started.pane, "Enter");
+    try {
+      await sb.waitFor(
+        () => sb.tmux("capture-pane", "-p", "-t", started.pane).includes("second 日本語"),
+        5000,
+        "draft drawn",
+      );
+    } catch (error) {
+      throw new Error(`${String(error)}\n${sb.tmux("capture-pane", "-p", "-t", started.pane)}`, {
+        cause: error,
+      });
+    }
+    await svc.sendPrompt(row, MULTI);
     const fresh = await rowFor(svc, (r) => r.pid === started.pid && r.messages >= 1, "prompted");
-    expect(await expectUserMessages(sb, fresh.sessionFile!, 1)).toEqual(["from the phone"]);
+    expect(await expectUserMessages(sb, fresh.sessionFile!, 1)).toEqual([MULTI]);
+    const observed = fs
+      .readFileSync(path.join(sb.dir, "draft-observed.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const before = observed.find(
+      (entry) => entry.sessionId === row.sessionId && entry.phase === "desktop",
+    );
+    expect(before?.draft).toBe(DESKTOP_DRAFT);
+    expect(
+      observed.find((entry) => entry.sessionId === row.sessionId && entry.text === MULTI)?.draft,
+    ).toBe(before?.draft);
+    expect(sb.tmux("capture-pane", "-p", "-t", started.pane)).toContain("second 日本語");
   }, 120_000);
 });

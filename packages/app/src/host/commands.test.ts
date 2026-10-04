@@ -170,6 +170,12 @@ describe("pi editor frame detection (real pi 1.0.0 layouts)", () => {
       lines: ["❯ one", "  two", "  ⎿  API Error: Connection error.", RULE, "", RULE, FOOTER],
       expect: "EMPTY",
     },
+    "Forge empty pointer": { lines: [RULE, "❯ ", RULE, FOOTER], expect: "EMPTY" },
+    "Forge literal pointer draft": { lines: [RULE, "❯ ❯ ", RULE, FOOTER], expect: "DRAFT" },
+    "Forge placeholder stays ambiguous on legacy": {
+      lines: [RULE, "❯ Ask anything", RULE, FOOTER],
+      expect: "DRAFT",
+    },
     draft: { lines: ["", RULE, "hello draft ", RULE, FOOTER], expect: "DRAFT" },
     "multi-line draft": {
       lines: [RULE, "alpha", "beta", "", RULE, FOOTER],

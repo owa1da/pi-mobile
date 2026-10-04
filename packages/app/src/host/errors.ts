@@ -4,7 +4,7 @@
 import { HostError } from "./types";
 
 export const DRAFT_MESSAGE =
-  "This session has an unsent draft on your computer. Send or clear it there first.";
+  "This session lacks Forge's draft-preserving native input support. Update Forge and voluntarily reload this session on your computer. The desktop draft has not been touched.";
 
 export type PaneBusyReason = "copy-mode" | "draft" | "no-prompt";
 

@@ -150,12 +150,12 @@ export const en = {
         "pane-busy":
           "This session is scrolled back on your computer. Press q there to return to the prompt.",
         "pane-busy-draft":
-          "This session has an unsent draft on your computer. Send or clear it there first.",
+          "This session lacks Forge's draft-preserving native input support. Update Forge and voluntarily reload this session on your computer. The desktop draft has not been touched.",
         "pane-busy-no-prompt":
           "pi is not showing its prompt (a dialog or page is open). Close it on your computer first.",
         "outcome-unknown":
           "The host did not confirm in time, so the message may or may not have been sent. Check the chat before sending again.",
-        "prompt-too-large": "That message is too large to send (over 1 MiB).",
+        "prompt-too-large": "That message is too large to send (limit 60 KiB).",
         "session-live": "This session is already open in another pi.",
         "session-closed": "This session is closed and could not be resumed.",
         "not-found": "The session file or its folder is gone on the host.",

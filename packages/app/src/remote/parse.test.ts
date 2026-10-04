@@ -106,6 +106,24 @@ describe("parseRemoteState: the contract's state.json", () => {
     expect(parseRemoteState(base)).not.toHaveProperty("prompt");
   });
 
+  it("accepts native input readiness only with a positive integer byte bound", () => {
+    expect(parseRemoteState({ ...base, input: { submit: true, maxBytes: 61440 } })?.input).toEqual({
+      submit: true,
+      maxBytes: 61440,
+    });
+    expect(
+      parseRemoteState({ ...base, input: { submit: false, maxBytes: 61440 } })?.input?.submit,
+    ).toBe(false);
+    for (const input of [
+      null,
+      {},
+      { submit: "true", maxBytes: 61440 },
+      { submit: true, maxBytes: -1 },
+      { submit: true, maxBytes: 1.5 },
+    ])
+      expect(parseRemoteState({ ...base, input })?.input).toBeUndefined();
+  });
+
   it("rejects malformed, partial, other-version and other-process files", () => {
     expect(parseRemoteState('{"v":1,"pid":12')).toBeUndefined();
     expect(parseRemoteState("[]")).toBeUndefined();

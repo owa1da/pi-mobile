@@ -56,6 +56,49 @@ function forgeState(pred, label, timeoutMs = 20_000) {
 const subBar = (re, label) =>
   A.waitNode((n) => n.id === "session-state" && re.test(n.text), 20_000, label);
 
+// A test-only input handler consumes feedback text before any model turn. The real
+// Forge input.submit still traverses its normal editor.onSubmit path.
+export async function prepareFeedbackRig() {
+  if (process.env.PIM_E2E_FEEDBACK !== "1" || !E.readState().windows.real) return;
+  const file = path.join(E.ROOT, "pimrig.ts");
+  const source = fs.readFileSync(file, "utf8");
+  const anchor = "export default function (pi) {";
+  assert(source.split(anchor).length === 2, "unexpected offline rig source");
+  fs.writeFileSync(
+    file,
+    source.replace(
+      anchor,
+      `${anchor}
+  pi.on("session_start", (_event, ctx) => {
+    ctx.ui.onTerminalInput((data) => {
+      appendFileSync(join(process.env.PI_CODING_AGENT_DIR, "feedback-terminal.jsonl"), JSON.stringify({ data }) + "\\n");
+    });
+  });
+  pi.on("input", async (event, ctx) => {
+    if (!event.text.startsWith("Native feedback send")) return { action: "continue" };
+    const before = ctx.ui.getEditorText();
+    appendFileSync(join(process.env.PI_CODING_AGENT_DIR, "feedback-input.jsonl"), JSON.stringify({ text: event.text, source: event.source, draftBefore: before }) + "\\n");
+    setTimeout(() => appendFileSync(join(process.env.PI_CODING_AGENT_DIR, "feedback-draft.jsonl"), JSON.stringify({ draftAfter: ctx.ui.getEditorText() }) + "\\n"), 500);
+    return { action: "handled" };
+  });`,
+    ),
+  );
+  const binary = process.env.PIM_E2E_REAL_BINARY;
+  assert(binary?.startsWith("/var/tmp/"), "feedback real pi must use an isolated binary wrapper");
+  E.tmux("respawn-pane", "-k", "-t", E.readState().windows.real.pane, binary);
+  await E.waitFor(
+    () => {
+      try {
+        return realRecord() && E.remoteState(realRecord().pid)?.input?.submit;
+      } catch {
+        return false;
+      }
+    },
+    30_000,
+    "offline feedback rig ready",
+  );
+}
+
 export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil }) {
   const real = () => Boolean(E.readState().windows.real);
   const skip = (name) => {
@@ -69,6 +112,109 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
   }
 
   return [
+    [
+      "Feedback: real Forge native send preserves an actual multiline Unicode desktop draft exactly once",
+      async () => {
+        if (process.env.PIM_E2E_FEEDBACK !== "1" || !real()) return skip("feedback send");
+        await openReal();
+        const draft =
+          "Desktop draft αβ — café\nsecond line 日本語 🐱\n  keep spaces and punctuation!";
+        const text = "Native feedback send from phone\nsecond explicit line!";
+        const buffer = path.join(E.ROOT, "desktop-draft.txt");
+        fs.writeFileSync(buffer, draft);
+        const pane = E.readState().windows.real.pane;
+        E.tmux("load-buffer", "-b", "feedback-draft", buffer);
+        E.tmux("paste-buffer", "-d", "-p", "-b", "feedback-draft", "-t", pane);
+        await forgeState((s) => s.draft === true, "actual desktop draft present");
+        const remoteDir = path.join(
+          E.AGENT,
+          "forge",
+          "remote",
+          String(realRecord().pid),
+          "results",
+        );
+        const previous = new Set(fs.readdirSync(remoteDir));
+        await typeChecked("chat-composer", text.split("\n")[0], "chat-list");
+        A.key(A.KEY.ENTER);
+        A.typeText(text.split("\n")[1]);
+        await kbDown();
+        assert(
+          A.find(A.byId("chat-composer"))?.text === text,
+          "mobile multiline text changed before Send",
+        );
+        shot("feedback-real-desktop-draft-mobile-text-dark");
+        const terminalFile = path.join(E.AGENT, "feedback-terminal.jsonl");
+        const terminalEvents = () =>
+          fs.existsSync(terminalFile)
+            ? fs
+                .readFileSync(terminalFile, "utf8")
+                .trim()
+                .split("\n")
+                .filter(Boolean)
+                .map(JSON.parse)
+            : [];
+        const terminalBefore = terminalEvents().length;
+        await A.tap(A.byId("chat-send"), "native feedback send");
+        const logFile = path.join(E.AGENT, "feedback-input.jsonl");
+        const draftFile = path.join(E.AGENT, "feedback-draft.jsonl");
+        await E.waitFor(
+          () => fs.existsSync(logFile) && fs.existsSync(draftFile),
+          20_000,
+          "offline native input delivered",
+        );
+        await sleep(5000); // include delayed clear / accidental fallback or duplicate delivery
+        const inputs = fs.readFileSync(logFile, "utf8").trim().split("\n").map(JSON.parse);
+        const drafts = fs.readFileSync(draftFile, "utf8").trim().split("\n").map(JSON.parse);
+        assert(
+          inputs.length === 1 && inputs[0].text === text,
+          "real Forge changed or duplicated mobile text",
+        );
+        assert(
+          inputs[0].draftBefore === draft && drafts.length === 1 && drafts[0].draftAfter === draft,
+          "real desktop draft changed",
+        );
+        assert(!A.find(A.byId("chat-send-error")), "native send reported an error");
+        const cleared = A.dump();
+        const composer = cleared.find(A.byId("chat-composer"));
+        // Android reports a TextInput's hint as its text when its value is empty.
+        assert(
+          composer &&
+            (composer.text === "" || composer.text === composer.desc) &&
+            cleared.find(A.byId("chat-send"))?.enabled === false,
+          "mobile composer did not clear after native acknowledgement",
+        );
+        const terminalSinceSend = terminalEvents().slice(terminalBefore);
+        assert(terminalSinceSend.length === 0, "real native send injected terminal input or paste");
+        const replies = fs
+          .readdirSync(remoteDir)
+          .filter((name) => !previous.has(name))
+          .map((name) => JSON.parse(fs.readFileSync(path.join(remoteDir, name), "utf8")));
+        // The client consumes/deletes the result after checking code=ok; it clears
+        // the composer only after that success (asserted above). A retained reply
+        // is therefore a failure, not evidence of acknowledgement.
+        assert(replies.length === 0, "native acknowledgement was not consumed by the client");
+        fs.writeFileSync(
+          path.join(ctx.screens, `feedback-native-send-${ctx.light ? "light" : "dark"}.json`),
+          JSON.stringify(
+            {
+              inputs,
+              drafts,
+              replies,
+              acknowledgement: "consumed-by-client",
+              terminalSinceSend,
+              composer,
+            },
+            null,
+            2,
+          ),
+        );
+        shot("feedback-real-desktop-draft-preserved-dark");
+        // One Ctrl+C clears the entire fixture editor (Ctrl+U only clears its current line).
+        E.tmux("send-keys", "-t", pane, "C-c");
+        await forgeState((s) => s.draft === false, "fixture desktop draft cleared");
+        await toDashboard();
+      },
+    ],
     [
       "Real forge: the status line, /model (thinking, pin, model; footer follows)",
       async () => {
@@ -235,7 +381,9 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
       },
     ],
     [
-      "Real forge: /tasks with a real background shell (log tail, stop); /btw offline (pending → error, Close)",
+      process.env.PIM_E2E_FEEDBACK === "1"
+        ? "Real forge: /tasks with a real background shell (log tail, stop), no model request"
+        : "Real forge: /tasks with a real background shell (log tail, stop); /btw offline (pending → error, Close)",
       async () => {
         if (!real()) return skip("tasks/btw");
         await openReal();
@@ -273,6 +421,13 @@ export function realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUn
           15_000,
           "shell gone from the footer",
         );
+        if (process.env.PIM_E2E_FEEDBACK === "1") {
+          ctx.notes.push(
+            "real BTW model request intentionally omitted: feedback validation forbids inference; deterministic fake BTW remains covered",
+          );
+          await toDashboard();
+          return;
+        }
         await slash("btw");
         await A.waitNode(A.byId("btw-composer"), 20_000, "btw composer");
         await typeChecked("btw-composer", "Is this offline", "btw-composer");

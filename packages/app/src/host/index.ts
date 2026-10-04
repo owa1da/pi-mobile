@@ -1,7 +1,6 @@
 export * from "./types";
 export {
   createHostService,
-  MAX_ARGV_PROMPT_BYTES,
   MAX_PROMPT_BYTES,
   ABORT_INTERVAL_MS,
   parseTmuxVersion,

@@ -65,6 +65,50 @@ describe("remote client", () => {
     expect(scripts[0]).toContain("'/h/.pi/agent/forge/remote/42/inbox'");
   });
 
+  it("binds input to the selected session, including a same-PID replacement", async () => {
+    const { client, scripts } = fakeClient((script) => {
+      const tag = tagOf(script);
+      return `${tag} SENT\n${tag} RESULT\n${result("pimnonce0000", "stale", "session-mismatch")}\n${tag} END\n`;
+    });
+    await expect(
+      client.send({ ...ROW, sessionId: "old" }, "input.submit", { text: "old text" }, { rev: 3 }),
+    ).rejects.toMatchObject({ code: "stale" });
+    const b64 = /B64='([^']*)'/.exec(scripts[0])?.[1] ?? "";
+    expect(JSON.parse(utf8Decode(base64Decode(b64))).expect).toEqual({ rev: 3, sessionId: "old" });
+    expect(scripts).toHaveLength(1);
+  });
+
+  it("requires input identity and never accepts a different session's state", async () => {
+    const { client, scripts } = fakeClient((script) => {
+      const tag = /printf '%s STATE\\n' ([A-Za-z0-9_-]+);/.exec(script)?.[1] ?? "";
+      return `${tag} STATE\n{"v":1,"pid":42,"sessionId":"new","rev":3}\n${tag} END\n`;
+    });
+    expect(await client.readState({ ...ROW, sessionId: "old" })).toBeUndefined();
+    await expect(
+      client.send(ROW, "input.submit", { text: "unbound" }, { rev: 3 }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    await expect(
+      client.send(
+        { ...ROW, sessionId: "old" },
+        "input.submit",
+        { text: "old text" },
+        { rev: 3, sessionId: "new" },
+      ),
+    ).rejects.toMatchObject({ code: "stale" });
+    expect(scripts).toHaveLength(1);
+  });
+
+  it("rejects escaped inbox JSON over 64 KiB before any SSH write", async () => {
+    const { client, scripts } = fakeClient(() => "");
+    await expect(
+      client.send(ROW, "input.submit", { text: `a${"\n".repeat(33000)}` }, { sessionId: "s" }),
+    ).rejects.toMatchObject({
+      code: "invalid",
+      detail: expect.stringContaining("including JSON escaping"),
+    });
+    expect(scripts).toHaveLength(0);
+  });
+
   it("keeps polling until the result arrives", async () => {
     const { client, scripts } = fakeClient((script, call) => {
       const tag = tagOf(script);

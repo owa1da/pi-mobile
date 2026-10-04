@@ -307,7 +307,12 @@ frame() {
     { line[NR] = $0 }
     END {
       if (n < 2) { print "NOFRAME"; exit }
-      for (i = prev + 1; i < last; i++) { t = line[i]; gsub(/[[:space:]]/, "", t); if (t != "") { print "DRAFT"; exit } }
+      for (i = prev + 1; i < last; i++) {
+        t = line[i]
+        if (i == prev + 1) sub(/^❯ /, "", t)
+        gsub(/[[:space:]]/, "", t)
+        if (t != "") { print "DRAFT"; exit }
+      }
       print "EMPTY"
     }'
 }

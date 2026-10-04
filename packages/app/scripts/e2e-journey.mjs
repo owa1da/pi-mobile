@@ -5,6 +5,8 @@
 // Options: --apk PATH (default android/app/build/outputs/apk/release/app-release.apk),
 //          --screens DIR (default ~/projects/pi-mobile-work/screens-v11), --keep (leave the sandbox up),
 //          --no-install (use the installed APK), --stop-after N (first N steps, sandbox kept),
+//          --feedback-send-only (host setup + deterministic real Forge native-send check;
+//                                requires PIM_E2E_REAL_PI=1 and PIM_E2E_FEEDBACK=1),
 //          --theme dark|light (default dark: the run's
 //          base appearance; with light, every "-dark" shot is taken in light mode as "-light").
 // Accessibility: every main control is checked for a label and a ≥48dp (Android floor) hit area (bounds plus its
@@ -18,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import * as A from "./e2e-adb.mjs";
 import * as E from "./e2e-emulator.mjs";
 import { forgeSteps } from "./e2e-forge-steps.mjs";
-import { realForgeSteps } from "./e2e-real-forge-steps.mjs";
+import { prepareFeedbackRig, realForgeSteps } from "./e2e-real-forge-steps.mjs";
 
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = "com.owa1da.pimobile";
@@ -326,6 +328,157 @@ async function toHosts() {
   await A.waitNode(A.byId("hosts-list"), 20_000, "hosts list");
 }
 
+// Deterministic fixture output: only a dedicated sandbox session file is extended.
+function appendFeedbackOutput(file, text) {
+  assert(file.startsWith(`${E.AGENT}/sessions/`), "feedback output escaped the fixture");
+  const entries = fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+  const last = entries.at(-1);
+  fs.appendFileSync(
+    file,
+    `${JSON.stringify({
+      type: "message",
+      id: `feedback-${entries.length}`,
+      parentId: last.id ?? null,
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }],
+        stopReason: "stop",
+        timestamp: Date.now(),
+      },
+    })}\n`,
+  );
+}
+
+async function feedbackViewport(ctx, shot) {
+  const w = await E.forgeWindow("pi-feedback-history", ["Feedback history fixture"]);
+  const record = JSON.parse(fs.readFileSync(path.join(E.PROCS, `${w.pid}.json`), "utf8"));
+  for (let i = 0; i < 36; i++)
+    appendFeedbackOutput(
+      record.sessionFile,
+      `History marker ${String(i).padStart(2, "0")}\nA deterministic paragraph for native reader-position validation. No model inference.`,
+    );
+  E.tmux("send-keys", "-t", w.pane, "-l", "/work");
+  E.tmux("send-keys", "-t", w.pane, "Enter");
+  await E.waitFor(() => E.procState(w.pid) === "working", 10_000, "feedback working");
+  const evidence = [];
+  try {
+    await toDashboard();
+    A.tapNode(await scrollUntil(rowOf(record.sessionId), "feedback history row"));
+    await A.waitNode(A.byId("chat-working"), 30_000, "feedback working row");
+    let newestText = "History marker 35";
+    for (const variant of ["base", "keyboard", "narrow", "font20"]) {
+      if (variant === "narrow") A.adb("shell", "wm", "size", "840x1900");
+      if (variant === "font20") {
+        A.adb("shell", "wm", "size", "reset");
+        A.fontScale(2);
+      }
+      await sleep(3500);
+      await A.waitNode(A.byId("chat-list"), 30_000, `feedback chat ${variant}`);
+      if (A.find(A.byId("chat-jump-latest"))) {
+        await A.tap(A.byId("chat-jump-latest"), "Latest");
+        await sleep(1200);
+      }
+      if (variant === "keyboard") {
+        await A.tap(A.byId("chat-composer"), "keyboard composer");
+        await sleep(1200);
+        assert(A.keyboardShown(), "feedback keyboard did not open");
+      }
+      const newest = A.dump();
+      const list = newest.find(A.byId("chat-list"));
+      const working = newest.find(A.byId("chat-working"));
+      const marker = newest.find((n) => n.text.startsWith(newestText));
+      assert(list && working && marker, `${variant}: newest output or Working missing`);
+      assert(
+        inside(working, list) && working.bounds[3] > working.bounds[1],
+        `${variant}: Working outside transcript`,
+      );
+      assert(
+        working.bounds[1] >= marker.bounds[3] - 2,
+        `${variant}: Working not beneath newest output`,
+      );
+      shot(`feedback-${variant}-newest-dark`);
+      const [x1, y1, x2, y2] = list.bounds;
+      const x = Math.round((x1 + x2) / 2);
+      // Read history while leaving the composer and its dimensions alone.
+      for (let i = 0; i < 3; i++) A.swipe(x, y1 + (y2 - y1) * 0.25, x, y1 + (y2 - y1) * 0.85, 450);
+      await A.waitNode(A.byId("chat-jump-latest"), 15_000, `${variant}: Latest`);
+      await sleep(1000);
+      const history = A.dump();
+      const viewport = history.find(A.byId("chat-list"));
+      const activity = history.find(A.byId("chat-working"));
+      assert(
+        JSON.stringify(viewport.bounds) === JSON.stringify(list.bounds),
+        `${variant}: Latest resized chat viewport`,
+      );
+      assert(
+        !activity || nodeHeight(activity) <= 0 || !inside(activity, viewport),
+        `${variant}: Working stayed static while reading history`,
+      );
+      const anchors = history.filter(
+        (n) => n.text.startsWith("History marker") && nodeHeight(n) > 40 && inside(n, viewport),
+      );
+      assert(anchors.length >= 1, `${variant}: no visible history anchor`);
+      shot(`feedback-${variant}-history-dark`);
+      newestText = `New output while reading ${variant}`;
+      appendFeedbackOutput(
+        record.sessionFile,
+        `${newestText}\nReader must stay at the same history markers.`,
+      );
+      await sleep(6000);
+      const after = A.dump();
+      assert(
+        JSON.stringify(after.find(A.byId("chat-list"))?.bounds) === JSON.stringify(viewport.bounds),
+        `${variant}: output resized viewport`,
+      );
+      for (const anchor of anchors) {
+        const same = after.find((n) => n.text === anchor.text);
+        assert(
+          same && same.bounds.every((v, i) => Math.abs(v - anchor.bounds[i]) <= 2),
+          `${variant}: output yanked ${anchor.text}`,
+        );
+      }
+      shot(`feedback-${variant}-history-output-dark`);
+      await A.tap(A.byId("chat-jump-latest"), "Latest return");
+      await A.waitGone(A.byId("chat-jump-latest"), 15_000, "Latest hidden at newest");
+      const returned = await A.waitNode(
+        (n) => n.text.startsWith(`New output while reading ${variant}`),
+        15_000,
+        "newest output after Latest",
+      );
+      const finalNodes = A.dump();
+      assert(
+        inside(finalNodes.find(A.byId("chat-working")), finalNodes.find(A.byId("chat-list"))),
+        `${variant}: Working did not return with newest`,
+      );
+      shot(`feedback-${variant}-latest-return-dark`);
+      evidence.push({
+        variant,
+        viewportBefore: list.bounds,
+        viewportWithLatest: viewport.bounds,
+        anchors: anchors.map(({ text, bounds }) => ({ text, bounds })),
+        anchorsAfterOutput: anchors.map((a) => ({
+          text: a.text,
+          bounds: after.find((n) => n.text === a.text)?.bounds,
+        })),
+        newestReturned: returned.text,
+        workingBounds: working.bounds,
+      });
+      if (variant === "keyboard") await safeHideKeyboard();
+    }
+  } finally {
+    fs.writeFileSync(
+      path.join(ctx.screens, `feedback-viewport-${ctx.light ? "light" : "dark"}.json`),
+      JSON.stringify(evidence, null, 2),
+    );
+    A.fontScale(1);
+    A.adb("shell", "wm", "size", "reset");
+    await sleep(3000);
+    await toDashboard();
+    await E.killWindow(w);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // steps
 // ---------------------------------------------------------------------------
@@ -534,6 +687,10 @@ function steps(ctx) {
         await A.tap(A.byId("tool-call-sheet-close"), "close sheet");
         await toDashboard();
       },
+    ],
+    [
+      "Feedback: Latest overlays a stable viewport; output preserves history; Working scrolls with newest",
+      async () => feedbackViewport(ctx, shot),
     ],
     [
       "Waiting session: answer pi's select dialog in the app (no composer, chat stays above)",
@@ -936,7 +1093,7 @@ function steps(ctx) {
     ],
     ...realForgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil }),
     [
-      "Send a prompt from Chat to an idle session (bracketed paste + Enter)",
+      "Send a prompt from Chat to an idle session (one native input.submit, no terminal bytes)",
       async () => {
         const n = eventCount("idle");
         await A.tap(rowOf(sessionIdOf("idle")), "idle row");
@@ -958,12 +1115,19 @@ function steps(ctx) {
         await A.waitNode(A.byText(/^echo: Add a fourth/), 20_000, "reply");
         shot("18-chat-reply-dark");
         const ev = eventsSince("idle", n);
-        const submit = ev.find((e) => e.kind === "submit");
+        const submissions = ev.filter((e) => e.kind === "submit");
+        const actions = ev.filter((e) => e.action === "input.submit");
         assert(
-          submit?.text === "Add a fourth bullet about tests" && submit.pasted,
-          "no pasted submit",
+          submissions.length === 1 && actions.length === 1,
+          "native send was missing or duplicated",
         );
-        assert(inputHex("idle", n).join("").startsWith("1b5b3230307e"), "not a bracketed paste");
+        assert(
+          submissions[0].text === "Add a fourth bullet about tests" &&
+            !submissions[0].pasted &&
+            actions[0].text === submissions[0].text,
+          "native send changed the explicit text or used paste",
+        );
+        assert(inputHex("idle", n).length === 0, "native send injected terminal input");
         await toDashboard();
       },
     ],
@@ -1631,6 +1795,7 @@ export async function journey(args = []) {
     path.join(APP, "android/app/build/outputs/apk/release/app-release.apk"),
   );
   await E.up();
+  await prepareFeedbackRig();
   const theme = option(args, "--theme", "dark");
   const ctx = {
     screens,
@@ -1655,7 +1820,16 @@ export async function journey(args = []) {
   // --stop-after N: run the first N steps and leave the app and sandbox as they are (manual passes,
   // e.g. TalkBack, on a connected host). Implies --keep.
   const stopAfter = Number(option(args, "--stop-after", "0"));
-  const plan = stopAfter > 0 ? steps(ctx).slice(0, stopAfter) : steps(ctx);
+  const allSteps = steps(ctx);
+  const sendOnly = args.includes("--feedback-send-only");
+  assert(
+    !sendOnly || (E.readState().windows.real && process.env.PIM_E2E_FEEDBACK === "1"),
+    "--feedback-send-only requires the offline real Forge feedback fixture",
+  );
+  const selectedSteps = sendOnly
+    ? allSteps.filter(([name], i) => i < 3 || name.startsWith("Feedback: real Forge native send"))
+    : allSteps;
+  const plan = stopAfter > 0 ? selectedSteps.slice(0, stopAfter) : selectedSteps;
   for (const [name, fn] of plan) {
     const t0 = Date.now();
     // Every step starts in portrait (landscape steps rotate back themselves); re-lock it so a
@@ -1683,7 +1857,11 @@ export async function journey(args = []) {
   fs.mkdirSync(screens, { recursive: true });
   fs.writeFileSync(
     path.join(screens, `journey-results-${theme}.json`),
-    JSON.stringify({ results, notes: ctx.notes }, null, 2),
+    JSON.stringify(
+      { mode: sendOnly ? "feedback-send-only" : "full", results, notes: ctx.notes },
+      null,
+      2,
+    ),
   );
   fs.writeFileSync(
     path.join(screens, `a11y-audit-${theme}.json`),

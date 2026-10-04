@@ -433,9 +433,9 @@ function useSecondTick(on: boolean): void {
 }
 
 /**
- * pi's working row, as forge's look draws it above the input: the spinner, the verb, then the run's
- * clock in grey (`✻ Working… (4s)`): spinner and verb in the working colour, the clock muted. The app cannot see forge's per-run verb or token count, so it
- * shows pi's own verb and the clock only.
+ * pi's working row at the newest transcript edge: spinner and verb in the working colour,
+ * the run's clock muted. The app cannot see forge's per-run verb or token count, so it shows
+ * pi's own verb and the clock only.
  */
 function WorkingRow({ hostId, since }: { hostId: string; since: number }) {
   const { t } = useTranslation();
@@ -449,7 +449,7 @@ function WorkingRow({ hostId, since }: { hostId: string; since: number }) {
       testID="chat-working"
     >
       <SessionGlyph kind="working" running />
-      <Text style={styles.workingText} numberOfLines={1}>
+      <Text style={styles.workingText}>
         {t("pi.session.working")}
         <Text style={styles.workingClock}>{` (${clock})`}</Text>
       </Text>
@@ -634,11 +634,16 @@ function ChatPaneBody({
   const errorMessage = sendError
     ? [t(sendError.key), sendError.detail].filter(Boolean).join(" ")
     : "";
+  const working = workingRowVisible(row.state, connection.status, held);
+  const activity = useMemo(
+    () => (working ? <WorkingRow hostId={hostId} since={row.since} /> : null),
+    [working, hostId, row.since],
+  );
 
   return (
     <View style={FILL}>
-      {feed.hasFile ? (
-        <ChatView rows={feed.rows} loading={feed.loading} />
+      {feed.hasFile || working ? (
+        <ChatView rows={feed.rows} loading={feed.loading} activity={activity} />
       ) : (
         <View style={FILL} testID="chat-no-file" />
       )}
@@ -670,9 +675,6 @@ function ChatPaneBody({
           />
         ) : null}
       </View>
-      {workingRowVisible(row.state, connection.status, held) ? (
-        <WorkingRow hostId={hostId} since={row.since} />
-      ) : null}
       <AnswerDock channel={channel} answers={answers}>
         <Composer
           commands={channel.available ? channel.state?.commands : undefined}
@@ -734,7 +736,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
     paddingBottom: theme.spacing[2],
   },
   // forge: the spinner and verb in pi's working sky blue (75), the clock in grey (246).

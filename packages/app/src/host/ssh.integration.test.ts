@@ -1,6 +1,6 @@
 // HostService over real SSH: an isolated unprivileged sshd (src/ssh/test-support/isolated-sshd.ts)
 // and the ssh2 test client (src/ssh/node-client.ts). sshd runs commands in the real user's login
-// shell, so this test only reads the sandbox registry and pastes into a fake pi on the sandbox's
+// shell, so this test only reads the sandbox registry and submits native input to a fake pi on the sandbox's
 // private tmux server (agentDir/tmuxSocket overrides); it never starts or resumes anything.
 
 import fs from "node:fs";
@@ -87,6 +87,12 @@ describe.skipIf(!hasSshd)("host service over real SSH", () => {
       5000,
       "ssh submit",
     );
-    expect(submit.pasted).toBe(true);
+    expect(submit.pasted).toBe(false);
+    expect(
+      sb
+        .events(started.pid)
+        .filter((e) => e.kind === "remote" && e.action === "input.submit" && e.text === text),
+    ).toHaveLength(1);
+    expect(sb.events(started.pid).filter((e) => e.kind === "input")).toHaveLength(0);
   });
 });

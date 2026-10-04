@@ -8,11 +8,15 @@ import path from "node:path";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function adb(...args) {
-  return execFileSync("adb", args, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  return execFileSync(
+    "adb",
+    [...(process.env.ANDROID_SERIAL ? ["-s", process.env.ANDROID_SERIAL] : []), ...args],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
 }
 
 function attr(tag, name) {
@@ -149,15 +153,25 @@ export function fontScale(value) {
 }
 
 export function screenSize() {
-  const m = /(\d+)x(\d+)/.exec(adb("shell", "wm", "size"));
+  const said = adb("shell", "wm", "size");
+  const m = /Override size: (\d+)x(\d+)/.exec(said) ?? /Physical size: (\d+)x(\d+)/.exec(said);
   return m ? [Number(m[1]), Number(m[2])] : [1080, 2400];
 }
 
 export function screenshot(dir, name) {
   fs.mkdirSync(dir, { recursive: true });
-  const png = execFileSync("adb", ["exec-out", "screencap", "-p"], {
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const png = execFileSync(
+    "adb",
+    [
+      ...(process.env.ANDROID_SERIAL ? ["-s", process.env.ANDROID_SERIAL] : []),
+      "exec-out",
+      "screencap",
+      "-p",
+    ],
+    {
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
   const file = path.join(dir, name.endsWith(".png") ? name : `${name}.png`);
   fs.writeFileSync(file, png);
   return file;
