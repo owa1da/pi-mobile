@@ -15,10 +15,10 @@ screens, and actions. **There is no terminal view, relay, or separate mobile dae
 - tmux ≥ 3.0 and pi installed
 - Forge, including the remote-channel extension for native answering and command screens
 
-The remote-channel work is currently on a separate forge branch. Installing the mobile app does
-not merge or update forge automatically. An older forge installation cannot provide those remote
-features. Bare MCP manager/custom dialogs are not yet answerable from the phone; supported MCP
-login, logout, and reconnect dialogs use native answering.
+Use Forge main with remote-channel support. Installing the mobile app does not update Forge
+automatically. New or voluntarily reloaded sessions gain native controls; existing sessions keep
+running unchanged. Bare MCP manager/custom dialogs are not yet answerable from the phone;
+supported MCP login, logout, and reconnect dialogs use native answering.
 
 ## Development and checks
 
@@ -75,8 +75,9 @@ verification codes in chat. Subsequent uploads need a higher iOS build number. E
 one checkout so numbers cannot be reused. Simulator builds do not increment it, and Android
 keeps its existing package-version-derived versionCode.
 
-**Real-iPhone verification is still required.** Simulator and signed store builds passed;
-installation, SSH, LAN permissions and phone lifecycle checks remain before claiming it ready. Portable SSH tests and the device checklist are documented in
+**Real-iPhone runtime verification is still required.** Simulator and signed store builds passed,
+and the owner's TestFlight installation is confirmed. Phone SSH, LAN permissions and lifecycle
+checks remain before claiming it ready. Portable SSH tests and the device checklist are documented in
 [`modules/pi-ssh/ios/README.md`](packages/app/modules/pi-ssh/ios/README.md).
 
 ## Android builds
