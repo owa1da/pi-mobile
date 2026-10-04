@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { remoteFor } from "@/remote/for-service";
 import { SSH_ERROR_CODES, SshError } from "@/ssh/errors";
 import type { SshConnection } from "@/ssh/types";
 
@@ -456,6 +457,119 @@ describe("wave 5 fixes on an isolated tmux server", () => {
     expect(startsOf(sb, closed.sessionId).length - before).toBe(1);
     expect(allSubmits(sb).filter((t) => t === "joined prompt\nsecond line")).toHaveLength(1);
     expect(sb.events(started.pid).some((e) => e.kind === "submit")).toBe(true);
+  });
+
+  it("a command resumes a completed session once and uses its new native channel", async () => {
+    const closed = await closedSession(sb, svc, "command resume");
+    const before = startsOf(sb, closed.sessionId).length;
+    await svc.runCommand(closed, "/compact");
+    const live = await rowFor(
+      sb,
+      svc,
+      (r) => r.live && r.sessionId === closed.sessionId,
+      "command resumed",
+    );
+    expect(live.pid).not.toBe(closed.pid);
+    expect(startsOf(sb, closed.sessionId).length - before).toBe(1);
+    expect(sb.events(live.pid!).filter((e) => e.action === "command.run")).toMatchObject([
+      { line: "/compact" },
+    ]);
+    expect(submitTexts(sb, live.pid!)).toEqual([]);
+  });
+
+  it("concurrent send and command share one reopen", async () => {
+    const closed = await closedSession(sb, svc, "command send race");
+    const before = startsOf(sb, closed.sessionId).length;
+    await Promise.all([
+      svc.sendPrompt(closed, "joined command send"),
+      svc.runCommand(closed, "/compact"),
+    ]);
+    const live = await rowFor(
+      sb,
+      svc,
+      (r) => r.live && r.sessionId === closed.sessionId,
+      "joined command row",
+    );
+    expect(startsOf(sb, closed.sessionId).length - before).toBe(1);
+    expect(submitTexts(sb, live.pid!).filter((t) => t === "joined command send")).toHaveLength(1);
+    expect(sb.events(live.pid!).filter((e) => e.action === "command.run")).toHaveLength(1);
+  });
+
+  it("polling a completed session never resumes it", async () => {
+    const closed = await closedSession(sb, svc, "read only command");
+    const before = startsOf(sb, closed.sessionId).length;
+    await svc.listSessions();
+    await svc.readChat(closed);
+    expect(await remoteFor(svc).readState(closed)).toBeUndefined();
+    expect(startsOf(sb, closed.sessionId)).toHaveLength(before);
+    expect(
+      (await svc.listSessions()).rows.find((r) => r.sessionId === closed.sessionId)?.live,
+    ).toBe(false);
+  });
+
+  it("a native model picker resumes without sending /model as terminal input", async () => {
+    const closed = await closedSession(sb, svc, "native picker resume");
+    const before = startsOf(sb, closed.sessionId).length;
+    const ready = await svc.ensureRemoteSession(closed, "/model");
+    expect(ready.row.pid).not.toBe(closed.pid);
+    expect(ready.state.sessionId).toBe(closed.sessionId);
+    const result = await remoteFor(svc).send(
+      ready.row,
+      "models.list",
+      {},
+      { sessionId: closed.sessionId },
+    );
+    expect(result.data).toMatchObject({ available: expect.any(Array) });
+    await remoteFor(svc).send(
+      ready.row,
+      "model.set",
+      { ref: "openai/gpt-6" },
+      { sessionId: closed.sessionId },
+    );
+    expect(startsOf(sb, closed.sessionId).length - before).toBe(1);
+    expect(submitTexts(sb, ready.row.pid!)).toEqual([]);
+    expect(sb.events(ready.row.pid!).filter((e) => e.action === "command.run")).toEqual([]);
+  });
+
+  it("a mismatched channel identity refuses a command without retargeting or reopening", async () => {
+    const started = await svc.startSession({ prompt: "identity command", cwd: sb.home });
+    const live = await rowFor(
+      sb,
+      svc,
+      (r) => r.pid === started.pid && r.messages >= 2 && r.state === "idle",
+      "identity command row",
+    );
+    const file = path.join(sb.remoteDir(started.pid), "state.json");
+    const state = JSON.parse(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ ...state, sessionId: "replacement" }));
+    fs.renameSync(`${file}.tmp`, file);
+    const before = startsOf(sb, live.sessionId).length;
+    await expect(sb.service({ readyTimeoutMs: 1 }).runCommand(live, "/compact")).rejects.toThrow();
+    expect(startsOf(sb, live.sessionId)).toHaveLength(before);
+    expect(sb.events(started.pid).filter((e) => e.action === "command.run")).toEqual([]);
+  });
+
+  it("command resume refuses a missing working folder", async () => {
+    const cwd = path.join(sb.dir, "command-cwd");
+    fs.mkdirSync(cwd);
+    const started = await svc.startSession({ prompt: "command cwd", cwd });
+    const live = await rowFor(
+      sb,
+      svc,
+      (r) => r.pid === started.pid && r.messages >= 2 && r.state === "idle",
+      "command cwd row",
+    );
+    await svc.sendPrompt(live, "/quit");
+    const closed = await rowFor(
+      sb,
+      svc,
+      (r) => r.sessionId === live.sessionId && !r.live,
+      "closed cwd row",
+    );
+    fs.rmdirSync(cwd);
+    const before = startsOf(sb, closed.sessionId).length;
+    await expectHostError(svc.runCommand(closed, "/compact"), "not-found");
+    expect(startsOf(sb, closed.sessionId)).toHaveLength(before);
   });
 
   it("two concurrent sends to a closed session share one resume and each arrive once", async () => {

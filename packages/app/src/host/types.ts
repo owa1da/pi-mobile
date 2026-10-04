@@ -1,6 +1,7 @@
 // Shared host contract: what the UI needs from a host running pi + forge in tmux.
 // Owned by the orchestrator. Implementation: src/host/ (host service); consumers: src/app, src/screens.
 
+import type { RemoteResult, RemoteState } from "@/remote/types";
 import type { SshConnection } from "@/ssh/types";
 
 // ---------- Saved hosts (app-side storage) ----------
@@ -136,6 +137,11 @@ export interface StartedSession {
   tmuxSession: string;
 }
 
+export interface RemoteSession {
+  row: SessionRow;
+  state: RemoteState;
+}
+
 export interface HostService {
   readonly connection: SshConnection;
   probe(): Promise<HostEnvironment>;
@@ -144,7 +150,11 @@ export interface HostService {
   startSession(input: StartSessionInput): Promise<StartedSession>;
   /** Resume a closed session in a new tmux window. Throws if it is live. */
   resumeSession(row: SessionRow): Promise<StartedSession>;
-  /** Bracketed paste + Enter into the session's pane. Throws a typed error when state is waiting or pane in copy mode. */
+  /** Explicit action only: join a reopen, wait for its native channel, and optionally validate a command. */
+  ensureRemoteSession(row: SessionRow, line?: string): Promise<RemoteSession>;
+  /** Run a freshly validated command, retrying only one definite stale refusal. */
+  runCommand(row: SessionRow, line: string): Promise<RemoteResult>;
+  /** Submit explicit text through native input, reopening a closed session if necessary. */
   sendPrompt(row: SessionRow, text: string): Promise<void>;
   /** Single Escape, only while working; rate limited to once per second per pane. */
   abort(row: SessionRow): Promise<void>;

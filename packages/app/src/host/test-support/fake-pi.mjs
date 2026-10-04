@@ -475,7 +475,30 @@ function answerFor(question) {
 
 function openSide(seed) {
   const id = uuid();
-  side = { file: sessionFileFor(`side-${id}.jsonl`, id, []), working: false };
+  const byId = new Map(
+    fs
+      .readFileSync(sessionFile, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type !== "session" && entry.id)
+      .map((entry) => [entry.id, entry]),
+  );
+  const branch = [];
+  for (let current = leaf; current && byId.has(current); current = byId.get(current).parentId)
+    branch.unshift(byId.get(current));
+  let boundaryId = hex8();
+  while (byId.has(boundaryId)) boundaryId = hex8();
+  const boundary = {
+    type: "custom_message",
+    id: boundaryId,
+    parentId: leaf,
+    timestamp: new Date().toISOString(),
+    customType: "forge-side-boundary",
+    content: "Copied main context (hidden in the side)",
+    display: false,
+  };
+  side = { file: sessionFileFor(`side-${id}.jsonl`, id, [...branch, boundary]), working: false };
   if (seed) sideTurn(seed);
 }
 function sideTurn(question) {

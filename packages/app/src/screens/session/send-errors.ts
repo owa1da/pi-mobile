@@ -2,6 +2,7 @@
 
 import { isOutcomeUnknown, PaneBusyError } from "@/host/errors";
 import { HostError } from "@/host/types";
+import { RemoteError } from "@/remote/errors";
 import { isConnectionLostError } from "@/stores/connection-errors";
 
 export interface FriendlyError {
@@ -26,6 +27,11 @@ export function friendlyHostError(error: unknown): FriendlyError {
   if (isOutcomeUnknown(error))
     return { key: "pi.session.errors.outcome-unknown", outcomeUnknown: true };
   if (error instanceof PaneBusyError) return { key: PANE_BUSY_KEYS[error.reason] };
+  if (error instanceof RemoteError) {
+    if (error.code === "invalid") return { key: "pi.session.errors.command-unavailable" };
+    if (error.code === "stale") return { key: "pi.session.errors.command-changed" };
+    return { key: "pi.session.errors.command-failed" };
+  }
   if (error instanceof HostError) {
     if (error.code === "command-failed")
       return { key: "pi.session.errors.command-failed", detail: error.message };

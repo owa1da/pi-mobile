@@ -4,7 +4,8 @@
 // the branch is its parentId chain. Each read fetches at most `cap` bytes after the cursor, keeps
 // to the last full line, and rebuilds when the file shrank, was replaced (inode) or the byte
 // before the cursor is not a newline. A first read of a large file starts `cap` bytes before the
-// end (earlier history is reported as not loaded). A line longer than one read (an inlined image)
+// end, then hydrates missing branch ancestors in bounded backward windows. A line longer than
+// one read (an inlined image)
 // becomes a stub: its id/parentId are read from its first bytes, its content is not shown.
 
 import { chatReadScript, longLineScript, makeNonce } from "./commands";
@@ -36,6 +37,7 @@ export interface ChatNode {
   id: string;
   parent: string | null;
   type: string;
+  customType?: string;
   ts: number;
   role?: string;
   text?: string;
@@ -202,6 +204,7 @@ export function compactEntry(entry: Record<string, unknown>): ChatNode | undefin
   if (typeof entry.id !== "string" || !entry.id || typeof entry.type !== "string") return undefined;
   const parent = typeof entry.parentId === "string" ? entry.parentId : null;
   const node: ChatNode = { id: entry.id, parent, type: entry.type, ts: timeOf(entry) };
+  if (typeof entry.customType === "string") node.customType = entry.customType;
   switch (entry.type) {
     case "message": {
       const message = entry.message as Message | undefined;
@@ -234,6 +237,8 @@ export function stubEntry(prefix: string, length: number): ChatNode | undefined 
     ts: 0,
     stub: length,
   };
+  const customType = /"customType":"([^"]+)"/.exec(prefix);
+  if (customType) node.customType = customType[1];
   const ts = /"timestamp":"([^"]+)"/.exec(prefix);
   if (ts) node.ts = Date.parse(ts[1]!) || 0;
   const role = /"message":\{"role":"([^"]+)"/.exec(prefix);
@@ -503,9 +508,10 @@ export class ChatDocument {
   build(): { items: ChatItem[]; pathIds: Set<string> } {
     const { nodes, broken } = this.path();
     const branch = new BranchBuilder();
-    if (broken || (this.truncated && nodes[0]?.parent))
+    const boundary = nodes.findLastIndex((node) => node.customType === "forge-side-boundary");
+    if (boundary < 0 && (broken || (this.truncated && nodes[0]?.parent)))
       branch.notice("earlier", "info", "Earlier messages are not loaded.", nodes[0]?.ts ?? 0);
-    nodes.forEach((node, index) => branch.add(node, index));
+    nodes.slice(boundary + 1).forEach((node, index) => branch.add(node, index));
     branch.settle();
     return { items: branch.items, pathIds: new Set(nodes.map((node) => node.id)) };
   }
@@ -538,6 +544,31 @@ interface FileState {
   doc: ChatDocument;
   offset: number;
   inode: string;
+  /** Backward scan cursor and a partial line, bounded to one cap-sized window. */
+  history?: { end: number; suffix: Uint8Array; length: number };
+}
+
+/** A backward read is mergeable only from the same, unshrunk file and exactly the asked range. */
+function validBackRead(
+  header: string[] | undefined,
+  start: number,
+  length: number,
+  end: number,
+  st: FileState,
+  cap: number,
+): boolean {
+  return (
+    header?.[0] === "D" &&
+    header[1] === "back" &&
+    header[3] === st.inode &&
+    // Same inode truncated beneath what was already read: the selected leaf may be gone.
+    Number(header[2]) >= st.offset &&
+    Number.isSafeInteger(start) &&
+    start >= 0 &&
+    start < end &&
+    length === end - start &&
+    length <= cap
+  );
 }
 
 function section(stdout: string, nonce: string): { header: string[] | undefined; body: string } {
@@ -606,6 +637,8 @@ export class ChatReader {
       more = result.more;
       break;
     }
+    await this.hydrateAncestors(file, st, cap);
+    more ||= this.needsAncestors(st);
     const { items, pathIds } = st.doc.build();
     const reset = rebuild || (prevLeaf !== undefined && !pathIds.has(prevLeaf));
     return {
@@ -642,6 +675,7 @@ export class ChatReader {
     if (fresh) {
       st.doc.reset();
       st.offset = 0;
+      st.history = undefined;
     }
     st.inode = header[3] ?? "";
     const bytes = base64Decode(body);
@@ -652,10 +686,16 @@ export class ChatReader {
       if (nl < 0) {
         // A fresh tail window entirely inside one line: skip to that line's end.
         st.doc.truncated = true;
-        return { again: await this.skipLongLine(file, st, start, false), more: false, rebuilt };
+        const again = await this.skipLongLine(file, st, start, false);
+        if (fresh && again)
+          st.history = { end: start, suffix: new Uint8Array(), length: st.offset - start };
+        return { again, more: false, rebuilt };
       }
       pos = nl + 1;
-      if (fresh) st.doc.truncated = true;
+      if (fresh) {
+        st.doc.truncated = true;
+        st.history = { end: start, suffix: bytes.slice(0, pos), length: pos };
+      }
     }
     const firstLine = pos;
     pos = addLines(st.doc, bytes, pos);
@@ -664,6 +704,68 @@ export class ChatReader {
     if (pos === firstLine && capped)
       return { again: await this.skipLongLine(file, st, st.offset, true), more: false, rebuilt };
     return { again: false, more: capped && st.offset < size, rebuilt };
+  }
+
+  private needsAncestors(st: FileState): boolean {
+    if (!st.history?.end) return false;
+    const { nodes, broken } = st.doc.path();
+    return broken && !nodes.some((node) => node.customType === "forge-side-boundary");
+  }
+
+  /** At most eight cap-sized backward windows per update; never change the selected leaf/cursor. */
+  private async hydrateAncestors(file: string, st: FileState, cap: number): Promise<void> {
+    for (let round = 0; round < 8 && this.needsAncestors(st); round++) {
+      const history = st.history!;
+      const nonce = makeNonce();
+      const out = await this.run(chatReadScript(file, history.end, st.inode, cap, nonce, true));
+      const { header, body } = section(out, nonce);
+      const start = Number(header?.[4]);
+      const bytes = base64Decode(body);
+      if (!validBackRead(header, start, bytes.length, history.end, st, cap)) {
+        // Do not merge ancestors from a replaced/shrunk file into the old branch.
+        this.states.delete(file);
+        throw new HostError("command-failed", "Session file changed during ancestor read");
+      }
+      const older = new ChatDocument();
+      const mergeLine = (prefix: Uint8Array, suffix: Uint8Array, length: number) => {
+        if (length > cap) {
+          const node = stubEntry(utf8Decode(prefix), length);
+          if (node) older.addNode(node);
+        } else {
+          const line = new Uint8Array(length);
+          line.set(prefix);
+          line.set(suffix, prefix.length);
+          older.addLine(utf8Decode(line));
+        }
+      };
+      const first = bytes.indexOf(10);
+      const last = bytes.lastIndexOf(10);
+      if (first < 0) {
+        const length = bytes.length + history.length;
+        if (start === 0) mergeLine(bytes, history.suffix, length);
+        else if (length <= cap) {
+          const suffix = new Uint8Array(length);
+          suffix.set(bytes);
+          suffix.set(history.suffix, bytes.length);
+          history.suffix = suffix;
+        } else history.suffix = new Uint8Array();
+        history.length = length;
+      } else {
+        mergeLine(
+          bytes.subarray(last + 1),
+          history.suffix,
+          bytes.length - last - 1 + history.length,
+        );
+        addLines(older, bytes.subarray(0, last + 1), first + 1);
+        history.suffix = bytes.slice(0, first + 1);
+        history.length = first + 1;
+        if (start === 0) mergeLine(history.suffix, new Uint8Array(), history.length);
+      }
+      // Older nodes are context, not newly appended entries: addLine's leaf must not win.
+      for (const [id, node] of older.nodes) if (!st.doc.nodes.has(id)) st.doc.nodes.set(id, node);
+      history.end = start;
+      if (start === 0) st.doc.truncated = false;
+    }
   }
 
   /** Moves `st.offset` past the line at `position`, adding a stub when `stub`; false if it can't. */

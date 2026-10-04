@@ -1,8 +1,83 @@
-// Structural wiring checks complement ChatView's mounted tests without booting stores/SSH.
+// Mounted composer checks and structural session wiring, without booting stores/SSH.
 import { readFileSync } from "node:fs";
+import React, { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { JSDOM } from "jsdom";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Composer } from "@/components/pi/composer";
+import type { HostService, SessionRow } from "@/host/types";
+import type { RemoteCommand } from "@/remote/types";
+import { cachedCommands, rememberCommands } from "./command-cache";
+import { routeSessionCommand } from "./route-command";
 import { workingRowVisible } from "./chrome";
+
+const input = vi.hoisted(() => ({ value: "", change: (_text: string) => {} }));
+vi.mock("react-native", async () => {
+  const { createElement } = await import("react");
+  interface Props {
+    children?: ReactNode;
+    testID?: string;
+    disabled?: boolean;
+    onPress?: () => void;
+  }
+  const View = ({ children, testID }: Props) =>
+    createElement("div", { "data-testid": testID }, children);
+  return {
+    Platform: { select: (values: Record<string, unknown>) => values.default },
+    View,
+    ScrollView: View,
+    Text: ({ children }: Props) => createElement("span", null, children),
+    Pressable: ({ children, testID, disabled, onPress }: Props) =>
+      createElement(
+        "button",
+        {
+          "data-testid": testID,
+          disabled,
+          onClick: onPress,
+        },
+        children,
+      ),
+  };
+});
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("@/components/pi/icons", () => ({
+  MutedSpinner: () => null,
+  ThemedArrowUp: () => null,
+  ThemedSquare: () => null,
+  accentForegroundColor: () => ({}),
+  extraMutedColor: () => ({}),
+  surfaceSolid: () => ({}),
+}));
+vi.mock("@/components/adaptive-modal-sheet", async () => {
+  const { createElement, useImperativeHandle } = await import("react");
+  return {
+    AdaptiveTextInput: ({
+      ref,
+      testID,
+      onChangeText,
+    }: {
+      ref: React.Ref<unknown>;
+      testID: string;
+      onChangeText: (text: string) => void;
+    }) => {
+      input.change = (text: string) => {
+        input.value = text;
+        onChangeText(text);
+      };
+      useImperativeHandle(ref, () => ({
+        reset: () => {
+          input.value = "";
+        },
+        replaceText: (text: string) => {
+          input.value = text;
+        },
+        focus: () => {},
+      }));
+      return createElement("textarea", { "data-testid": testID });
+    },
+  };
+});
 
 const source = ts.createSourceFile(
   "session-screen.tsx",
@@ -34,6 +109,112 @@ function tag(name: string): ts.JsxSelfClosingElement {
   expect(nodes).toHaveLength(1);
   return nodes[0] as ts.JsxSelfClosingElement;
 }
+
+describe("completed session commands UI wiring", () => {
+  it("offers cached host commands without requiring a live channel", () => {
+    const prop = tag("Composer").attributes.properties.find(
+      (node) => ts.isJsxAttribute(node) && node.name.getText(source) === "commands",
+    ) as ts.JsxAttribute;
+    expect(prop.initializer?.getText(source)).toBe("{channel.commands}");
+  });
+  it("does not gate native row selection on row.live", () => {
+    expect(variable("pickNative").getText(source)).not.toContain("row.live");
+    expect(variable("pickNative").getText(source)).toContain("send(");
+  });
+  it("routes typed slash commands through the resume-aware native router, never prompt submission first", () => {
+    expect(variable("runCommand").getText(source)).toContain("routeSessionCommand(");
+    expect(variable("send").getText(source)).not.toContain("row.live ? nativeTarget");
+    expect(variable("send").getText(source)).toContain("commandName(text)");
+  });
+  it("sends a non-command slash line (a path) as a message instead of failing", () => {
+    expect(variable("send").getText(source)).toContain("slashIsCommand(text, channel.commands)");
+    expect(variable("runCommand").getText(source)).toContain("CommandUnavailableError");
+  });
+});
+
+describe("completed session mounted command picker", () => {
+  let root: Root;
+  let container: HTMLElement;
+  let dom: JSDOM;
+  const closed = { live: false, sessionId: "completed" } as SessionRow;
+  beforeEach(() => {
+    dom = new JSDOM("<!doctype html><html><body></body></html>");
+    vi.stubGlobal("React", React);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", dom.window);
+    vi.stubGlobal("document", dom.window.document);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    input.value = "";
+    rememberCommands("ui-completed-host", [
+      { name: "model", description: "Pick a model" },
+      { name: "compact", description: "Compact" },
+    ]);
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    dom.window.close();
+    vi.unstubAllGlobals();
+  });
+  async function mount(onPickNative?: (command: RemoteCommand) => Promise<boolean>) {
+    await act(async () =>
+      root.render(
+        React.createElement(Composer, {
+          commands: cachedCommands("ui-completed-host"),
+          placeholder: "Resume and send",
+          testID: "composer",
+          sendTestID: "send",
+          onSubmit: vi.fn().mockResolvedValue(true),
+          onPickNative,
+        }),
+      ),
+    );
+    await act(async () => input.change("/"));
+  }
+  it("shows slash-menu rows from an earlier live session on that host", async () => {
+    await mount();
+    expect(container.querySelector('[data-testid="slash-menu"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-model"]')?.textContent).toContain(
+      "/model",
+    );
+    expect(container.querySelector('[data-testid="slash-row-compact"]')).not.toBeNull();
+  });
+  it("keeps the picker text until resume completes, then opens the native model screen", async () => {
+    let ready!: () => void;
+    const ensureRemoteSession = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          ready = resolve;
+        }),
+    );
+    const runCommand = vi.fn();
+    const service = { ensureRemoteSession, runCommand } as unknown as HostService;
+    const open = vi.fn().mockResolvedValue(undefined);
+    await mount(async (command) => {
+      await routeSessionCommand(service, closed, `/${command.name}`, open);
+      return true;
+    });
+    await act(async () =>
+      (container.querySelector('[data-testid="slash-row-model"]') as HTMLButtonElement).click(),
+    );
+    expect(ensureRemoteSession).toHaveBeenCalledExactlyOnceWith(closed, "/model");
+    expect(open).not.toHaveBeenCalled();
+    expect(input.value).toBe("/");
+    await act(async () => ready());
+    expect(open).toHaveBeenCalledExactlyOnceWith("model", "");
+    expect(input.value).toBe("");
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+  it("keeps text on a failed native command instead of completing or clearing it", async () => {
+    await mount(async () => false);
+    await act(async () =>
+      (container.querySelector('[data-testid="slash-row-model"]') as HTMLButtonElement).click(),
+    );
+    expect(input.value).toBe("/");
+    expect(container.querySelector('[data-testid="slash-menu"]')).not.toBeNull();
+  });
+});
 
 describe("session activity UI wiring", () => {
   it("sends the sole WorkingRow to ChatView, never to a composer sibling", () => {

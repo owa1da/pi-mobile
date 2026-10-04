@@ -2,10 +2,18 @@
 // an action) while the chat is visible, only when the procs record says `"remote": 1`, and sends
 // actions with writtenAt corrected by the host's clock offset.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { SessionRow } from "@/host/types";
 import { hasRemote, hostSkewMs, remoteFor, setHostSkew } from "@/remote";
-import type { ArgsOf, RemoteAction, RemoteExpect, RemoteResult, RemoteState } from "@/remote/types";
+import type {
+  ArgsOf,
+  RemoteAction,
+  RemoteCommand,
+  RemoteExpect,
+  RemoteResult,
+  RemoteState,
+} from "@/remote/types";
+import { cachedCommands, rememberCommands, subscribeCommands } from "./command-cache";
 import { RemoteError } from "@/remote/errors";
 import { connectionStore } from "@/stores/app";
 import type { SessionsEntry } from "@/stores/sessions-store";
@@ -19,6 +27,8 @@ const ERROR_MS = 3000;
 export interface RemoteChannel {
   /** True when the session publishes the channel (record `remote: 1`, live). */
   available: boolean;
+  /** Discovery rows: fresh while live, otherwise the last known list for this host. */
+  commands?: readonly RemoteCommand[];
   /** The latest state; undefined until read (or when the process has none). */
   state: RemoteState | undefined;
   /** True once a read finished for the current process (state may still be undefined). */
@@ -47,6 +57,8 @@ export function useRemoteChannel(
   active: boolean,
 ): RemoteChannel {
   const available = hasRemote(row);
+  const getCommands = useCallback(() => cachedCommands(hostId), [hostId]);
+  const remembered = useSyncExternalStore(subscribeCommands, getCommands, getCommands);
   const pid = available ? row.pid : undefined;
   const [state, setState] = useState<RemoteState | undefined>(undefined);
   const [loadedPid, setLoadedPid] = useState<number | undefined>(undefined);
@@ -79,6 +91,7 @@ export function useRemoteChannel(
       const next = await remoteFor(service).readState(current);
       // A read that raced a process change is dropped.
       if (pidRef.current !== forPid) return 0;
+      rememberCommands(hostId, next?.commands);
       setState((prev) => (sameState(prev, next) ? prev : next));
       setLoadedPid(forPid);
     } catch {
@@ -108,8 +121,10 @@ export function useRemoteChannel(
     [boost, hostId],
   );
 
+  const liveCommands = available ? state?.commands : undefined;
   return {
     available,
+    commands: row.live ? liveCommands : remembered,
     state: available ? state : undefined,
     loaded: available && loadedPid === pid,
     send,

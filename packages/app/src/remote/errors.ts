@@ -83,6 +83,14 @@ export class RemoteError extends Error {
 }
 
 /** A failed result → RemoteError (ok results are not errors). */
+/** The fresh command list has no such name: the line is text, so the caller may send it as a message. */
+export class CommandUnavailableError extends RemoteError {
+  constructor() {
+    super("invalid", "That command is not available in this session.");
+    this.name = "CommandUnavailableError";
+  }
+}
+
 export function errorFromResult(result: RemoteResult): RemoteError {
   const code: RemoteErrorCode = result.code === "ok" ? "error" : result.code;
   return new RemoteError(code, result.message, result);

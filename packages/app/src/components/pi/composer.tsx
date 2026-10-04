@@ -37,10 +37,10 @@ interface ComposerProps {
   testID: string;
   sendTestID: string;
   stopTestID?: string;
-  /** forge's `/` menu rows (sessions with the remote channel only). */
+  /** forge's `/` menu rows (live state, or cached host discovery for a closed session). */
   commands?: readonly RemoteCommand[];
   /** A tapped row the app opens natively: return true and the field is cleared, not completed. */
-  onPickNative?: (command: RemoteCommand) => boolean;
+  onPickNative?: (command: RemoteCommand) => boolean | Promise<boolean>;
   /** Text put into the field each time a new object arrives (a rewound prompt), then left to the user. */
   prefill?: { text: string };
   /**
@@ -165,7 +165,7 @@ function useSlashMenu(
   text: string,
   inputRef: RefObject<EditingTextInputHandle | null>,
   setText: (text: string) => void,
-  onPickNative?: (command: RemoteCommand) => boolean,
+  onPickNative?: (command: RemoteCommand) => boolean | Promise<boolean>,
 ) {
   const { t } = useTranslation();
   const rows = useMemo(
@@ -178,10 +178,14 @@ function useSlashMenu(
     [rows, query],
   );
   const pickCommand = useCallback(
-    (command: RemoteCommand) => {
-      if (onPickNative?.(command)) {
-        inputRef.current?.reset();
-        setText("");
+    async (command: RemoteCommand) => {
+      const picked = onPickNative?.(command);
+      if (picked !== false && picked !== undefined) {
+        // A native command may be reopening pi. Keep the text on failure, just like Send.
+        if (await picked) {
+          inputRef.current?.reset();
+          setText("");
+        }
         return;
       }
       const next = completeCommand(command);

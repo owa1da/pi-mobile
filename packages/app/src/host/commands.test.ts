@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  chatReadScript,
   paneFrameScript,
   parseStartedLine,
   shQuote,
@@ -84,6 +85,39 @@ describe("wrapForAnyShell", () => {
     expect(wrapForAnyShell("echo '$x' \"`y`\"")).toMatch(
       /^sh -c 'eval "\$\(printf %s [A-Za-z0-9+/=]+ \| base64 -d\)"'$/,
     );
+  });
+});
+
+describe("chat backward reads", () => {
+  it("bounds the window, clamps at the start, and quotes hostile paths/inodes/nonces", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pim-back-"));
+    try {
+      const file = path.join(dir, "it's $(touch INJECTED); `id`.jsonl");
+      const content = "0123456789".repeat(400);
+      fs.writeFileSync(file, content);
+      const inode = String(fs.statSync(file).ino);
+      const nonce = "N'$(touch INJECTED)";
+      const read = (end: number, ino = inode) =>
+        execFileSync(
+          "/bin/sh",
+          ["-c", wrapForAnyShell(chatReadScript(file, end, ino, 1024, nonce, true))],
+          { encoding: "utf8", cwd: dir },
+        );
+      for (const end of [2000, 500]) {
+        const output = read(end);
+        const lines = output.trim().split("\n");
+        const start = Math.max(0, end - 1024);
+        expect(lines[0]).toBe(`${nonce} D back 4000 ${inode} ${start}`);
+        expect(Buffer.from(lines.slice(1, -1).join(""), "base64").toString()).toBe(
+          content.slice(start, end),
+        );
+      }
+      expect(read(2000, "'; touch INJECTED; #").split("\n")[0]).toContain(" D fresh ");
+      expect(read(5000).split("\n")[0]).toContain(" D fresh ");
+      expect(fs.existsSync(path.join(dir, "INJECTED"))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -38,6 +38,15 @@ const result = (id: string, parent: string, callId: string, text: string, isErro
       timestamp: seq,
     },
   });
+const boundary = (id: string, parent: string | null) =>
+  entry(id, parent, {
+    type: "custom_message",
+    customType: "forge-side-boundary",
+    content: "hidden context",
+    display: false,
+  });
+const navigation = (parent: string | null) =>
+  entry("nav", parent, { type: "custom", customType: "forge-navigation", data: {} });
 const header = JSON.stringify({
   type: "session",
   version: 3,
@@ -95,6 +104,85 @@ describe("ChatDocument", () => {
     ]);
     expect(built.pathIds.has("u2")).toBe(false);
   });
+
+  it("hides copied main history for a boundary-only side, retaining ancestry", () => {
+    const d = doc([user("main", null, "MAIN ONLY"), boundary("side", "main")]);
+    expect(d.nodes.get("side")?.customType).toBe("forge-side-boundary");
+    expect(d.build().items).toEqual([]);
+    expect([...d.build().pathIds]).toEqual(["main", "side"]);
+  });
+
+  it("shows a side send after the boundary, not copied context", () => {
+    const d = doc([
+      user("main", null, "MAIN ONLY"),
+      boundary("side", "main"),
+      user("u", "side", "side question"),
+      asst("a", "u", [{ type: "text", text: "side reply" }]),
+    ]);
+    expect(d.build().items.map((i) => "text" in i && i.text)).toEqual([
+      "side question",
+      "side reply",
+    ]);
+  });
+
+  it("shows the displayed btw exchange after the boundary", () => {
+    const d = doc([
+      user("main", null, "MAIN ONLY"),
+      boundary("side", "main"),
+      entry("btw", "side", {
+        type: "custom_message",
+        customType: "forge-btw",
+        display: true,
+        content: "question\nanswer",
+      }),
+    ]);
+    expect(d.build().items).toEqual([
+      expect.objectContaining({ kind: "notice", text: "question\nanswer" }),
+    ]);
+  });
+
+  it("uses the last boundary on the active branch, not an abandoned boundary", () => {
+    const d = doc([
+      user("main", null, "MAIN ONLY"),
+      boundary("first", "main"),
+      user("old", "first", "old side"),
+      boundary("last", "old"),
+      user("u", "last", "current side"),
+      boundary("abandoned", "u"),
+      user("v", "u", "active reply"),
+    ]);
+    expect(d.build().items.map((i) => "text" in i && i.text)).toEqual([
+      "current side",
+      "active reply",
+    ]);
+    expect([...d.build().pathIds]).toEqual(["main", "first", "old", "last", "u", "v"]);
+  });
+
+  it("does not claim a missing prefix when a side boundary is loaded in a truncated read", () => {
+    const d = doc([boundary("side", "missing"), user("u", "side", "side question")]);
+    d.truncated = true;
+    expect(d.path().broken).toBe(true);
+    expect(d.build().items).toEqual([
+      expect.objectContaining({ kind: "user", text: "side question" }),
+    ]);
+    expect(doc([user("u", "missing", "no boundary")]).build().items[0]?.kind).toBe("notice");
+  });
+
+  it.each(["a1", null])(
+    "a hidden navigation entry selects %s, hiding the abandoned branch",
+    (target) => {
+      const d = doc([
+        user("u1", null, "first"),
+        asst("a1", "u1", [{ type: "text", text: "reply" }]),
+        user("u2", "a1", "abandoned"),
+        navigation(target),
+      ]);
+      expect(d.build().items.map((i) => "text" in i && i.text)).toEqual(
+        target ? ["first", "reply"] : [],
+      );
+      expect(d.build().pathIds.has("u2")).toBe(false);
+    },
+  );
 
   it("pairs tool calls with results; unanswered calls run only in the newest turn", () => {
     const d = doc([
@@ -399,6 +487,216 @@ describe("ChatReader (host scripts via sh)", () => {
       status: "completed",
       result: expect.stringContaining("too large"),
     });
+  });
+
+  it.each(["a1", null])(
+    "navigation to %s resets incremental reads and agrees with cold reads",
+    async (target) => {
+      const file = path.join(dir, `nav-${target}.jsonl`);
+      fs.writeFileSync(
+        file,
+        [
+          header,
+          user("u1", null, "first"),
+          asst("a1", "u1", [{ type: "text", text: "reply" }]),
+          user("u2", "a1", "abandoned"),
+        ].join("\n") + "\n",
+      );
+      const reader = new ChatReader(run, 4096);
+      const before = await reader.read(file);
+      fs.appendFileSync(file, navigation(target) + "\n");
+      const after = await reader.read(file, before.cursor);
+      expect(after.reset).toBe(true);
+      expect(after.items.map((i) => "text" in i && i.text)).toEqual(
+        target ? ["first", "reply"] : [],
+      );
+      expect((await new ChatReader(run, 4096).read(file)).items).toEqual(after.items);
+    },
+  );
+
+  it("adding a side boundary keeps full pathIds for incremental reset detection", async () => {
+    const file = path.join(dir, "side.jsonl");
+    fs.writeFileSync(file, user("main", null, "MAIN ONLY") + "\n");
+    const reader = new ChatReader(run, 1024);
+    const before = await reader.read(file);
+    fs.appendFileSync(file, boundary("side", "main") + "\n");
+    const after = await reader.read(file, before.cursor);
+    expect(after.reset).toBe(false);
+    expect(after.items).toEqual([]);
+  });
+
+  it.each([false, true])(
+    "hydrates navigation ancestors outside the tail window (incremental=%s)",
+    async (incremental) => {
+      const file = path.join(dir, `hydrate-${incremental}.jsonl`);
+      const lines = [
+        header,
+        user("u1", null, "selected first"),
+        asst("a1", "u1", [{ type: "text", text: "selected reply" }]),
+      ];
+      // The incremental case leaves the target outside even the first hydration budget.
+      for (let i = 0; i < (incremental ? 60 : 25); i++)
+        lines.push(user(`x${i}`, i ? `x${i - 1}` : "a1", `abandoned ${"x".repeat(80)}`));
+      fs.writeFileSync(file, lines.join("\n") + "\n");
+      const reader = new ChatReader(run, 1024);
+      const before = incremental ? await reader.read(file) : undefined;
+      if (before) {
+        expect(before.more).toBe(true);
+        expect(before.items.some((item) => "text" in item && item.text === "selected reply")).toBe(
+          false,
+        );
+      }
+      fs.appendFileSync(file, navigation("a1") + "\n");
+      const after = await reader.read(file, before?.cursor);
+      expect(after.reset).toBe(true);
+      expect(after.items.map((i) => "text" in i && i.text)).toEqual([
+        "selected first",
+        "selected reply",
+      ]);
+      expect(after.cursor.offset).toBe(fs.statSync(file).size);
+      expect(after.more).toBe(false);
+    },
+  );
+
+  it("bounds ancestor work per update and continues backward without changing the navigation leaf", async () => {
+    const file = path.join(dir, "bounded-ancestors.jsonl");
+    const lines = [header, user("u1", null, "selected")];
+    for (let i = 0; i < 100; i++)
+      lines.push(user(`x${i}`, i ? `x${i - 1}` : "u1", "abandoned " + "x".repeat(100)));
+    lines.push(navigation("u1"));
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    let backward = 0;
+    const reader = new ChatReader(async (script) => {
+      if (script.includes("BACK=1")) backward++;
+      const output = await run(script);
+      const parts = output.trim().split("\n");
+      expect(Buffer.from(parts.slice(1, -1).join(""), "base64").length).toBeLessThanOrEqual(1025);
+      return output;
+    }, 1024);
+    let update = await reader.read(file);
+    expect(backward).toBe(8);
+    expect(update.more).toBe(true);
+    expect(update.items.map((i) => i.kind)).toEqual(["notice"]);
+    for (let i = 0; update.more && i < 10; i++) {
+      const before = backward;
+      update = await reader.read(file, update.cursor);
+      expect(backward - before).toBeLessThanOrEqual(8);
+      expect(update.reset).toBe(false);
+      expect(update.cursor.offset).toBe(fs.statSync(file).size);
+    }
+    expect(update.more).toBe(false);
+    expect(update.items).toEqual([expect.objectContaining({ kind: "user", text: "selected" })]);
+  });
+
+  it("hydrates a selected oversized ancestor as a stub across backward windows", async () => {
+    const file = path.join(dir, "ancestor-stub.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        header,
+        user("u1", null, "selected"),
+        user("large", "u1", "x".repeat(3000)),
+        user("abandoned", "large", "y".repeat(1000)),
+        navigation("large"),
+      ].join("\n") + "\n",
+    );
+    const update = await new ChatReader(run, 1024).read(file);
+    expect(update.more).toBe(false);
+    expect(update.items).toEqual([
+      expect.objectContaining({ kind: "user", text: "selected" }),
+      expect.objectContaining({ kind: "notice", text: expect.stringContaining("entry too large") }),
+    ]);
+  });
+
+  it("does not hydrate hidden context before a loaded side boundary in a cold tail read", async () => {
+    const file = path.join(dir, "side-tail.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        header,
+        user("main", null, "MAIN ONLY " + "x".repeat(3000)),
+        boundary("side", "main"),
+        user("u", "side", "side question"),
+      ].join("\n") + "\n",
+    );
+    let backward = 0;
+    const update = await new ChatReader(async (script) => {
+      if (script.includes("BACK=1")) backward++;
+      return run(script);
+    }, 1024).read(file);
+    expect(backward).toBe(0);
+    expect(update.items).toEqual([
+      expect.objectContaining({ kind: "user", text: "side question" }),
+    ]);
+  });
+
+  it("keeps customType on an oversized hydrated side boundary", async () => {
+    const file = path.join(dir, "side-boundary-stub.jsonl");
+    const bigBoundary = entry("side", "missing", {
+      type: "custom_message",
+      customType: "forge-side-boundary",
+      display: false,
+      content: "x".repeat(3000),
+    });
+    fs.writeFileSync(
+      file,
+      [header, bigBoundary, user("u", "side", "side question")].join("\n") + "\n",
+    );
+    const update = await new ChatReader(run, 1024).read(file);
+    expect(update.items).toEqual([
+      expect.objectContaining({ kind: "user", text: "side question" }),
+    ]);
+    expect(update.more).toBe(false);
+  });
+
+  it("refuses to merge ancestors when the file is replaced during hydration", async () => {
+    const file = path.join(dir, "changed-ancestors.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        header,
+        user("u1", null, "selected"),
+        user("big", "u1", "x".repeat(2000)),
+        navigation("u1"),
+      ].join("\n") + "\n",
+    );
+    let replace = true;
+    const reader = new ChatReader(async (script) => {
+      if (replace && script.includes("BACK=1")) {
+        replace = false;
+        fs.writeFileSync(`${file}.tmp`, user("new", null, "replacement") + "\n");
+        fs.renameSync(`${file}.tmp`, file);
+      }
+      return run(script);
+    }, 1024);
+    await expect(reader.read(file)).rejects.toMatchObject({ code: "command-failed" });
+    expect((await reader.read(file)).items).toEqual([
+      expect.objectContaining({ text: "replacement" }),
+    ]);
+  });
+
+  it("refuses to merge ancestors when the file is truncated below the read cursor", async () => {
+    const file = path.join(dir, "truncated-ancestors.jsonl");
+    const marker = navigation("u1");
+    fs.writeFileSync(
+      file,
+      [header, user("u1", null, "selected"), user("big", "u1", "x".repeat(2000)), marker].join(
+        "\n",
+      ) + "\n",
+    );
+    const inode = fs.statSync(file).ino;
+    let truncate = true;
+    const reader = new ChatReader(async (script) => {
+      if (truncate && script.includes("BACK=1")) {
+        truncate = false;
+        // Same inode, still longer than the backward read's end: only the marker goes.
+        fs.truncateSync(file, fs.statSync(file).size - Buffer.byteLength(marker) - 1);
+      }
+      return run(script);
+    }, 1024);
+    await expect(reader.read(file)).rejects.toMatchObject({ code: "command-failed" });
+    expect(fs.statSync(file).ino).toBe(inode);
+    await expect(reader.read(file)).resolves.toBeDefined();
   });
 
   it("throws not-found for a missing file", async () => {

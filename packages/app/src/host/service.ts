@@ -2,9 +2,10 @@
 // tmux is used for opening sessions and aborting, never for sending prompt text.
 
 import { hasRemote } from "@/remote/client";
-import { RemoteError } from "@/remote/errors";
+import { CommandUnavailableError, RemoteError } from "@/remote/errors";
 import { remoteFor } from "@/remote/for-service";
-import type { RemoteState } from "@/remote/types";
+import { matchCommand } from "@/remote/menu";
+import type { RemoteResult, RemoteState } from "@/remote/types";
 import { SSH_ERROR_CODES } from "@/ssh/errors";
 import type { SshConnection } from "@/ssh/types";
 
@@ -28,6 +29,7 @@ import {
   HostError,
   type HostEnvironment,
   type HostService,
+  type RemoteSession,
   type SessionCursor,
   type SessionRow,
   type SessionsSnapshot,
@@ -156,6 +158,7 @@ class HostServiceImpl implements PiHostService {
   private readonly lastAbort = new Map<string, number>();
   /** One start/resume in flight per sessionId: concurrent resumes and sends join it. */
   private readonly reopening = new Map<string, Promise<Reopened>>();
+  private readonly ensuringRemote = new Map<string, Promise<RemoteSession>>();
   private readonly now: () => number;
 
   constructor(
@@ -514,11 +517,13 @@ class HostServiceImpl implements PiHostService {
     return tagged(out, nonce)[0]?.trim() ?? "";
   }
 
-  private async registeredRow(pid: number): Promise<SessionRow> {
+  private async registeredRow(pid: number, sessionId?: string): Promise<SessionRow> {
     const deadline = Date.now() + (this.options.readyTimeoutMs ?? 30_000);
     do {
       const snapshot = await this.listSessions();
       const row = snapshot.rows.find((r) => r.live && r.pid === pid);
+      if (row && sessionId !== undefined && row.sessionId !== sessionId)
+        throw new HostError("session-closed", "The target session changed.");
       if (row && hasRemote(row)) return row;
       await new Promise((resolve) => setTimeout(resolve, 200));
     } while (Date.now() < deadline);
@@ -547,6 +552,91 @@ class HostServiceImpl implements PiHostService {
       state = await client.readState(row);
     }
     return state;
+  }
+
+  /** Refresh the selected identity and share the same empty reopen with sends and commands. */
+  private async liveRow(row: SessionRow): Promise<SessionRow> {
+    const env = await this.ensureProbe();
+    const snapshot = await this.listSessions();
+    let live = snapshot.rows.find((r) => r.live && r.sessionId === row.sessionId);
+    if (!live) {
+      const result = await this.reopenOnce(row.sessionId, () =>
+        this.reopen(env, row, { requireCwd: true }),
+      );
+      live =
+        result.kind === "live"
+          ? result.row
+          : await this.registeredRow(result.started.pid, row.sessionId);
+    }
+    if (live.sessionId !== row.sessionId)
+      throw new HostError("session-closed", "The target session changed.");
+    if (!hasRemote(live)) throw new HostError("command-failed", DRAFT_MESSAGE);
+    return live;
+  }
+
+  private async readyRemote(row: SessionRow): Promise<RemoteSession> {
+    const state = await this.readNativeState(
+      row,
+      Date.now() + (this.options.readyTimeoutMs ?? 30_000),
+    );
+    if (!state || state.pid !== row.pid || state.sessionId !== row.sessionId)
+      throw new HostError("session-closed", "The target session changed.");
+    if (!state.input?.submit)
+      throw new HostError(
+        "command-failed",
+        "Update Forge and voluntarily reload this session on your computer.",
+      );
+    return { row, state };
+  }
+
+  private validateCommand(state: RemoteState, line: string): void {
+    if (!matchCommand(line, state.commands)) throw new CommandUnavailableError();
+  }
+
+  async ensureRemoteSession(row: SessionRow, line?: string): Promise<RemoteSession> {
+    let promise = this.ensuringRemote.get(row.sessionId);
+    if (!promise) {
+      promise = this.liveRow(row).then((live) => this.readyRemote(live));
+      this.ensuringRemote.set(row.sessionId, promise);
+      const pending = promise;
+      const clear = () => {
+        if (this.ensuringRemote.get(row.sessionId) === pending)
+          this.ensuringRemote.delete(row.sessionId);
+      };
+      promise.then(clear, clear);
+    }
+    const session = await promise;
+    if (line !== undefined) this.validateCommand(session.state, line);
+    return session;
+  }
+
+  async runCommand(row: SessionRow, line: string): Promise<RemoteResult> {
+    let session = await this.ensureRemoteSession(row, line);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await remoteFor(this).send(
+          session.row,
+          "command.run",
+          { line },
+          {
+            rev: session.state.rev,
+            sessionId: row.sessionId,
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof RemoteError)) throw error;
+        if (error.code === "stale" && attempt === 0) {
+          // A definite preflight refusal only. Stay on this PID/identity; never reopen or
+          // retarget an action after it may have run, and revalidate the fresh command list.
+          session = await this.readyRemote(session.row);
+          this.validateCommand(session.state, line);
+          continue;
+        }
+        if (["transport", "timeout", "no-channel", "error"].includes(error.code))
+          throw new HostOutcomeUnknownError(OUTCOME_UNKNOWN_MESSAGE);
+        throw error;
+      }
+    }
   }
 
   private async sendNative(row: SessionRow, text: string): Promise<"OK" | "CLOSED"> {
@@ -599,23 +689,8 @@ class HostServiceImpl implements PiHostService {
     if (!text.trim()) throw new HostError("command-failed", "Nothing to send");
     if (utf8ByteLength(text) > MAX_PROMPT_BYTES)
       throw new HostError("prompt-too-large", `The prompt is over ${MAX_PROMPT_BYTES} bytes`);
-    const env = await this.ensureProbe();
     for (let attempt = 0; attempt < 3; attempt++) {
-      const snapshot = await this.listSessions();
-      let live = snapshot.rows.find((r) => r.live && r.sessionId === row.sessionId);
-      if (!live) {
-        const promise = this.reopenOnce(row.sessionId, () =>
-          this.reopen(env, row, { requireCwd: true }),
-        );
-        const result = await promise;
-        live = result.kind === "live" ? result.row : await this.registeredRow(result.started.pid);
-      }
-      if (live.sessionId !== row.sessionId)
-        throw new HostError(
-          "session-closed",
-          "The target session changed; the prompt was not sent",
-        );
-      if (!hasRemote(live)) throw new HostError("command-failed", DRAFT_MESSAGE);
+      const live = await this.liveRow(row);
       const status = await this.sendNative(live, text);
       if (status === "OK") return;
     }

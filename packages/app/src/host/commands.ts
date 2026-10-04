@@ -226,7 +226,8 @@ printf '%s Z\\n' "$N"
  * <start> (0-based), then `<nonce> Z`; or `<nonce> MISSING`.
  * inc: the byte before <offset> must be a newline and the inode unchanged, else fresh.
  * Bytes from a non-zero start begin inside a line (inc: the newline itself): the reader drops
- * through the first newline.
+ * through the first newline. Backward mode reads at most cap bytes ending at offset (exclusive),
+ * with mode `back`; an inode/size mismatch yields `fresh` so the reader refuses the merge.
  */
 export function chatReadScript(
   file: string,
@@ -234,16 +235,20 @@ export function chatReadScript(
   inode: string,
   cap: number,
   nonce: string,
+  backward = false,
 ): string {
   return `
-F=${shQuote(file)}; O=${Math.max(0, Math.floor(offset))}; I=${shQuote(inode)}; CAP=${Math.max(1024, Math.floor(cap))}; N=${shQuote(nonce)}
+F=${shQuote(file)}; O=${Math.max(0, Math.floor(offset))}; I=${shQuote(inode)}; CAP=${Math.max(1024, Math.floor(cap))}; N=${shQuote(nonce)}; BACK=${backward ? 1 : 0}
 if [ ! -f "$F" ]; then printf '%s MISSING\\n' "$N"; exit 0; fi
 S=$(wc -c < "$F" | tr -d ' ')
 IN=$(stat -c %i "$F" 2>/dev/null || ls -id "$F" 2>/dev/null | awk '{print $1}')
 M=inc
 if [ "$O" -le 0 ] || [ "$I" != "$IN" ] || [ "$O" -gt "$S" ]; then M=fresh
+elif [ "$BACK" = 1 ]; then M=back
 elif [ "$(tail -c +"$O" "$F" | head -c 1 | wc -l | tr -d ' ')" != 1 ]; then M=fresh; fi
-if [ "$M" = fresh ]; then
+if [ "$M" = back ]; then
+  ST=$((O - CAP)); [ "$ST" -ge 0 ] || ST=0; RL=$((O - ST))
+elif [ "$M" = fresh ]; then
   if [ "$S" -gt "$CAP" ]; then ST=$((S - CAP)); else ST=0; fi; RL=$CAP
 else
   ST=$((O - 1)); RL=$((CAP + 1))

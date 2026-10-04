@@ -17,6 +17,13 @@ function assert(cond, message) {
 }
 
 const PROMPTS = ["Add a token bucket", "Write tests for it", "Update the README"];
+const MAIN_ONLY_MARKER = PROMPTS[0];
+function assertNoMainInSide() {
+  assert(
+    !A.dump().some((node) => `${node.text} ${node.desc}`.includes(MAIN_ONLY_MARKER)),
+    `copied main-only marker appears in the side: ${MAIN_ONLY_MARKER}`,
+  );
+}
 
 // ---------- helpers shared with the real-forge steps ----------
 
@@ -272,6 +279,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         const ev = await acted("side.open", since);
         assert(ev.args?.text === "What is a token bucket", `side.open ${JSON.stringify(ev.args)}`);
         await A.waitNode(A.byText(/side: A token bucket holds/), 20_000, "side reply");
+        assertNoMainInSide();
         shot("110-side-chat-dark");
         await A.tap(A.byId("side-close"), "close side");
         await acted("side.close", since);
@@ -326,6 +334,7 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await acted("btw.fork", since);
         await A.waitNode(A.byId("side-close"), 20_000, "forked side");
         await A.waitNode(A.byText(/^Is a token bucket fair$/), 20_000, "question in the side");
+        assertNoMainInSide();
         shot("112-btw-forked-side-dark");
         await A.tap(A.byId("side-close"), "close side");
         await E.waitFor(

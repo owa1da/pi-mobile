@@ -50,17 +50,18 @@ import {
 import { friendlyHostError, type FriendlyError } from "./send-errors";
 import { useChatFeed } from "./use-chat-feed";
 import { AnswerDock, openIdsOf } from "./answer-dock";
-import { friendlyRemote, useAnswers, useNotice } from "./use-answers";
+import { useAnswers, useNotice } from "./use-answers";
+import { routeSessionCommand, slashIsCommand } from "./route-command";
 import { useRemoteChannel } from "./use-remote-channel";
 import {
-  matchCommand,
+  commandName,
   NATIVE_COMMANDS,
   nativeTarget,
   refusalOutcome,
   SHEET_TOOLS,
   type NativeTool,
 } from "@/remote/menu";
-import { isRemoteError } from "@/remote/errors";
+import { CommandUnavailableError, isRemoteError } from "@/remote/errors";
 import type { RemoteCommand, RemoteFooter } from "@/remote/types";
 import { footerParts, type FooterPart } from "@/remote/views";
 import { takeHandBack } from "@/screens/forge/draft-store";
@@ -523,10 +524,24 @@ function ChatPaneBody({
       setSending(true);
       setSendError(null);
       try {
-        await channel.send("command.run", { line });
+        const service = connectionStore.getState().getService(hostId);
+        if (!service) {
+          setSendError({ key: "pi.session.errors.connection" });
+          return false;
+        }
+        await routeSessionCommand(service, row, line, async (tool, arg) => {
+          // Publish the new row before opening a sheet/screen: it must use the resumed PID,
+          // never the closed row the user selected. This refresh itself never resumes pi.
+          await refreshSessions(hostId);
+          openNative(tool, arg);
+        });
+        channel.boost();
+        void refreshSessions(hostId);
         feed.boost();
         return true;
       } catch (error) {
+        // Not a command after all (fresh list lacks it): send the line as text, as pi would.
+        if (error instanceof CommandUnavailableError && !nativeTarget(line)) return "paste";
         if (isRemoteError(error, "refused")) {
           const outcome = refusalOutcome(name, error.detail, error.reason);
           if (outcome.kind === "paste") return "paste";
@@ -535,27 +550,29 @@ function ChatPaneBody({
             return true;
           }
         }
-        setSendError(friendlyRemote(error));
+        const friendly = friendlyHostError(error);
+        setSendError(friendly);
+        if (friendly.outcomeUnknown) {
+          feed.boost();
+          void refreshSessions(hostId);
+        }
+        connectionStore.getState().reportFailure(hostId, error);
         return false;
       } finally {
         sendingRef.current = false;
         setSending(false);
       }
     },
-    [channel, feed, showNotice, t],
+    [channel, feed, hostId, openNative, row, showNotice, t],
   );
 
   const send = useCallback(
     async (text: string): Promise<boolean> => {
-      // The CLI's names for forge's views open their native screens (never pasted into pi's TUI).
-      const target = row.live ? nativeTarget(text) : undefined;
-      if (target) {
-        openNative(target.tool, target.arg);
-        return true;
-      }
-      const command = channel.available ? matchCommand(text, channel.state?.commands) : undefined;
-      if (command) {
-        const ran = await runCommand(text, command.name);
+      // Typed slash commands also work with no cached list; only fresh state authorizes them.
+      // Skills always start a model turn and remain messages, as do refused prompt templates.
+      const name = commandName(text);
+      if (name && slashIsCommand(text, channel.commands)) {
+        const ran = await runCommand(text, name);
         if (ran !== "paste") return ran;
       }
       // One send at a time: a pending send (maybe a resume) is never doubled by a second tap.
@@ -591,7 +608,7 @@ function ChatPaneBody({
         setSending(false);
       }
     },
-    [channel.available, channel.state?.commands, feed, hostId, openNative, row, runCommand],
+    [channel.commands, feed, hostId, row, runCommand],
   );
 
   const stop = useCallback(() => {
@@ -612,12 +629,10 @@ function ChatPaneBody({
   const dismissError = useCallback(() => setSendError(null), []);
   const pickNative = useCallback(
     (command: RemoteCommand) => {
-      const tool = NATIVE_COMMANDS[command.name];
-      if (!tool || !row.live) return false;
-      openNative(tool, "");
-      return true;
+      if (!NATIVE_COMMANDS[command.name]) return false;
+      return send(`/${command.name}`);
     },
-    [openNative, row.live],
+    [send],
   );
   // A prompt handed back by /rewind lands in the composer when the chat is shown again.
   const [prefill, setPrefill] = useState<{ text: string } | undefined>(undefined);
@@ -677,7 +692,7 @@ function ChatPaneBody({
       </View>
       <AnswerDock channel={channel} answers={answers}>
         <Composer
-          commands={channel.available ? channel.state?.commands : undefined}
+          commands={channel.commands}
           onPickNative={pickNative}
           prefill={prefill}
           onPrefillApplied={prefillApplied}

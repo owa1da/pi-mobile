@@ -153,8 +153,7 @@ export const en = {
           "This session lacks Forge's draft-preserving native input support. Update Forge and voluntarily reload this session on your computer. The desktop draft has not been touched.",
         "pane-busy-no-prompt":
           "pi is not showing its prompt (a dialog or page is open). Close it on your computer first.",
-        "outcome-unknown":
-          "The host did not confirm in time, so the message may or may not have been sent. Check the chat before sending again.",
+        "outcome-unknown": "The host did not confirm in time. Check the chat before trying again.",
         "prompt-too-large": "That message is too large to send (limit 60 KiB).",
         "session-live": "This session is already open in another pi.",
         "session-closed": "This session is closed and could not be resumed.",
@@ -164,6 +163,8 @@ export const en = {
         "forge-missing": "The forge extension pack is not set up on this host.",
         connection: "Not connected to the host. Reconnecting…",
         "command-failed": "The host command failed.",
+        "command-unavailable": "That command is not available in this session.",
+        "command-changed": "The session changed. Try the command again.",
       },
     },
     remote: {
