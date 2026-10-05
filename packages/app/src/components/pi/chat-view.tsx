@@ -23,7 +23,7 @@ import {
 } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { AssistantMessage, ToolCall, UserMessage } from "@/components/message";
-import type { ChatRow } from "@/screens/session/chat-rows";
+import { getChatHistory, type ChatRow } from "@/screens/session/chat-rows";
 import { MutedSpinner, ThemedChevronDown, ThemedChevronRight, mutedColor } from "./icons";
 import { MIN_TOUCH } from "@/styles/touch";
 import { NoteRow } from "./note-row";
@@ -45,9 +45,51 @@ export function ChatView({ rows, loading, activity }: ChatViewProps) {
   const listRef = useRef<FlatList<ChatRow>>(null);
   const data = useMemo(() => newestFirst(rows), [rows]);
   const { away, onScroll, jump } = useJumpToLatest(listRef);
+  const history = getChatHistory(rows);
+  const historyScroll = useRef(false);
+  const requestedHistory = useRef<typeof history>(undefined);
+  const lastOffset = useRef(0);
+  const scroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const offset = event.nativeEvent.contentOffset.y;
+      // onEndReached also fires on mount / short lists. Only a scroll toward older rows arms it.
+      if (offset > lastOffset.current) historyScroll.current = true;
+      lastOffset.current = offset;
+      onScroll(event);
+    },
+    [onScroll],
+  );
+  const requestOlder = useCallback(() => {
+    if (!history || history.loading || requestedHistory.current === history) return;
+    historyScroll.current = false;
+    requestedHistory.current = history;
+    history.loadOlder();
+  }, [history]);
+  const endReached = useCallback(() => {
+    if (historyScroll.current) requestOlder();
+  }, [requestOlder]);
+  const oldestEdge = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      // RN can consume onEndReached on mount, even when a short list cannot scroll at all.
+      const remaining = contentSize.height - layoutMeasurement.height - contentOffset.y;
+      if (layoutMeasurement.height > 0 && remaining <= layoutMeasurement.height * 0.2)
+        requestOlder();
+    },
+    [requestOlder],
+  );
   const activityHeader = useMemo(
     () => (activity ? <View style={styles.rowWrap}>{activity}</View> : null),
     [activity],
+  );
+  const historyFooter = useMemo(
+    () =>
+      history?.loading ? (
+        <View style={styles.historyLoading} testID="chat-history-loading">
+          <MutedSpinner size="small" />
+        </View>
+      ) : undefined,
+    [history?.loading],
   );
 
   if (loading && rows.length === 0 && !activity) {
@@ -70,7 +112,12 @@ export function ChatView({ rows, loading, activity }: ChatViewProps) {
           ListHeaderComponent={activityHeader}
           contentContainerStyle={styles.content}
           maintainVisibleContentPosition={MAINTAIN_POSITION}
-          onScroll={onScroll}
+          onScroll={scroll}
+          onScrollEndDrag={oldestEdge}
+          onMomentumScrollEnd={oldestEdge}
+          onEndReached={endReached}
+          onEndReachedThreshold={0.2}
+          ListFooterComponent={historyFooter}
           scrollEventThrottle={100}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
@@ -278,6 +325,7 @@ function DividerRow({ label, summary }: { label: string; summary?: string }) {
 const styles = StyleSheet.create((theme) => ({
   fill: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  historyLoading: { alignItems: "center", paddingVertical: theme.spacing[2] },
   content: { paddingTop: theme.spacing[4], paddingBottom: theme.spacing[2] },
   rowWrap: {
     width: "100%",

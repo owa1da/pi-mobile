@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FlatListProps, LayoutChangeEvent } from "react-native";
-import type { ChatRow } from "@/screens/session/chat-rows";
+import { setChatHistory, type ChatRow } from "@/screens/session/chat-rows";
 import { ChatView } from "./chat-view";
 
 const probe = vi.hoisted(() => ({
@@ -210,6 +210,78 @@ describe("ChatView transcript ownership", () => {
     expect(
       container.querySelector('[data-testid="chat-list"] [data-testid="chat-working"]'),
     ).not.toBeNull();
+  });
+
+  it("requests one older window only after scrolling to the oldest inverted edge", () => {
+    const loadOlder = vi.fn();
+    const data = setChatHistory([...rows], { loadOlder, loading: false });
+    render(null, false, data);
+    expect(loadOlder).not.toHaveBeenCalled();
+    act(() => probe.list!.onEndReached?.({ distanceFromEnd: 0 }));
+    expect(loadOlder).not.toHaveBeenCalled();
+    scroll(800);
+    act(() => {
+      probe.list!.onEndReached?.({ distanceFromEnd: 0 });
+      probe.list!.onEndReached?.({ distanceFromEnd: 0 });
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    render(null, false, setChatHistory([...rows], { loadOlder, loading: true }));
+    expect(probe.list!.ListFooterComponent).toBeDefined();
+    scroll(900);
+    act(() => probe.list!.onEndReached?.({ distanceFromEnd: 0 }));
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads a short transcript on drag after the mount end callback was consumed", () => {
+    const loadOlder = vi.fn();
+    render(null, false, setChatHistory([...rows], { loadOlder, loading: false }));
+    act(() => probe.list!.onEndReached?.({ distanceFromEnd: 0 }));
+    expect(loadOlder).not.toHaveBeenCalled();
+    const event = {
+      nativeEvent: {
+        contentOffset: { y: 0 },
+        contentSize: { height: 60 },
+        layoutMeasurement: { height: 600 },
+      },
+    } as Parameters<NonNullable<FlatListProps<ChatRow>["onScrollEndDrag"]>>[0];
+    act(() => {
+      probe.list!.onScrollEndDrag?.(event);
+      probe.list!.onMomentumScrollEnd?.(event);
+      probe.list!.onEndReached?.({ distanceFromEnd: 0 });
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    render(null, false, setChatHistory([...rows], { loadOlder, loading: true }));
+    act(() => probe.list!.onScrollEndDrag?.(event));
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    render(null, false, setChatHistory([...rows], { loadOlder, loading: false }));
+    act(() => probe.list!.onScrollEndDrag?.(event));
+    expect(loadOlder).toHaveBeenCalledTimes(2);
+    render(null, false, [...rows]); // No older history left.
+    act(() => {
+      probe.list!.onScrollEndDrag?.(event);
+      probe.list!.onMomentumScrollEnd?.(event);
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads on a settled oldest-edge gesture even without another end callback", () => {
+    const loadOlder = vi.fn();
+    render(null, false, setChatHistory([...rows], { loadOlder, loading: false }));
+    const event = (y: number) =>
+      ({
+        nativeEvent: {
+          contentOffset: { y },
+          contentSize: { height: 2000 },
+          layoutMeasurement: { height: 600 },
+        },
+      }) as Parameters<NonNullable<FlatListProps<ChatRow>["onScrollEndDrag"]>>[0];
+    act(() => probe.list!.onScrollEndDrag?.(event(500)));
+    expect(loadOlder).not.toHaveBeenCalled();
+    act(() => {
+      probe.list!.onScrollEndDrag?.(event(1400));
+      probe.list!.onMomentumScrollEnd?.(event(1400));
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(1);
   });
 
   it("cancels pending visibility updates on unmount", () => {

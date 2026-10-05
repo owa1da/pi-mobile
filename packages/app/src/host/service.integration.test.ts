@@ -10,7 +10,7 @@ import { remoteFor } from "@/remote/for-service";
 import { SSH_ERROR_CODES, SshError } from "@/ssh/errors";
 import type { SshConnection } from "@/ssh/types";
 
-import { makeNonce, startScript, wrapForAnyShell } from "./commands";
+import { makeNonce, shQuote, startScript, wrapForAnyShell } from "./commands";
 import { HostOutcomeUnknownError } from "./errors";
 import { createSandbox, FAKE_PI, type FakeEvent, type Sandbox } from "./test-support/sandbox";
 import { createHostService, type PiHostService } from "./service";
@@ -100,7 +100,7 @@ describe("host service on an isolated tmux server", () => {
       model: "prov/model-x",
       thinking: "high",
     });
-    expect(started.tmuxSession).toBe("pi");
+    expect(started.tmuxSession).toBe("Pi");
     expect(started.pane).toMatch(/^%\d+$/);
     expect(started.windowId).toMatch(/^@\d+$/);
     const start = await sb.waitForEvent(
@@ -134,7 +134,7 @@ describe("host service on an isolated tmux server", () => {
     expect(row.title).toBe(`it's "$HOME" id a;b #{pane_id} end;`);
 
     const second = await svc.startSession({ prompt: "@file.ts what is this", cwd: sb.home });
-    expect(second.tmuxSession).toBe("pi");
+    expect(second.tmuxSession).toBe("Pi");
     expect(second.windowId).not.toBe(started.windowId);
     const start2 = await sb.waitForEvent(
       second.pid,
@@ -144,9 +144,9 @@ describe("host service on an isolated tmux server", () => {
     );
     // Prompts no longer enter argv, so @file is literal text; no model/thinking flags when absent.
     expect(start2.argv).toEqual([]);
-    expect(sb.tmux("list-windows", "-t", "pi", "-F", "#{window_name}").trim().split("\n")).toEqual(
-      expect.arrayContaining(["its-HOME-id", "file.ts-what-is"]),
-    );
+    expect(
+      sb.tmux("list-windows", "-t", "=Pi:", "-F", "#{window_name}").trim().split("\n"),
+    ).toEqual(expect.arrayContaining(["its-HOME-id", "file.ts-what-is"]));
   });
 
   it("rejects a missing cwd", async () => {
@@ -311,6 +311,7 @@ describe("host service on an isolated tmux server", () => {
       "closed again",
     );
     const again = await svc.resumeSession(closed2);
+    expect(again.tmuxSession).toBe("Pi");
     await sb.waitForEvent(again.pid, (e) => e.kind === "start", 10_000, "resume start");
     await rowFor(
       sb,
@@ -392,6 +393,108 @@ describe("host service on an isolated tmux server", () => {
       "chat two",
       "assistant",
     ]);
+  });
+});
+
+describe("app windows belong only to exact Pi on isolated sockets", () => {
+  it.each([false, true])(
+    "ignores other sessions when Pi exists=%s, for new starts and completed resumes",
+    async (exists) => {
+      const sb = createSandbox();
+      try {
+        if (exists) sb.tmux("new-session", "-d", "-s", "Pi", "sleep", "60");
+        const others = ["0", "work", "Pi2", "pi"];
+        for (const name of others) sb.tmux("new-session", "-d", "-s", name, "sleep", "60");
+        const before = others.map((name) =>
+          sb.tmux("list-windows", "-t", `=${name}:`, "-F", "#{window_id}"),
+        );
+        const svc = sb.service();
+        const started = await svc.startSession({ prompt: "fix the flaky test", cwd: sb.home });
+        expect(started.tmuxSession).toBe("Pi");
+        expect(sb.tmux("display-message", "-p", "-t", started.pane, "#{window_name}").trim()).toBe(
+          "fix-the-flaky",
+        );
+        const windows = sb
+          .tmux("list-windows", "-t", "=Pi:", "-F", "#{pane_id}")
+          .trim()
+          .split("\n");
+        expect(windows).toHaveLength(exists ? 2 : 1);
+        if (!exists) expect(windows).toEqual([started.pane]);
+        const live = await rowFor(
+          sb,
+          svc,
+          (r) => r.pid === started.pid && r.state === "idle",
+          "new Pi row",
+        );
+        await svc.sendPrompt(live, "/quit");
+        const closed = await rowFor(
+          sb,
+          svc,
+          (r) => r.sessionId === live.sessionId && !r.live,
+          "closed Pi row",
+        );
+        const resumed = await svc.resumeSession(closed);
+        expect(resumed.tmuxSession).toBe("Pi");
+        expect(sb.tmux("display-message", "-p", "-t", resumed.pane, "#{window_name}").trim()).toBe(
+          "pi-resume",
+        );
+        expect(
+          others.map((name) => sb.tmux("list-windows", "-t", `=${name}:`, "-F", "#{window_id}")),
+        ).toEqual(before);
+      } finally {
+        sb.cleanup();
+      }
+    },
+  );
+
+  it("two simultaneous launches when Pi is absent create one session and two pi windows", async () => {
+    const sb = createSandbox();
+    try {
+      const real = fs.realpathSync(path.join(sb.bin, "tmux"));
+      const barrier = path.join(sb.dir, "barrier");
+      fs.mkdirSync(barrier);
+      fs.rmSync(path.join(sb.bin, "tmux"));
+      // Both has-session calls must observe absence before either can create Pi.
+      fs.writeFileSync(
+        path.join(sb.bin, "tmux"),
+        `#!/bin/sh
+if [ "$3" = has-session ]; then
+  '${real}' "$@" 2>/dev/null; status=$?
+  mkdir '${barrier}'/$$
+  while [ "$(ls '${barrier}' | wc -l)" -lt 2 ]; do sleep 0.05; done
+  exit "$status"
+fi
+if [ "$3" = new-session ]; then
+  '${real}' "$@" 2>'${barrier}'/error-$$; status=$?
+  cat '${barrier}'/error-$$ >&2
+  exit "$status"
+fi
+exec '${real}' "$@"
+`,
+        { mode: 0o755 },
+      );
+      const svc = sb.service();
+      await svc.probe();
+      const started = await Promise.all([
+        svc.startSession({ cwd: sb.home }),
+        svc.startSession({ cwd: sb.home }),
+      ]);
+      expect(started.map((s) => s.tmuxSession)).toEqual(["Pi", "Pi"]);
+      expect(new Set(started.map((s) => s.pane)).size).toBe(2);
+      expect(sb.tmux("list-sessions", "-F", "#{session_name}").trim()).toBe("Pi");
+      expect(
+        sb.tmux("list-windows", "-t", "=Pi:", "-F", "#{window_name}").trim().split("\n"),
+      ).toEqual(["pi", "pi"]);
+      const errors = fs
+        .readdirSync(barrier)
+        .filter((file) => file.startsWith("error-"))
+        .map((file) => fs.readFileSync(path.join(barrier, file), "utf8"))
+        .join("");
+      expect(errors).toContain("duplicate session: Pi");
+      for (const session of started) await sb.waitForEvent(session.pid, (e) => e.kind === "start");
+    } finally {
+      sb.cleanup();
+    }
   });
 });
 
@@ -719,7 +822,7 @@ describe("tmux server environment, argv and # in paths", () => {
       const env = await svc.probe();
       expect(env.serverEnv).toEqual(expect.arrayContaining(["LC_TIME=C.UTF-8", "LANG=C.UTF-8"]));
       const started = await svc.startSession({ prompt: "env", cwd: sb.home });
-      expect(started.tmuxSession).toBe("pi");
+      expect(started.tmuxSession).toBe("Pi");
       const global = sb.tmux("show-environment", "-g");
       expect(global).toContain("LC_TIME=C.UTF-8\n");
       expect(global).toContain("LANG=C.UTF-8\n");
@@ -731,13 +834,44 @@ describe("tmux server environment, argv and # in paths", () => {
         "new-window",
         "-d",
         "-t",
-        "pi:",
+        "=Pi:",
         "sh",
         "-c",
         'env > "$HOME/later-env.tmp" && mv "$HOME/later-env.tmp" "$HOME/later-env"; sleep 5',
       );
       await sb.waitFor(() => fs.existsSync(path.join(sb.home, "later-env")), 5000, "later env");
       expect(fs.readFileSync(path.join(sb.home, "later-env"), "utf8")).toContain("LC_TIME=C.UTF-8");
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  it("creating Pi leaves an existing work server environment and future work windows unchanged", async () => {
+    const sb = createSandbox();
+    try {
+      sb.tmux("new-session", "-d", "-s", "work", "-e", "PATH=/usr/bin:/bin", "sleep", "60");
+      sb.tmux("set-environment", "-g", "PATH", "/usr/bin:/bin");
+      sb.tmux("set-environment", "-g", "LANG", "C");
+      sb.tmux("set-environment", "-g", "LC_TIME", "C");
+      const before = sb.tmux("show-environment", "-g");
+      const started = await sb.service().startSession({ cwd: sb.home });
+      expect(started.tmuxSession).toBe("Pi");
+      expect(sb.tmux("show-environment", "-g")).toBe(before);
+      const piEnv = sb.tmux("show-environment", "-t", "=Pi");
+      expect(piEnv).toContain(`PATH=${sb.bin}\n`);
+      expect(piEnv).toContain("LANG=C.UTF-8\n");
+      // tmux takes PATH from the new-window client, not just its stored environment.
+      const laterWindow = await sb.connection.exec(
+        wrapForAnyShell(
+          `env PATH=/usr/bin:/bin ${shQuote(fs.realpathSync(path.join(sb.bin, "tmux")))} -S ${shQuote(sb.socket)} new-window -d -t '=work:' sh -c ${shQuote('env > "$HOME/work-env.tmp" && mv "$HOME/work-env.tmp" "$HOME/work-env"; sleep 5')}`,
+        ),
+      );
+      expect(laterWindow.exitCode).toBe(0);
+      await sb.waitFor(() => fs.existsSync(path.join(sb.home, "work-env")), 5000, "work env");
+      const later = fs.readFileSync(path.join(sb.home, "work-env"), "utf8");
+      expect(later).toContain("PATH=/usr/bin:/bin\n");
+      expect(later).toContain("LANG=C\n");
+      expect(later).toContain("LC_TIME=C\n");
     } finally {
       sb.cleanup();
     }

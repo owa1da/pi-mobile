@@ -434,6 +434,8 @@ printf '%s READY\\n' "$N"
  * or `<nonce> ERR <reason>` with reason live <pid>|file|cwd|tmux|timeout|died|draft|paste. The OK
  * fields are space-separated with the free-form session name last: tmux prints control characters
  * such as tabs as `_` in format output when the client is not UTF-8 (no LANG over SSH, no -u).
+ * Always opens in exact Pi; a new session's first window is pi itself. If another launch creates
+ * Pi between the existence check and creation, reuse it without changing the server environment.
  */
 export function startScript(input: StartScriptInput): string {
   const fmt = "#{window_id} #{pane_id} #{pane_pid} #{session_name}";
@@ -447,11 +449,11 @@ export function startScript(input: StartScriptInput): string {
     "-n",
     tq(tmuxFormatLiteral(input.windowName)),
     ...input.env.flatMap((pair) => ["-e", tq(pair)]),
+    ...(input.serverEnv ?? []).flatMap((pair) => ["-e", tq(pair)]),
   ].join(" ");
   const argv = tmuxCommandArgv(input.argv).map(tq).join(" ");
   const serverEnv = input.serverEnv ?? [];
   const serverPrefix = serverEnv.length > 0 ? `env ${serverEnv.map(shQuote).join(" ")} ` : "";
-  const serverE = serverEnv.map((pair) => `-e ${tq(pair)}`).join(" ");
   const setEnv = serverEnv.map(setEnvLine).filter(Boolean).join("\n  ");
   const wait = input.waitReady;
   const refuse =
@@ -473,12 +475,24 @@ if [ ! -d "$CW" ]; then
   else printf '%s ERR cwd\\n' "$N"; exit 0; fi
 fi
 SD=\${S%/*}; [ -n "$SD" ] && [ ! -d "$SD" ] && (umask 077; mkdir -p "$SD")
-TGT=$("$T" -S "$S" list-sessions -F '#{session_last_attached} #{session_id} #{session_name}' 2>/dev/null | grep -v ' pim-' | sort -rn | head -n 1 | cut -d' ' -f2)
-if [ -n "$TGT" ]; then
-  OUT=$("$T" -S "$S" new-window ${common} -t "$TGT:" -- ${argv} 2>&1) || { printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0; }
+new_pi_window() { "$T" -S "$S" new-window ${common} -t '=Pi:' -- ${argv}; }
+if "$T" -S "$S" has-session -t '=Pi:' 2>/dev/null; then
+  OUT=$(new_pi_window 2>&1) || { printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0; }
 else
-  OUT=$(${serverPrefix}"$T" -S "$S" new-session ${common} ${serverE} -s pi -- ${argv} 2>&1) || { printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0; }
-  ${setEnv}
+  NEW_SERVER=0
+  "$T" -S "$S" show-environment -g >/dev/null 2>&1 || NEW_SERVER=1
+  if OUT=$(${serverPrefix}"$T" -S "$S" new-session ${common} -s Pi -- ${argv} 2>&1); then
+    if [ "$NEW_SERVER" = 1 ]; then
+      :
+      ${setEnv}
+    fi
+  else
+    case "$OUT" in
+      *'duplicate session:'*)
+        OUT=$(new_pi_window 2>&1) || { printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0; };;
+      *) printf '%s ERR tmux %s\\n' "$N" "$OUT"; exit 0;;
+    esac
+  fi
 fi
 printf '%s OK %s\\n' "$N" "$OUT"
 ${wait ? waitBlock(wait) : ""}${

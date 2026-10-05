@@ -275,7 +275,7 @@ function parseCheckpoint(value: unknown): RemoteCheckpoint | null {
 
 const COMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9:_.-]*$/;
 
-function parseCommand(value: unknown): RemoteCommand | null {
+export function parseCommand(value: unknown): RemoteCommand | null {
   if (!isObj(value)) return null;
   // A row may name itself "/x" or "x"; the app keeps the bare name.
   const raw = typeof value.name === "string" ? value.name.trim().replace(/^\//, "") : "";

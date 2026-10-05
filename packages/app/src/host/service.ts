@@ -2,6 +2,8 @@
 // tmux is used for opening sessions and aborting, never for sending prompt text.
 
 import { hasRemote } from "@/remote/client";
+import { parseCommandCatalog, type CommandCatalog } from "@/remote/command-catalog";
+import { framed, readCommandCatalogScript } from "@/remote/scripts";
 import { CommandUnavailableError, RemoteError } from "@/remote/errors";
 import { remoteFor } from "@/remote/for-service";
 import { matchCommand } from "@/remote/menu";
@@ -77,6 +79,8 @@ export interface PiHostService extends HostService {
   probe(): Promise<HostEnvironmentDetails>;
   /** The probed environment (probing once if needed); never re-probes a cached host. */
   environment(): Promise<HostEnvironmentDetails>;
+  /** Host-wide discovery only, independent of process state. Absent on older Forge. */
+  readCommandCatalog(): Promise<CommandCatalog | undefined>;
   readChat(row: Pick<SessionRow, "sessionFile">, cursor?: SessionCursor): Promise<ChatUpdateEx>;
 }
 
@@ -285,6 +289,15 @@ class HostServiceImpl implements PiHostService {
   }
 
   // ---------------- dashboard / chat ----------------
+
+  async readCommandCatalog(): Promise<CommandCatalog | undefined> {
+    const env = await this.ensureProbe();
+    const nonce = makeNonce();
+    const out = await this.run(readCommandCatalogScript(env.agentDir, nonce), {
+      timeoutMs: 10_000,
+    });
+    return parseCommandCatalog(framed(out, nonce, "CATALOG"));
+  }
 
   async listSessions(): Promise<SessionsSnapshot> {
     const env = await this.ensureProbe();

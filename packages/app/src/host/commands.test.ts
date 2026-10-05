@@ -304,6 +304,139 @@ describe("tmux command argv", () => {
   });
 });
 
+describe("start script always opens in exact Pi", () => {
+  function launch(sessions: string[], createError?: string) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pim-target-"));
+    try {
+      const fake = path.join(dir, "tmux");
+      const log = path.join(dir, "calls.jsonl");
+      const cwd = path.join(dir, "it's #{pane_id};");
+      fs.mkdirSync(cwd);
+      fs.writeFileSync(
+        fake,
+        `#!/bin/sh\nexec ${shQuote(process.execPath)} ${shQuote(path.resolve(__dirname, "test-support/fake-tmux.mjs"))} "$@"\n`,
+        { mode: 0o755 },
+      );
+      const script = startScript({
+        nonce: "N",
+        tmux: fake,
+        socket: path.join(dir, "sock"),
+        cwd,
+        cwdFallbackHome: false,
+        windowName: "it's #{pane_id};",
+        env: ["PI_CODING_AGENT_DIR=/it's #{pane_id};"],
+        serverEnv: ["PATH=/a:/b", "LANG=C.UTF-8", "LC_TIME=C.UTF-8"],
+        argv: ["/opt/my tools/pi"],
+      });
+      const output = execFileSync("/bin/sh", ["-c", script], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FAKE_TMUX_LOG: log,
+          FAKE_TMUX_SESSIONS: JSON.stringify(sessions),
+          FAKE_TMUX_CREATE_ERROR: createError,
+        },
+      });
+      const calls = fs
+        .readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      return { script, output, calls, cwd };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("targets =Pi: when Pi exists, never another recently attached session", () => {
+    const { script, output, calls } = launch(["Pi", "0", "work", "Pi2", "pi"]);
+    expect(script).not.toContain("list-sessions");
+    expect(calls.find((call) => call[2] === "has-session")?.slice(3)).toEqual(["-t", "=Pi:"]);
+    expect(calls.filter((call) => call[2] === "new-session")).toEqual([]);
+    const window = calls.find((call) => call[2] === "new-window")!;
+    expect(window.slice(window.indexOf("-t"), window.indexOf("--"))).toEqual(["-t", "=Pi:"]);
+    expect(output).toBe("N OK @1 %2 4242 Pi\n");
+    expect(window).toContain("PATH=/a:/b");
+    expect(window).toContain("LC_TIME=C.UTF-8");
+    expect(calls.filter((call) => call[2] === "set-environment")).toEqual([]);
+  });
+
+  it.each([{ sessions: [] }, { sessions: ["0", "work", "Pi2", "pi"] }])(
+    "creates detached Pi with the pi window first (%j)",
+    ({ sessions }) => {
+      const { output, calls } = launch(sessions);
+      const session = calls.find((call) => call[2] === "new-session")!;
+      expect(session).toBeDefined();
+      expect(session.slice(3, 7)).toEqual([
+        "-d",
+        "-P",
+        "-F",
+        "#{window_id} #{pane_id} #{pane_pid} #{session_name}",
+      ]);
+      expect(session.slice(session.indexOf("-s"), session.indexOf("--"))).toEqual(["-s", "Pi"]);
+      expect(calls.filter((call) => call[2] === "new-window")).toEqual([]);
+      expect(output).toBe("N OK @1 %2 4242 Pi\n");
+      expect(
+        calls.filter((call) => call[2] === "set-environment").map((call) => call.slice(3)),
+      ).toEqual(
+        sessions.length
+          ? []
+          : [
+              ["-g", "PATH", "/a:/b"],
+              ["-g", "LANG", "C.UTF-8"],
+              ["-g", "LC_TIME", "C.UTF-8"],
+            ],
+      );
+    },
+  );
+
+  it("does not overwrite an existing server environment when only work exists", () => {
+    const { output, calls } = launch(["work"]);
+    expect(output).toBe("N OK @1 %2 4242 Pi\n");
+    expect(calls.filter((call) => call[2] === "set-environment")).toEqual([]);
+    const session = calls.find((call) => call[2] === "new-session")!;
+    expect(session).toContain("PATH=/a:/b");
+    expect(session).toContain("LANG=C.UTF-8");
+    expect(session).toContain("LC_TIME=C.UTF-8");
+  });
+
+  it("falls back to an exact Pi new-window on concurrent creation, without reseeding the server", () => {
+    const { output, calls } = launch([], "duplicate session: Pi");
+    expect(calls.filter((call) => call[2] === "new-session")).toHaveLength(1);
+    const window = calls.find((call) => call[2] === "new-window")!;
+    expect(window).toBeDefined();
+    expect(window[window.indexOf("-t") + 1]).toBe("=Pi:");
+    expect(calls.filter((call) => call[2] === "set-environment")).toEqual([]);
+    expect(output).toBe("N OK @1 %2 4242 Pi\n");
+  });
+
+  it.each([{ sessions: [] }, { sessions: ["Pi"] }])(
+    "preserves name, cwd, env, format and the single-argv exec shim (%j)",
+    ({ sessions }) => {
+      const { calls, cwd } = launch(sessions);
+      const call = calls.find((args) => ["new-session", "new-window"].includes(args[2]!))!;
+      expect(call[call.indexOf("-n") + 1]).toBe("it's ##{pane_id}\\;");
+      expect(call[call.indexOf("-c") + 1]).toBe(tmuxArg(tmuxFormatLiteral(cwd)));
+      expect(call[call.indexOf("-e") + 1]).toBe("PI_CODING_AGENT_DIR=/it's #{pane_id}\\;");
+      expect(call[call.indexOf("-F") + 1]).toBe(
+        "#{window_id} #{pane_id} #{pane_pid} #{session_name}",
+      );
+      expect(call.slice(call.indexOf("--") + 1)).toEqual([
+        "/bin/sh",
+        "-c",
+        'exec "$0"',
+        "/opt/my tools/pi",
+      ]);
+    },
+  );
+
+  it("reports other creation errors rather than opening in another session", () => {
+    const { output, calls } = launch([], "permission denied");
+    expect(output).toBe("N ERR tmux permission denied\n");
+    expect(calls.filter((call) => call[2] === "new-window")).toEqual([]);
+  });
+});
+
 describe("wrapWithHostTimeout", () => {
   it("runs the script with stdin, under timeout when the host has one", () => {
     const out = execFileSync(

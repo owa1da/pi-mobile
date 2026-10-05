@@ -539,9 +539,12 @@ describe("ChatReader (host scripts via sh)", () => {
         lines.push(user(`x${i}`, i ? `x${i - 1}` : "a1", `abandoned ${"x".repeat(80)}`));
       fs.writeFileSync(file, lines.join("\n") + "\n");
       const reader = new ChatReader(run, 1024);
-      const before = incremental ? await reader.read(file) : undefined;
+      let before = incremental ? await reader.read(file) : undefined;
       if (before) {
-        expect(before.more).toBe(true);
+        expect(before.more).toBe(false);
+        // Same previously loaded context, now fetched by scrolling rather than on open.
+        for (let i = 0; i < 8; i++)
+          before = await reader.read(file, { ...before.cursor, older: true });
         expect(before.items.some((item) => "text" in item && item.text === "selected reply")).toBe(
           false,
         );
@@ -586,6 +589,108 @@ describe("ChatReader (host scripts via sh)", () => {
     }
     expect(update.more).toBe(false);
     expect(update.items).toEqual([expect.objectContaining({ kind: "user", text: "selected" })]);
+  });
+
+  it.each(["label", "custom"])(
+    "hydrates navigation behind a hidden %s leaf and an oversized abandoned entry",
+    async (type) => {
+      const file = path.join(dir, `hidden-navigation-${type}.jsonl`);
+      fs.writeFileSync(
+        file,
+        [
+          user("selected", null, "selected message"),
+          user("abandoned", "selected", "x".repeat(3000)),
+          navigation("selected"),
+          entry("hidden", "nav", { type }),
+        ].join("\n") + "\n",
+      );
+      let backward = 0;
+      const update = await new ChatReader(async (script) => {
+        if (script.includes("BACK=1")) backward++;
+        return run(script);
+      }, 1024).read(file);
+      expect(update.items).toEqual([
+        expect.objectContaining({ kind: "user", text: "selected message" }),
+      ]);
+      expect(backward).toBeGreaterThan(0);
+      expect(backward).toBeLessThanOrEqual(8);
+      expect(update).toMatchObject({ more: false, hasOlder: false });
+      expect(update.cursor.offset).toBe(fs.statSync(file).size);
+    },
+  );
+
+  it("an oversized hidden entry hiding the navigation marker stays recoverable by scrolling up", async () => {
+    const file = path.join(dir, "navigation-hidden-oversized.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        user("selected", null, "selected message"),
+        navigation("selected"),
+        entry("hidden", "nav", { type: "custom", customType: "other", data: "x".repeat(3000) }),
+        user("child", "hidden", "visible child"),
+      ].join("\n") + "\n",
+    );
+    // The marker hides behind an oversized hidden entry, so first paint cannot know a rewind
+    // happened. It must stay fast (no eager reads) and stay recoverable by scrolling up.
+    let backward = 0;
+    const reader = new ChatReader(async (script) => {
+      if (script.includes("BACK=1")) backward++;
+      return run(script);
+    }, 1024);
+    let update = await reader.read(file);
+    expect(update.items.map((item) => "text" in item && item.text)).toContain("visible child");
+    expect(update.hasOlder).toBe(true);
+    for (let i = 0; i < 8 && update.hasOlder; i++)
+      update = await reader.read(file, { ...update.cursor, older: true });
+    expect(update.items.map((item) => "text" in item && item.text)).toEqual([
+      "selected message",
+      "visible child",
+    ]);
+    expect(backward).toBeLessThanOrEqual(8);
+  });
+
+  it("finds navigation in loaded ancestry beneath a visible child", async () => {
+    const file = path.join(dir, "navigation-child.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        user("selected", null, "selected message"),
+        user("abandoned", "selected", "x".repeat(3000)),
+        navigation("selected"),
+        user("child", "nav", "visible child"),
+      ].join("\n") + "\n",
+    );
+    const update = await new ChatReader(run, 1024).read(file);
+    expect(update.items.map((item) => "text" in item && item.text)).toEqual([
+      "selected message",
+      "visible child",
+    ]);
+    expect(update.hasOlder).toBe(false);
+  });
+
+  it("continues a zero-visible-row first update with missing hidden ancestry", async () => {
+    const file = path.join(dir, "empty-hidden-tail.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        user("selected", null, "selected message"),
+        entry("padding", "selected", { type: "custom", data: "x".repeat(12000) }),
+        entry("hidden", "padding", { type: "label" }),
+      ].join("\n") + "\n",
+    );
+    let backward = 0;
+    const reader = new ChatReader(async (script) => {
+      if (script.includes("BACK=1")) backward++;
+      return run(script);
+    }, 1024);
+    let update = await reader.read(file);
+    expect(backward).toBe(8);
+    expect(update).toMatchObject({ more: true, hasOlder: true });
+    update = await reader.read(file, update.cursor);
+    expect(update.items).toEqual([
+      expect.objectContaining({ kind: "user", text: "selected message" }),
+    ]);
+    expect(update).toMatchObject({ more: false, hasOlder: false });
   });
 
   it("hydrates a selected oversized ancestor as a stub across backward windows", async () => {
@@ -642,7 +747,10 @@ describe("ChatReader (host scripts via sh)", () => {
       file,
       [header, bigBoundary, user("u", "side", "side question")].join("\n") + "\n",
     );
-    const update = await new ChatReader(run, 1024).read(file);
+    const reader = new ChatReader(run, 1024);
+    let update = await reader.read(file);
+    expect(update.more).toBe(false);
+    while (update.hasOlder) update = await reader.read(file, { ...update.cursor, older: true });
     expect(update.items).toEqual([
       expect.objectContaining({ kind: "user", text: "side question" }),
     ]);
@@ -697,6 +805,106 @@ describe("ChatReader (host scripts via sh)", () => {
     await expect(reader.read(file)).rejects.toMatchObject({ code: "command-failed" });
     expect(fs.statSync(file).ino).toBe(inode);
     await expect(reader.read(file)).resolves.toBeDefined();
+  });
+
+  it("paints a non-navigation tail with one exec and never hydrates on polls", async () => {
+    const file = path.join(dir, "lazy.jsonl");
+    const lines = Array.from({ length: 100 }, (_, i) =>
+      user(`m${i}`, i ? `m${i - 1}` : null, "x".repeat(100)),
+    );
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    let execs = 0;
+    let backward = 0;
+    const reader = new ChatReader(async (script) => {
+      execs++;
+      if (script.includes("BACK=1")) backward++;
+      return run(script);
+    }, 2048);
+    let update = await reader.read(file);
+    expect(execs).toBe(1);
+    expect(backward).toBe(0);
+    expect(update.more).toBe(false);
+    const firstIds = update.items.filter((i) => i.kind === "user").map((i) => i.id);
+    for (let i = 0; i < 3; i++) update = await reader.read(file, update.cursor);
+    expect(backward).toBe(0);
+    const olderCursor = { ...update.cursor, older: true };
+    update = await reader.read(file, olderCursor);
+    expect(backward).toBe(1);
+    const ids = update.items.filter((i) => i.kind === "user").map((i) => i.id);
+    expect(ids.length).toBeGreaterThan(firstIds.length);
+    expect(ids.slice(-firstIds.length)).toEqual(firstIds);
+    expect(ids).toEqual([...ids].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))));
+  });
+
+  it("stops navigation hydration at a first screen instead of the root", async () => {
+    const file = path.join(dir, "screen-nav.jsonl");
+    const lines = Array.from({ length: 200 }, (_, i) =>
+      user(`m${i}`, i ? `m${i - 1}` : null, "x".repeat(100)),
+    );
+    lines.push(navigation("m199"));
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    let backward = 0;
+    const reader = new ChatReader(async (script) => {
+      if (script.includes("BACK=1")) backward++;
+      return run(script);
+    }, 2048);
+    const first = await reader.read(file);
+    expect(first.items.filter((i) => i.id !== "earlier").length).toBeGreaterThanOrEqual(20);
+    expect(first.hasOlder).toBe(true);
+    expect(first.more).toBe(false);
+    expect(backward).toBeLessThan(8);
+    const before = backward;
+    await reader.read(file, first.cursor);
+    expect(backward).toBe(before);
+  });
+
+  it("hydrates a metadata-selected branch that is not the last visible entry", async () => {
+    const file = path.join(dir, "metadata-nav.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        user("selected", null, "selected"),
+        ...Array.from({ length: 20 }, (_, i) =>
+          user(`x${i}`, i ? `x${i - 1}` : "selected", "x".repeat(100)),
+        ),
+        entry("label", "selected", { type: "label" }),
+      ].join("\n") + "\n",
+    );
+    const update = await new ChatReader(run, 1024).read(file);
+    expect(update.items).toEqual([expect.objectContaining({ text: "selected" })]);
+  });
+
+  it("bounds reader cache to eight least-recently-used documents", async () => {
+    const reader = new ChatReader(run);
+    const files = Array.from({ length: 9 }, (_, i) => path.join(dir, `lru-${i}.jsonl`));
+    for (const [i, file] of files.entries())
+      fs.writeFileSync(file, user(`m${i}`, null, "hi") + "\n");
+    for (const file of files.slice(0, 8)) await reader.read(file);
+    expect((await reader.read(files[0]!)).reset).toBe(false);
+    await reader.read(files[8]!);
+    expect((await reader.read(files[0]!)).reset).toBe(false);
+    expect((await reader.read(files[1]!)).reset).toBe(true);
+  });
+
+  it("reuses remounted reader state and validates replacement and truncation", async () => {
+    const file = path.join(dir, "cached.jsonl");
+    fs.writeFileSync(file, user("old", null, "old") + "\n");
+    let scripts: string[] = [];
+    const reader = new ChatReader(async (script) => {
+      scripts.push(script);
+      return run(script);
+    });
+    const first = await reader.read(file);
+    scripts = [];
+    const reopened = await reader.read(file);
+    expect(scripts).toHaveLength(1);
+    expect(reopened.reset).toBe(false);
+    expect(reopened.items).toEqual(first.items);
+    fs.writeFileSync(`${file}.tmp`, user("replacement", null, "new") + "\n");
+    fs.renameSync(`${file}.tmp`, file);
+    expect((await reader.read(file)).items.map((i) => i.id)).toEqual(["replacement"]);
+    fs.writeFileSync(file, user("z", null, "z") + "\n");
+    expect((await reader.read(file)).items.map((i) => i.id)).toEqual(["z"]);
   });
 
   it("throws not-found for a missing file", async () => {

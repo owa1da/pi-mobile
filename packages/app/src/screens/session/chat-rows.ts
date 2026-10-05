@@ -21,6 +21,20 @@ export type ChatRow =
   | { kind: "compaction"; key: string; summary?: string }
   | { kind: "divider"; key: string; label: string; summary?: string };
 
+/** Pagination travels with the transcript so existing screen wrappers can pass rows unchanged. */
+export interface ChatHistoryControls {
+  loadOlder: () => void;
+  loading: boolean;
+}
+const historyControls = new WeakMap<ChatRow[], ChatHistoryControls>();
+export function setChatHistory(rows: ChatRow[], controls: ChatHistoryControls): ChatRow[] {
+  historyControls.set(rows, controls);
+  return rows;
+}
+export function getChatHistory(rows: ChatRow[]): ChatHistoryControls | undefined {
+  return historyControls.get(rows);
+}
+
 /** chat.ts marks a transcript read from the middle of its file with this notice. */
 const EARLIER_TEXT = "Earlier messages are not loaded.";
 

@@ -1047,6 +1047,31 @@ function remoteView() {
   return "main";
 }
 
+let catalogSignature;
+function writeCommandCatalog(snapshot) {
+  if (snapshot.view !== "main" || process.env.FAKE_PI_CATALOG === "0") return;
+  const cwd = process.cwd();
+  const signature = JSON.stringify([cwd, snapshot.commands]);
+  if (signature === catalogSignature) return;
+  catalogSignature = signature;
+  const file = path.join(agentDir, "forge", "remote", "commands.json");
+  let byCwd = {};
+  try {
+    byCwd = JSON.parse(fs.readFileSync(file, "utf8")).byCwd ?? {};
+  } catch {}
+  const entry = { at: snapshot.updatedAt, commands: snapshot.commands };
+  byCwd[cwd] = entry;
+  byCwd = Object.fromEntries(
+    Object.entries(byCwd)
+      .sort((a, b) => b[1].at - a[1].at)
+      .slice(0, 32),
+  );
+  const catalog = { v: 1, updatedAt: snapshot.updatedAt, latest: { cwd, ...entry }, byCwd };
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(catalog)}\n`, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
 function writeRemoteState() {
   if (!REMOTE || !remoteReady) return;
   rev++;
@@ -1070,6 +1095,7 @@ function writeRemoteState() {
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, file);
+  writeCommandCatalog(snapshot);
 }
 
 function notice(text) {

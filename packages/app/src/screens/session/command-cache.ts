@@ -17,6 +17,9 @@ export function rememberCommands(hostId: string, next: readonly RemoteCommand[] 
   );
   for (const listener of listeners) listener();
 }
+export function forgetCommands(hostId: string): void {
+  if (commands.delete(hostId)) for (const listener of listeners) listener();
+}
 export function subscribeCommands(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

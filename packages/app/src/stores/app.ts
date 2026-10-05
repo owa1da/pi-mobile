@@ -9,6 +9,8 @@ import { useStore } from "zustand";
 import { createHostService, type PiHostService } from "@/host";
 import type { SavedHost } from "@/host/types";
 import { getSshClient } from "@/ssh";
+import { forgetCommands } from "@/screens/session/command-cache";
+import { createCommandCatalogStore, refreshCommandCatalog } from "./command-catalog-store";
 import { createConnectionStore, type HostConnectionState } from "./connection-store";
 import { createHostKeyAlgorithms } from "./host-key-algorithms";
 import { secretToAuth } from "./host-records";
@@ -22,10 +24,19 @@ const secureSecrets: SecretStore = {
   remove: (key) => SecureStore.deleteItemAsync(key),
 };
 
+export const commandCatalogStore = createCommandCatalogStore(AsyncStorage);
+
 export const hostsStore = createHostsStore({
   storage: AsyncStorage,
   secrets: secureSecrets,
   newId: () => randomUUID(),
+  onLoadHosts: async (hosts) => {
+    await Promise.all(hosts.map((host) => commandCatalogStore.getState().load(host.id)));
+  },
+  onRemoveHost: async (id) => {
+    forgetCommands(id);
+    await commandCatalogStore.getState().remove(id);
+  },
 });
 
 /** Key type per seen fingerprint (labels the pinned key on the changed-key sheet). */
@@ -40,7 +51,11 @@ export const connectionStore = createConnectionStore<PiHostService>({
     return secret ? secretToAuth(secret) : null;
   },
   pinHostKey: (id, fingerprint) => hostsStore.getState().pinHostKey(id, fingerprint),
-  markConnected: (id) => hostsStore.getState().markConnected(id),
+  markConnected: async (id) => {
+    // One host-wide read per successful connection, separate from session state polling.
+    void refreshCommandCatalog(commandCatalogStore, id, connectionStore.getState().getService(id));
+    await hostsStore.getState().markConnected(id);
+  },
   noteHostKey: (key) => hostKeyAlgorithms.note(key.fingerprint, key.algorithm),
 });
 

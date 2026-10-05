@@ -4,9 +4,9 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { HostError, type SessionRow } from "@/host/types";
 import { connectionStore } from "@/stores/app";
-import { ChatFeed } from "@/stores/chat-feed";
+import { ChatFeed, chatFeedCache, type ChatRead } from "@/stores/chat-feed";
 import { usePoller } from "@/stores/use-polling";
-import { toChatRows } from "./chat-rows";
+import { setChatHistory, toChatRows } from "./chat-rows";
 
 const IDLE_MS = 1000;
 const BOOST_MS = 300;
@@ -25,15 +25,14 @@ export function useChatFeed(hostId: string, row: FeedSource | undefined, active:
    */
   const [missing, setMissing] = useState(false);
   const boostUntil = useRef(0);
-  const feed = useMemo(
-    () =>
-      new ChatFeed((cursor) => {
-        const service = connectionStore.getState().getService(hostId);
-        if (!service || !sessionFile) return Promise.reject(new Error("not connected"));
-        return service.readChat({ sessionFile }, cursor);
-      }),
-    [hostId, sessionFile],
-  );
+  const feed = useMemo(() => {
+    const read: ChatRead = (cursor) => {
+      const service = connectionStore.getState().getService(hostId);
+      if (!service || !sessionFile) return Promise.reject(new Error("not connected"));
+      return service.readChat({ sessionFile }, cursor);
+    };
+    return sessionFile ? chatFeedCache.get(hostId, sessionFile, read) : new ChatFeed(read);
+  }, [hostId, sessionFile]);
 
   const run = useCallback(async () => {
     if (!connectionStore.getState().getService(hostId)) return ERROR_MS;
@@ -43,6 +42,7 @@ export function useChatFeed(hostId: string, row: FeedSource | undefined, active:
       if (changed) setVersion(feed.version);
       if (more) return 0;
     } catch (error) {
+      setVersion(feed.version);
       if (error instanceof HostError && error.code === "not-found") {
         setMissing(true);
         return IDLE_MS;
@@ -77,12 +77,32 @@ export function useChatFeed(hostId: string, row: FeedSource | undefined, active:
     [feed],
   );
 
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadOlder = useCallback(() => {
+    if (!active || !feed.hasOlder || feed.loadingOlder) return;
+    const request = feed.loadOlder();
+    setLoadingOlder(true);
+    void request
+      .catch((error: unknown) => {
+        connectionStore.getState().reportFailure(hostId, error);
+      })
+      .finally(() => {
+        setLoadingOlder(false);
+        setVersion(feed.version);
+      });
+  }, [active, feed, hostId]);
+
   const working = row?.state === "working";
   const rows = useMemo(
-    () => toChatRows(feed.items, feed.pending, working),
+    () => {
+      const next = toChatRows(feed.items, feed.pending, working);
+      return feed.hasOlder || loadingOlder
+        ? setChatHistory(next, { loadOlder, loading: loadingOlder })
+        : next;
+    },
     // version is the change signal for the feed's mutable arrays
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [feed, version, working],
+    [feed, version, working, loadingOlder, loadOlder],
   );
 
   return {

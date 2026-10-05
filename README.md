@@ -9,6 +9,10 @@ Choose an SSH host, see your sessions, and open a conversation. pi keeps running
 host. The app reads session files and uses forge's remote channel for native questions, command
 screens, and actions. **There is no terminal view, relay, or separate mobile daemon.**
 
+New sessions and reopened completed sessions always open a window in the tmux session named
+exactly `Pi` (capital P), never another existing session. If `Pi` is absent, the app creates it
+detached with the pi window as its first window.
+
 ## Host requirements
 
 - An SSH server reachable from the phone

@@ -3,6 +3,19 @@
 // says, so forge never reads a half-written inbox file. Output lines are framed by a nonce.
 
 import { shQuote } from "@/host/commands";
+import { CATALOG_MAX_BYTES } from "./command-catalog";
+
+/** Bounded even if the file grows mid-read; cap + 1 lets the parser reject oversized files. */
+export function readCommandCatalogScript(agentDir: string, tag: string): string {
+  assertNonce(tag);
+  const file = shQuote(`${agentDir.replace(/\/+$/, "")}/forge/remote/commands.json`);
+  return [
+    `f=${file}`,
+    `if [ -f "$f" ]; then printf '%s CATALOG\\n' ${tag}; head -c ${CATALOG_MAX_BYTES + 1} "$f" 2>/dev/null; printf '\\n%s END\\n' ${tag};`,
+    `else printf '%s NONE\\n' ${tag}; fi`,
+    "",
+  ].join("\n");
+}
 
 /** Inbox/result file names: the nonce is ours, but it still never reaches a path unchecked. */
 export const NONCE_RE = /^[A-Za-z0-9_-]{8,64}$/;

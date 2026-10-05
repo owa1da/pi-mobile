@@ -4,7 +4,8 @@
 // the branch is its parentId chain. Each read fetches at most `cap` bytes after the cursor, keeps
 // to the last full line, and rebuilds when the file shrank, was replaced (inode) or the byte
 // before the cursor is not a newline. A first read of a large file starts `cap` bytes before the
-// end, then hydrates missing branch ancestors in bounded backward windows. A line longer than
+// end. Older history is demand-loaded; only a short navigation-selected branch is hydrated
+// eagerly (up to eight windows per update, stopping at a first screen or root). A line longer than
 // one read (an inlined image)
 // becomes a stub: its id/parentId are read from its first bytes, its content is not shown.
 
@@ -19,6 +20,13 @@ import {
 } from "./types";
 
 export const DEFAULT_CHAT_CAP = 1024 * 1024;
+/** About one first screen; never eagerly fill an ordinary truncated transcript. */
+export const FIRST_SCREEN_ROWS = 20;
+export const CHAT_CACHE_FILES = 8;
+/** Carried through the service's cursor argument without changing the host transport. */
+export interface ChatHistoryCursor extends SessionCursor {
+  older?: boolean;
+}
 const THINKING_CAP = 20_000;
 const RESULT_CAP = 8_000;
 const ARG_STRING_CAP = 4_000;
@@ -455,16 +463,42 @@ export class ChatDocument {
   leaf: string | undefined;
   /** The document starts after the file's start (a tail read of a large file). */
   truncated = false;
+  private lastVisible: string | undefined;
+  private revision = 0;
+  private built:
+    | {
+        revision: number;
+        size: number;
+        leaf?: string;
+        truncated: boolean;
+        value: { items: ChatItem[]; pathIds: Set<string> };
+      }
+    | undefined;
+
+  navigationSelected(): boolean {
+    const { nodes } = this.path();
+    return (
+      nodes.some((node) => node.customType === "forge-navigation") ||
+      (this.lastVisible !== undefined && !nodes.some((node) => node.id === this.lastVisible))
+    );
+  }
 
   reset(): void {
     this.nodes.clear();
     this.leaf = undefined;
     this.truncated = false;
+    this.lastVisible = undefined;
+    this.revision++;
+    this.built = undefined;
   }
 
   addNode(node: ChatNode): void {
     this.nodes.set(node.id, node);
     this.leaf = node.id;
+    this.revision++;
+    const visible = new BranchBuilder();
+    visible.add(node, 0);
+    if (visible.items.length) this.lastVisible = node.id;
   }
 
   /** One jsonl line; the session header and unparsable lines are skipped. */
@@ -506,6 +540,13 @@ export class ChatDocument {
   }
 
   build(): { items: ChatItem[]; pathIds: Set<string> } {
+    if (
+      this.built?.revision === this.revision &&
+      this.built.size === this.nodes.size &&
+      this.built.leaf === this.leaf &&
+      this.built.truncated === this.truncated
+    )
+      return this.built.value;
     const { nodes, broken } = this.path();
     const branch = new BranchBuilder();
     const boundary = nodes.findLastIndex((node) => node.customType === "forge-side-boundary");
@@ -513,7 +554,15 @@ export class ChatDocument {
       branch.notice("earlier", "info", "Earlier messages are not loaded.", nodes[0]?.ts ?? 0);
     nodes.slice(boundary + 1).forEach((node, index) => branch.add(node, index));
     branch.settle();
-    return { items: branch.items, pathIds: new Set(nodes.map((node) => node.id)) };
+    const value = { items: branch.items, pathIds: new Set(nodes.map((node) => node.id)) };
+    this.built = {
+      revision: this.revision,
+      size: this.nodes.size,
+      leaf: this.leaf,
+      truncated: this.truncated,
+      value,
+    };
+    return value;
   }
 }
 
@@ -534,10 +583,12 @@ function addLines(doc: ChatDocument, bytes: Uint8Array, from: number): number {
 export type ScriptRunner = (script: string) => Promise<string>;
 
 export interface ChatUpdateEx extends ChatUpdate {
-  /** More bytes are already on the host: call again soon with the returned cursor. */
+  /** More appended bytes, or correctness-driven short navigation hydration (not pagination). */
   more: boolean;
   /** History before the loaded window is not shown (large file read from its tail). */
   truncated: boolean;
+  /** Missing ancestors on the active branch, before any loaded side boundary. */
+  hasOlder?: boolean;
 }
 
 interface FileState {
@@ -604,7 +655,7 @@ export class ChatReader {
   }
 
   /** Reads of one file run one at a time. */
-  read(file: string, cursor?: SessionCursor): Promise<ChatUpdateEx> {
+  read(file: string, cursor?: ChatHistoryCursor): Promise<ChatUpdateEx> {
     const previous = this.locks.get(file) ?? Promise.resolve();
     const next = previous.then(() => this.readNow(file, cursor));
     const settled = next.then(
@@ -619,26 +670,33 @@ export class ChatReader {
     return next;
   }
 
-  private async readNow(file: string, cursor?: SessionCursor): Promise<ChatUpdateEx> {
+  private async readNow(file: string, cursor?: ChatHistoryCursor): Promise<ChatUpdateEx> {
     const cap = Math.max(1024, Math.floor(this.cap));
     let st = this.states.get(file);
     let rebuild = false;
-    if (!st || !cursor || cursor.sessionFile !== file || cursor.offset !== st.offset) {
+    if (!st || (cursor && (cursor.sessionFile !== file || cursor.offset !== st.offset))) {
       st = { doc: new ChatDocument(), offset: 0, inode: "" };
       this.states.set(file, st);
       rebuild = true;
     }
+    // HostService owns one reader per host; touch its file LRU on every use.
+    this.states.delete(file);
+    this.states.set(file, st);
+    while (this.states.size > CHAT_CACHE_FILES)
+      this.states.delete(this.states.keys().next().value!);
     const prevLeaf = rebuild ? undefined : st.doc.leaf;
     let more = false;
-    for (let round = 0; round < 8; round++) {
+    for (let round = 0; round < (cursor?.older && !rebuild ? 0 : 8); round++) {
       const result = await this.readRound(file, st, cap);
       if (result.rebuilt) rebuild = true;
       if (result.again) continue;
       more = result.more;
       break;
     }
-    await this.hydrateAncestors(file, st, cap);
-    more ||= this.needsAncestors(st);
+    if (cursor?.older && !rebuild) await this.hydrateAncestors(file, st, cap, 1, false);
+    else if (this.needsEagerAncestors(st)) await this.hydrateAncestors(file, st, cap, 8, true);
+    // Only correctness-driven navigation hydration may continue, never ordinary history.
+    more ||= this.needsEagerAncestors(st);
     const { items, pathIds } = st.doc.build();
     const reset = rebuild || (prevLeaf !== undefined && !pathIds.has(prevLeaf));
     return {
@@ -647,6 +705,7 @@ export class ChatReader {
       reset,
       more,
       truncated: st.doc.truncated,
+      hasOlder: this.needsAncestors(st),
     };
   }
 
@@ -712,9 +771,27 @@ export class ChatReader {
     return broken && !nodes.some((node) => node.customType === "forge-side-boundary");
   }
 
-  /** At most eight cap-sized backward windows per update; never change the selected leaf/cursor. */
-  private async hydrateAncestors(file: string, st: FileState, cap: number): Promise<void> {
-    for (let round = 0; round < 8 && this.needsAncestors(st); round++) {
+  private needsEagerAncestors(st: FileState): boolean {
+    if (!this.needsAncestors(st)) return false;
+    const visibleRows = st.doc.build().items.filter((item) => item.id !== "earlier").length;
+    // An empty tail cannot offer a visible scroll target; recover it like a selected branch.
+    return visibleRows < FIRST_SCREEN_ROWS && (visibleRows === 0 || st.doc.navigationSelected());
+  }
+
+  /** Never change the selected leaf/cursor. Demand: one window; navigation: up to a screen. */
+  private async hydrateAncestors(
+    file: string,
+    st: FileState,
+    cap: number,
+    windows: number,
+    firstScreen: boolean,
+  ): Promise<void> {
+    for (let round = 0; round < windows && this.needsAncestors(st); round++) {
+      if (
+        firstScreen &&
+        st.doc.build().items.filter((item) => item.id !== "earlier").length >= FIRST_SCREEN_ROWS
+      )
+        break;
       const history = st.history!;
       const nonce = makeNonce();
       const out = await this.run(chatReadScript(file, history.end, st.inode, cap, nonce, true));

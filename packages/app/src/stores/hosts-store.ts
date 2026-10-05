@@ -24,6 +24,9 @@ export interface HostsStoreDeps {
   secrets: SecretStore;
   newId: () => string;
   now?: () => number;
+  /** Load non-secret per-host discovery before screens see loaded hosts. */
+  onLoadHosts?: (hosts: SavedHost[]) => Promise<void>;
+  onRemoveHost?: (id: string) => Promise<void>;
 }
 
 export class HostDraftInvalidError extends Error {
@@ -87,7 +90,9 @@ export function createHostsStore(deps: HostsStoreDeps): HostsStore {
 
       async load() {
         const json = await deps.storage.getItem(HOSTS_STORAGE_KEY);
-        set({ hosts: parseRecords(json), loaded: true });
+        const hosts = parseRecords(json);
+        await deps.onLoadHosts?.(hosts);
+        set({ hosts, loaded: true });
       },
 
       getHost: (id) => get().hosts.find((host) => host.id === id),
@@ -133,6 +138,7 @@ export function createHostsStore(deps: HostsStoreDeps): HostsStore {
         const host = get().getHost(id);
         if (!host) return;
         await persist(get().hosts.filter((item) => item.id !== id));
+        await deps.onRemoveHost?.(id);
         await deps.secrets.remove(secretKeyFor(host.secretRef));
       },
 

@@ -15,7 +15,13 @@ import type {
 } from "@/remote/types";
 import { cachedCommands, rememberCommands, subscribeCommands } from "./command-cache";
 import { RemoteError } from "@/remote/errors";
-import { connectionStore } from "@/stores/app";
+import { commandCatalogStore, connectionStore } from "@/stores/app";
+import { useStore } from "zustand";
+import {
+  CATALOG_POLL_MS,
+  completedCommands,
+  refreshCommandCatalog,
+} from "@/stores/command-catalog-store";
 import type { SessionsEntry } from "@/stores/sessions-store";
 import { usePoller } from "@/stores/use-polling";
 
@@ -61,6 +67,9 @@ export function useRemoteChannel(
   const available = hasRemote(row);
   const getCommands = useCallback(() => cachedCommands(hostId), [hostId]);
   const remembered = useSyncExternalStore(subscribeCommands, getCommands, getCommands);
+  const discovered = useStore(commandCatalogStore, (catalogs) =>
+    completedCommands(catalogs, hostId, row.cwd, remembered),
+  );
   const pid = available ? row.pid : undefined;
   const [state, setState] = useState<RemoteState | undefined>(undefined);
   const [loadedPid, setLoadedPid] = useState<number | undefined>(undefined);
@@ -69,6 +78,24 @@ export function useRemoteChannel(
   const pidRef = useRef(pid);
   pidRef.current = pid;
   const boostUntil = useRef(0);
+
+  const refreshCatalog = useCallback(async () => {
+    await refreshCommandCatalog(
+      commandCatalogStore,
+      hostId,
+      connectionStore.getState().getService(hostId),
+      () => rowRef.current.live,
+    );
+  }, [hostId]);
+  const kickCatalog = usePoller(refreshCatalog, CATALOG_POLL_MS, active && !row.live);
+  // Poller start reads on focus/open. A different completed session without a remount also reads.
+  const catalogTarget = `${hostId}\n${row.sessionId}\n${row.cwd}`;
+  const previousCatalogTarget = useRef(catalogTarget);
+  useEffect(() => {
+    const changed = previousCatalogTarget.current !== catalogTarget;
+    previousCatalogTarget.current = catalogTarget;
+    if (changed && active && !row.live) kickCatalog();
+  }, [active, catalogTarget, kickCatalog, row.live]);
 
   // A new process (pi restarted, /new in another pid): forget the old state at once.
   useEffect(() => {
@@ -94,6 +121,10 @@ export function useRemoteChannel(
       // A read that raced a process change is dropped.
       if (pidRef.current !== forPid) return 0;
       rememberCommands(hostId, next?.commands);
+      void commandCatalogStore
+        .getState()
+        .rememberLive(hostId, current.cwd, next)
+        .catch(() => undefined);
       setState((prev) => (sameState(prev, next) ? prev : next));
       setLoadedPid(forPid);
     } catch {
@@ -132,7 +163,7 @@ export function useRemoteChannel(
   const liveCommands = available ? state?.commands : undefined;
   return {
     available,
-    commands: row.live ? liveCommands : remembered,
+    commands: row.live ? liveCommands : discovered,
     state: available ? state : undefined,
     loaded: available && loadedPid === pid,
     send,
