@@ -253,9 +253,13 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
       },
     ],
     [
-      "Forge: /side opens a marked second chat with its own composer, then closes",
+      "Forge: Back keeps side, icon switches, /side replaces, Close retires",
       async () => {
+        await A.waitGone(A.byId("session-side-switch"), 10_000, "no switch without side");
+        const createMark = mark();
         await slash("side");
+        const created = await acted("side.open", createMark);
+        assert(Object.keys(created.args ?? {}).length === 0, "bare /side sent text");
         await A.waitNode(A.byId("side-composer"), 20_000, "side composer");
         await A.waitNode(A.byId("side-empty"), 20_000, "side before its first message");
         {
@@ -276,20 +280,123 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await typeChecked("side-composer", "What is a token bucket", "side-composer");
         await kbDown();
         await A.tap(A.byId("side-send"), "side send");
-        const ev = await acted("side.open", since);
-        assert(ev.args?.text === "What is a token bucket", `side.open ${JSON.stringify(ev.args)}`);
+        const ev = await acted("side.send", since);
+        assert(ev.args?.text === "What is a token bucket", `side.send ${JSON.stringify(ev.args)}`);
         await A.waitNode(A.byText(/side: A token bucket holds/), 20_000, "side reply");
         assertNoMainInSide();
         shot("110-side-chat-dark");
+        const remoteState = () =>
+          JSON.parse(
+            fs.readFileSync(
+              path.join(E.PROCS, "..", "remote", String(pid()), "state.json"),
+              "utf8",
+            ),
+          );
+        const ownedSide = remoteState().side;
+        assert(
+          typeof ownedSide.id === "string" && Number.isInteger(ownedSide.gen),
+          "side has no id/gen",
+        );
+        const sideFile = ownedSide.sessionFile;
+        const transcript = fs.readFileSync(sideFile, "utf8");
+        const backMark = mark();
+        await leave();
+        const hidden = await acted("side.view", backMark, (event) => event.args?.open === false);
+        assert(
+          hidden.args.id === ownedSide.id && hidden.args.gen === ownedSide.gen,
+          "Back lost side ownership",
+        );
+        assert(
+          remoteState().side.gen === ownedSide.gen + 1,
+          "Back did not advance visibility generation",
+        );
+        assert(
+          !remote()
+            .slice(backMark)
+            .some((event) => event.action === "side.close"),
+          "Back closed the side",
+        );
+        assert(
+          remoteState().view === "main" && remoteState().side?.open === false,
+          "Back left Forge on side",
+        );
+        await sendLine("Main while side survives");
+        await acted("input.submit", backMark, (event) => event.text === "Main while side survives");
+        for (let entry = 0; entry < 2; entry++) {
+          const reenter = mark();
+          const beforeShow = remoteState().side;
+          await A.waitNode(A.byId("session-side-switch"), 20_000, "side switch");
+          await A.tap(A.byId("session-side-switch"), "open existing side");
+          const shown = await acted("side.view", reenter, (event) => event.args?.open === true);
+          assert(
+            shown.args.id === ownedSide.id && shown.args.gen === beforeShow.gen,
+            "re-entry lost side ownership",
+          );
+          const shownSide = remoteState().side;
+          assert(
+            shownSide.gen === beforeShow.gen + 1,
+            "show did not advance visibility generation",
+          );
+          await A.waitNode(A.byText(/side: A token bucket holds/), 20_000, "preserved side reply");
+          assert(remoteState().side.sessionFile === sideFile, "re-entry replaced the side");
+          assert(fs.readFileSync(sideFile, "utf8") === transcript, "re-entry changed transcript");
+          assert(
+            !remote()
+              .slice(reenter)
+              .some((event) => event.action === "side.open"),
+            "re-entry created a new side",
+          );
+          assertNoMainInSide();
+          const leaveMark = mark();
+          await leave();
+          const back = await acted("side.view", leaveMark, (event) => event.args?.open === false);
+          assert(
+            back.args.id === ownedSide.id && back.args.gen === shownSide.gen,
+            "Back did not use its own last show generation",
+          );
+        }
+        for (const entry of ["typed", "menu"]) {
+          const replaceMark = mark();
+          const previous = remoteState().side;
+          if (entry === "typed") await sendLine("/side");
+          else await slash("side");
+          const replacement = await acted("side.open", replaceMark);
+          assert(Object.keys(replacement.args ?? {}).length === 0, `${entry} /side sent text`);
+          await A.waitNode(A.byId("side-composer"), 20_000, "replacement composer");
+          assert(remoteState().side.id !== previous.id, `${entry} /side did not replace`);
+          assert(remoteState().side.sessionFile !== previous.sessionFile, "replacement kept file");
+          assert(
+            !remote()
+              .slice(replaceMark)
+              .some((event) => event.action === "side.view" && event.args?.open === true),
+            "/side switched instead of replacing",
+          );
+          const leaveReplacement = mark();
+          await leave();
+          await acted("side.view", leaveReplacement, (event) => event.args?.open === false);
+        }
+        const wordsMark = mark();
+        const oldId = remoteState().side.id;
+        await sendLine("/side More about buckets");
+        await acted("side.open", wordsMark, (event) => event.args?.text === "More about buckets");
+        assert(remoteState().side.id !== oldId, "/side words did not replace");
+        await A.waitNode(A.byText(/side: A token bucket holds/), 20_000, "fresh seeded side reply");
         await A.tap(A.byId("side-close"), "close side");
         await acted("side.close", since);
         await A.waitGone(A.byId("side-close"), 10_000, "side closed");
         await leave();
+        await A.waitGone(A.byId("session-side-switch"), 10_000, "no switch after Close");
       },
     ],
     [
       "Forge: /btw asks (pending, answer), forks into the side, fails (error, Close), clears",
       async () => {
+        // Fork replaces a hidden side; its result pins cleanup even if the first poll is old.
+        await slash("side");
+        await A.waitNode(A.byId("side-composer"), 20_000, "predecessor side");
+        const predecessorMark = mark();
+        await leave();
+        await acted("side.view", predecessorMark, (event) => event.args?.open === false);
         await slash("btw");
         await A.waitNode(A.byId("btw-composer"), 20_000, "btw composer");
         const since = mark();
@@ -336,6 +443,28 @@ export function forgeSteps(ctx, { shot, auditControls, toDashboard, scrollUntil 
         await A.waitNode(A.byText(/^Is a token bucket fair$/), 20_000, "question in the side");
         assertNoMainInSide();
         shot("112-btw-forked-side-dark");
+        const forked = JSON.parse(
+          fs.readFileSync(path.join(E.PROCS, "..", "remote", String(pid()), "state.json"), "utf8"),
+        ).side;
+        const forkBackMark = mark();
+        await leave();
+        const forkBack = await acted(
+          "side.view",
+          forkBackMark,
+          (event) => event.args?.open === false,
+        );
+        assert(
+          forkBack.args.id === forked.id && forkBack.args.gen === forked.gen,
+          "Back from fork lost the accepted side pins",
+        );
+        assert(
+          !remote()
+            .slice(forkBackMark)
+            .some((event) => event.action === "btw.close"),
+          "leaving the fork sent a second btw.close",
+        );
+        await A.tap(A.byId("session-side-switch"), "re-enter forked side");
+        await A.waitNode(A.byId("side-close"), 20_000, "forked side re-entered");
         await A.tap(A.byId("side-close"), "close side");
         await E.waitFor(
           () =>

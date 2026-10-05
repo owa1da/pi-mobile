@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createSandbox, type FakeEvent, type Sandbox } from "@/host/test-support/sandbox";
 import type { PiHostService } from "@/host/service";
 import type { SessionRow } from "@/host/types";
+import { routeSessionCommand } from "@/screens/session/route-command";
 import { connectionRunner, createRemoteClient, type RemoteClient } from "./client";
 import { RemoteError } from "./errors";
 import { readBtwHistory } from "./session-file";
@@ -216,13 +217,115 @@ describe("native forge screens against the fake pi", () => {
     await until(fileHas(file, "side: A token bucket"), "side reply");
     await client.send(row, "side.send", { text: "And a leaky bucket?" });
     await until(fileHas(file, "And a leaky bucket?"), "side message");
+    await state((x) => x.side?.working === false, "side settled");
+    const transcript = fs.readFileSync(file, "utf8");
+    expect(s.view).toBe("side");
+    expect(s.commands?.some((command) => command.name === "side")).toBe(false);
+    const blocked = await client
+      .send(row, "input.submit", { text: "main" })
+      .catch((error: unknown) => error);
+    expect((blocked as RemoteError).reason).toBe("not-main");
+    await client.send(row, "side.view", { open: false });
+    await state((x) => x.view === "main" && x.side?.open === false, "side hidden");
+    await svc.sendPrompt(row, "Main while side survives");
+    const hidden = await client.readState(row);
+    await client.send(row, "side.view", {
+      open: true,
+      id: hidden!.side!.id,
+      gen: hidden!.side!.gen,
+    });
+    const shown = await state((x) => x.view === "side", "side shown");
+    expect(shown.side?.sessionFile).toBe(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(transcript);
+    await client.send(row, "side.view", { open: false, id: shown.side!.id, gen: shown.side!.gen });
+    let previousId = shown.side!.id;
+    for (const line of ["/side", "/side", "/side extra words"]) {
+      const opened: string[] = [];
+      await routeSessionCommand(
+        svc,
+        row,
+        line,
+        async (tool, arg, extra) => {
+          opened.push(tool);
+          expect(arg).toBe("");
+          expect(extra?.sideId).not.toBe(previousId);
+        },
+        client.send,
+      );
+      expect(opened).toEqual(["side"]);
+      const replacement = await state(
+        (x) => x.view === "side" && x.side?.id !== previousId,
+        "replacement side",
+      );
+      expect(replacement.side!.sessionFile).not.toBe(file);
+      expect(forgeEvents(sb, pid, "side.open").at(-1)?.args).toEqual(
+        line.includes("extra") ? { text: "extra words" } : {},
+      );
+      if (line.includes("extra"))
+        await until(fileHas(replacement.side!.sessionFile!, "extra words"), "replacement words");
+      else {
+        expect(replacement.side!.working).toBe(false);
+        const entries = fs
+          .readFileSync(replacement.side!.sessionFile!, "utf8")
+          .trim()
+          .split("\n")
+          .map((entry) => JSON.parse(entry));
+        expect(entries.at(-1)?.customType).toBe("forge-side-boundary");
+      }
+      previousId = replacement.side!.id;
+      await client.send(row, "side.view", {
+        open: false,
+        id: previousId,
+        gen: replacement.side!.gen,
+      });
+    }
     await client.send(row, "side.close", {});
     await state((x) => x.side === null, "side closed");
+    const missing = await client
+      .send(row, "side.view", { open: true })
+      .catch((error: unknown) => error);
+    expect((missing as RemoteError).code).toBe("stale");
     expect(await codeOf(client.send(row, "side.send", { text: "x" }))).toBe("stale");
+  });
+
+  it("side.view binds id/gen, is idempotent, and never hides a replacement", async () => {
+    const created = await client.send(row, "side.open", { text: "first side" });
+    const first = await state((x) => Boolean(x.side?.id), "side identity");
+    const id = first.side!.id!;
+    const gen = first.side!.gen!;
+    expect(created.data).toEqual({ id, gen });
+    expect((await client.send(row, "side.view", { open: true, id, gen })).data).toEqual({
+      id,
+      gen,
+    });
+    const hidden = await client.send(row, "side.view", { open: false, id, gen });
+    expect(hidden.data).toEqual({ id, gen: gen + 1 });
+    const shown = await client.send(row, "side.view", { open: true, id, gen: gen + 1 });
+    expect(shown.data).toEqual({ id, gen: gen + 2 });
+    expect(await codeOf(client.send(row, "side.view", { open: false, id, gen }))).toBe("stale");
+    expect((await client.readState(row))?.side).toMatchObject({ id, gen: gen + 2, open: true });
+    await client.send(row, "side.close", {});
+    await client.send(row, "side.open", { text: "replacement side" });
+    const replacement = await state(
+      (x) => Boolean(x.side?.id && x.side.id !== id),
+      "replacement identity",
+    );
+    expect(await codeOf(client.send(row, "side.view", { open: false, id, gen: gen + 2 }))).toBe(
+      "stale",
+    );
+    expect((await client.readState(row))?.side).toEqual(replacement.side);
+    await client.send(row, "side.close", {});
   });
 
   it("btw: an answer lands in the session's forge-btw entries; fork opens a side; clear empties it", async () => {
     const run = connectionRunner(sb.connection);
+    await client.send(row, "side.open", {});
+    const predecessor = await state((x) => Boolean(x.side?.id), "predecessor side");
+    await client.send(row, "side.view", {
+      open: false,
+      id: predecessor.side!.id,
+      gen: predecessor.side!.gen,
+    });
     await client.send(row, "btw.ask", { text: "Is a token bucket fair?" });
     const pending = await state((x) => x.btw?.pending === true, "btw pending");
     expect(pending.btw).toEqual({
@@ -237,8 +340,15 @@ describe("native forge screens against the fake pi", () => {
       return h.length > 0 ? h : undefined;
     }, "btw answer");
     expect(history.at(-1)?.question).toBe("Is a token bucket fair?");
-    await client.send(row, "btw.fork", {});
-    await state((x) => Boolean(x.side?.open), "forked side");
+    const fork = await client.send(row, "btw.fork", {});
+    const forked = await state((x) => Boolean(x.side?.open), "forked side");
+    expect(forked.side!.id).not.toBe(predecessor.side!.id);
+    expect(fork.data).toEqual({ id: forked.side!.id, gen: forked.side!.gen });
+    await client.send(row, "side.view", {
+      open: false,
+      ...(fork.data as { id: string; gen: number }),
+    });
+    await state((x) => x.view === "main" && x.side?.open === false, "fork hidden");
     await client.send(row, "side.close", {});
     await client.send(row, "btw.clear", {});
     expect(await readBtwHistory(run, row.sessionFile!)).toEqual([]);

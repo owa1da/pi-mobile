@@ -15,12 +15,16 @@ import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { Button } from "@/components/ui/button";
 import { connectionRunner } from "@/remote/client";
 import { readBtwHistory } from "@/remote/session-file";
+import { RemoteError } from "@/remote/errors";
+import type { RemoteChannel } from "@/screens/session/use-remote-channel";
 import type { RemoteBtw } from "@/remote/types";
 import { modelErrorKey, type BtwExchange } from "@/remote/views";
 import { useChatFeed } from "@/screens/session/use-chat-feed";
 import { connectionStore } from "@/stores/app";
 import { usePoller } from "@/stores/use-polling";
 import type { ForgeViewProps } from "./forge-screen";
+import { useSideNavigation } from "./use-side-navigation";
+import { sideRouteParams } from "./side-route";
 import {
   ErrorLine,
   ForgeFrame,
@@ -32,65 +36,107 @@ import {
   useForgeAction,
 } from "./parts";
 
-export function SideView({ hostId, channel, active, params }: ForgeViewProps) {
+export function SideView({ hostId, row, channel, active, params }: ForgeViewProps) {
   const { t } = useTranslation();
   const side = channel.state?.side;
-  const action = useForgeAction(channel);
-  const run = action.run;
-  const open = Boolean(side?.open && side.sessionFile);
   const sideFile = side?.sessionFile ?? undefined;
+  const navigation = useSideNavigation(
+    hostId,
+    row,
+    channel,
+    params.sideEntry,
+    params.sideId,
+    params.sideGen,
+  );
+  const created = navigation.created;
+  const readState = channel.read;
+  const sendRemote = channel.send;
+  const sendAction = useCallback<RemoteChannel["send"]>(
+    async (name, args) => {
+      const fresh = await readState();
+      if (
+        !fresh ||
+        fresh.pid !== row.pid ||
+        fresh.sessionId !== row.sessionId ||
+        (fresh.side?.sessionFile ?? undefined) !== sideFile
+      )
+        throw new RemoteError("stale");
+      const result = await sendRemote(name, args, { rev: fresh.rev, sessionId: row.sessionId });
+      if (name === "side.open") {
+        // Capture creation ownership before waiting for a transcript (which may not exist yet).
+        created(result?.data);
+        const opened = await readState();
+        if (opened?.pid === row.pid && opened.sessionId === row.sessionId && opened.side)
+          created(undefined, opened.side);
+      }
+      return result;
+    },
+    [created, readState, row.pid, row.sessionId, sendRemote, sideFile],
+  );
+  const action = useForgeAction({ ...channel, send: sendAction });
+  const run = action.run;
+  // `open` is terminal visibility; a hidden side still exists and owns its transcript/composer.
+  const exists = side != null;
   const working = side?.working === true;
   const source = useMemo(
     () =>
-      open
+      exists
         ? { sessionFile: sideFile, state: working ? ("working" as const) : ("idle" as const) }
         : undefined,
-    [open, sideFile, working],
+    [exists, sideFile, working],
   );
-  const feed = useChatFeed(hostId, source, active && open);
-  const seed = useRef(params.arg ?? "");
+  const feed = useChatFeed(hostId, source, active && exists);
   const boost = feed.boost;
-
+  const perform = navigation.perform;
+  const markClosed = navigation.closed;
   const send = useCallback(
-    async (text: string) => {
-      const out = await run(open ? "side.send" : "side.open", { text });
-      if (out.ok) boost();
-      return out.ok;
-    },
-    [boost, open, run],
+    (text: string) =>
+      perform(async () => {
+        const out = await run(exists ? "side.send" : "side.open", { text });
+        if (out.ok) boost();
+        return out.ok;
+      }, false),
+    [boost, exists, perform, run],
   );
-  const close = useCallback(() => void run("side.close", {}), [run]);
+  const close = useCallback(
+    () =>
+      perform(async () => {
+        const out = await run("side.close", {});
+        if (out.ok) markClosed();
+      }, undefined),
+    [markClosed, perform, run],
+  );
   const absent = side === undefined;
-  // `/side words`: open it with them, once.
-  useEffect(() => {
-    if (!channel.loaded || absent || open || !seed.current) return;
-    const text = seed.current;
-    seed.current = "";
-    void run("side.open", { text });
-  }, [absent, channel.loaded, open, run]);
+  // /side's replacement/text ran before navigation. Mounts and polling never create or send.
 
+  const clearActionError = action.clearError;
+  const clearNavigationError = navigation.clearError;
+  const clearError = useCallback(() => {
+    clearActionError();
+    clearNavigationError();
+  }, [clearActionError, clearNavigationError]);
   const closing = action.busy === "side.close";
   const right = useMemo(
     () =>
-      open ? (
+      exists ? (
         <Button variant="ghost" onPress={close} loading={closing} testID="side-close">
           {t("pi.forge.side.close")}
         </Button>
       ) : null,
-    [close, closing, open, t],
+    [close, closing, exists, t],
   );
   const unavailable = !channel.available || action.unsupported || (channel.loaded && absent);
   const ready = !unavailable && channel.loaded;
   return (
     <ForgeFrame title={t("pi.forge.titles.side")} right={right}>
-      <SideBody unavailable={unavailable} loaded={channel.loaded} open={open} feed={feed} />
-      <ErrorLine message={action.error} onDismiss={action.clearError} />
+      <SideBody unavailable={unavailable} loaded={channel.loaded} open={exists} feed={feed} />
+      <ErrorLine message={action.error ?? navigation.error} onDismiss={clearError} />
       {ready ? (
         <Composer
-          placeholder={t(open ? "pi.forge.side.placeholder" : "pi.forge.side.openPlaceholder")}
+          placeholder={t(exists ? "pi.forge.side.placeholder" : "pi.forge.side.openPlaceholder")}
           onSubmit={send}
           busy={action.busy !== null}
-          autoFocus={!open}
+          autoFocus={!exists || feed.rows.length === 0}
           testID="side-composer"
           sendTestID="side-send"
         />
@@ -113,7 +159,8 @@ function SideBody({
   if (unavailable) return <UpdateForge />;
   if (!loaded) return <Loading />;
   // forge's side draws nothing before its first message: the input's placeholder says it.
-  if (!open) return <View style={styles.fill} testID="side-empty" />;
+  if (!open || (!feed.loading && feed.rows.length === 0))
+    return <View style={styles.fill} testID="side-empty" />;
   return (
     <TranscriptProviders>
       <ChatView rows={feed.rows} loading={feed.loading} />
@@ -185,7 +232,7 @@ export function BtwView({ hostId, row, channel, active, params }: ForgeViewProps
     if (!out.ok) return;
     // forge closed its panel with the fork: leaving for the side sends no second close.
     panelOpenRef.current = false;
-    openForge(hostId, row.sessionId, "side", {}, true);
+    openForge(hostId, row.sessionId, "side", sideRouteParams(out.data), true);
   }, [hostId, row.sessionId, run]);
   const clear = useCallback(async () => {
     setConfirmClear(false);

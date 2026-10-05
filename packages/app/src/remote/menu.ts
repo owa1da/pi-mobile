@@ -58,7 +58,7 @@ export function nativeTarget(
   line: string,
 ): { tool: NativeTool; name: string; arg: string } | undefined {
   const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(line.trim());
-  if (!match) return undefined;
+  if (!match || !Object.hasOwn(NATIVE_COMMANDS, match[1])) return undefined;
   const tool = NATIVE_COMMANDS[match[1]];
   return tool ? { tool, name: match[1], arg: (match[2] ?? "").trim() } : undefined;
 }

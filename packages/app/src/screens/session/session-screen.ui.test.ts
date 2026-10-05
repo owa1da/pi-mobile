@@ -111,6 +111,17 @@ function tag(name: string): ts.JsxSelfClosingElement {
 }
 
 describe("completed session commands UI wiring", () => {
+  it("places the sole side switch in the existing header action slot, outside keyboard shift", () => {
+    expect(variable("sideSwitch").getText(source)).toContain(tag("SideSwitch").getText(source));
+    const body = findAll(
+      (node) => ts.isFunctionDeclaration(node) && node.name?.text === "SessionBody",
+    )[0];
+    expect(body.getText(source)).toContain("rightContent={sideSwitch}");
+    expect(body.getText(source).indexOf("<BackHeader")).toBeLessThan(
+      body.getText(source).indexOf("<Animated.View"),
+    );
+    expect(variable("pickNative").getText(source)).toContain("send(`/${command.name}`)");
+  });
   it("offers cached host commands without requiring a live channel", () => {
     const prop = tag("Composer").attributes.properties.find(
       (node) => ts.isJsxAttribute(node) && node.name.getText(source) === "commands",
@@ -192,13 +203,13 @@ describe("completed session mounted command picker", () => {
     const service = { ensureRemoteSession, runCommand } as unknown as HostService;
     const open = vi.fn().mockResolvedValue(undefined);
     await mount(async (command) => {
-      await routeSessionCommand(service, closed, `/${command.name}`, open);
+      await routeSessionCommand(service, closed, `/${command.name}`, open, vi.fn());
       return true;
     });
     await act(async () =>
       (container.querySelector('[data-testid="slash-row-model"]') as HTMLButtonElement).click(),
     );
-    expect(ensureRemoteSession).toHaveBeenCalledExactlyOnceWith(closed, "/model");
+    expect(ensureRemoteSession).toHaveBeenCalledExactlyOnceWith(closed);
     expect(open).not.toHaveBeenCalled();
     expect(input.value).toBe("/");
     await act(async () => ready());
@@ -206,6 +217,57 @@ describe("completed session mounted command picker", () => {
     expect(input.value).toBe("");
     expect(runCommand).not.toHaveBeenCalled();
   });
+  it.each(["typed", "menu", "words"])(
+    "main %s /side replaces an existing hidden side",
+    async (entry) => {
+      const live = { ...closed, live: true, pid: 42 };
+      const session = {
+        row: live,
+        state: { rev: 4, side: { id: "previous", gen: 2, open: false } },
+      };
+      const service = {
+        ensureRemoteSession: vi.fn().mockResolvedValue(session),
+      } as unknown as HostService;
+      const remote = vi.fn().mockResolvedValue({ data: { id: "replacement", gen: 1 } });
+      const open = vi.fn().mockResolvedValue(undefined);
+      const submit = async (line: string) => {
+        await routeSessionCommand(service, live, line, open, remote);
+        return true;
+      };
+      await act(async () =>
+        root.render(
+          React.createElement(Composer, {
+            commands: [{ name: "side", description: "Start a side conversation" }],
+            placeholder: "Message pi",
+            testID: "composer",
+            sendTestID: "send",
+            onSubmit: submit,
+            onPickNative: (command: RemoteCommand) => submit(`/${command.name}`),
+          }),
+        ),
+      );
+      const text = { menu: "/", words: "/side first words", typed: "/side" }[entry]!;
+      await act(async () => input.change(text));
+      await act(async () =>
+        (
+          container.querySelector(
+            `[data-testid="${entry === "menu" ? "slash-row-side" : "send"}"]`,
+          ) as HTMLButtonElement
+        ).click(),
+      );
+      expect(remote).toHaveBeenCalledExactlyOnceWith(
+        live,
+        "side.open",
+        entry === "words" ? { text: "first words" } : {},
+        { rev: 4, sessionId: live.sessionId },
+      );
+      expect(open).toHaveBeenCalledExactlyOnceWith("side", "", {
+        sideId: "replacement",
+        sideGen: "1",
+      });
+      expect(input.value).toBe("");
+    },
+  );
   it("keeps text on a failed native command instead of completing or clearing it", async () => {
     await mount(async () => false);
     await act(async () =>

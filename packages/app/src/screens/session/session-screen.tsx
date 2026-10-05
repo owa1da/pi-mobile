@@ -35,7 +35,8 @@ import {
 import { findRow, type SessionsEntry } from "@/stores/sessions-store";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
-import { hostNow } from "@/remote/for-service";
+import { hostNow, remoteFor } from "@/remote/for-service";
+import { SideSwitch } from "./side-switch";
 import { useAnnounceOnChange, announce } from "@/components/pi/use-announce";
 import { latestReply, nextReplyAnnouncement, previewText } from "./announce";
 import {
@@ -66,6 +67,7 @@ import type { RemoteCommand, RemoteFooter } from "@/remote/types";
 import { footerParts, type FooterPart } from "@/remote/views";
 import { takeHandBack } from "@/screens/forge/draft-store";
 import { openForge, type ForgeTool } from "@/screens/forge/parts";
+import { useSideNavigationError } from "@/screens/forge/use-side-navigation";
 import { SessionSheets, type OpenSheet, type SheetTool } from "@/screens/forge/sheets";
 import type { RemoteChannel } from "./use-remote-channel";
 
@@ -164,6 +166,7 @@ export function SessionScreen() {
         focused={focused}
         active={focused && appActive}
         onReplaced={following.follow}
+        keyboardStyle={keyboardStyle}
       />
     );
   } else if (entry?.snapshot && !leaving && !following.active) {
@@ -202,8 +205,14 @@ export function SessionScreen() {
 
   return (
     <View style={styles.screen}>
-      <BackHeader title={row?.title || t("pi.session.title")} />
-      <Animated.View style={[FILL, keyboardStyle]}>{body}</Animated.View>
+      {row ? (
+        body
+      ) : (
+        <>
+          <BackHeader title={t("pi.session.title")} />
+          <Animated.View style={[FILL, keyboardStyle]}>{body}</Animated.View>
+        </>
+      )}
     </View>
   );
 }
@@ -250,43 +259,53 @@ interface SessionBodyProps {
   focused: boolean;
   active: boolean;
   onReplaced: (pid: number) => void;
+  keyboardStyle: ReturnType<typeof useKeyboardShiftStyle>["style"];
 }
 
 /** The session with its remote channel: the chat, the composer with forge's line under it, the sheets. */
 function SessionBody(props: SessionBodyProps) {
-  const { hostId, row, entry, connection, focused, active } = props;
+  const { hostId, row, entry, connection, focused, active, keyboardStyle } = props;
+  const { t } = useTranslation();
   const channel = useRemoteChannel(hostId, row, entry, active);
   const [sheet, setSheet] = useState<OpenSheet | null>(null);
   const openNative = useCallback(
-    (tool: NativeTool, arg: string) => {
+    (tool: NativeTool, arg: string, extra: Record<string, string> = {}) => {
       if (SHEET_TOOLS.has(tool)) setSheet({ kind: tool as SheetTool, arg });
-      else openForge(hostId, row.sessionId, tool as ForgeTool, arg ? { arg } : {});
+      else
+        openForge(hostId, row.sessionId, tool as ForgeTool, { ...extra, ...(arg ? { arg } : {}) });
     },
     [hostId, row.sessionId],
   );
   const closeSheet = useCallback(() => setSheet(null), []);
   const held = channel.available && inputHeld(channel.state);
+  const sideSwitch = useMemo(
+    () => <SideSwitch hostId={hostId} row={row} channel={channel} />,
+    [hostId, row, channel],
+  );
   return (
     <>
-      <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
-      <ChatPane
-        hostId={hostId}
-        row={row}
-        entry={entry}
-        active={active}
-        connection={connection}
-        held={held}
-        channel={channel}
-        openNative={openNative}
-      />
-      <SessionSheets
-        hostId={hostId}
-        row={row}
-        channel={channel}
-        sheet={sheet}
-        onClose={closeSheet}
-        onReplaced={props.onReplaced}
-      />
+      <BackHeader title={row.title || t("pi.session.title")} rightContent={sideSwitch} />
+      <Animated.View style={[FILL, keyboardStyle]}>
+        <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
+        <ChatPane
+          hostId={hostId}
+          row={row}
+          entry={entry}
+          active={active}
+          connection={connection}
+          held={held}
+          channel={channel}
+          openNative={openNative}
+        />
+        <SessionSheets
+          hostId={hostId}
+          row={row}
+          channel={channel}
+          sheet={sheet}
+          onClose={closeSheet}
+          onReplaced={props.onReplaced}
+        />
+      </Animated.View>
     </>
   );
 }
@@ -468,7 +487,7 @@ interface ChatPaneProps {
   held: boolean;
   channel: RemoteChannel;
   /** A `/` name the app opens natively (a screen or a sheet). */
-  openNative: (tool: NativeTool, arg: string) => void;
+  openNative: (tool: NativeTool, arg: string, extra?: Record<string, string>) => void;
 }
 
 function ChatPane(props: ChatPaneProps) {
@@ -529,12 +548,18 @@ function ChatPaneBody({
           setSendError({ key: "pi.session.errors.connection" });
           return false;
         }
-        await routeSessionCommand(service, row, line, async (tool, arg) => {
-          // Publish the new row before opening a sheet/screen: it must use the resumed PID,
-          // never the closed row the user selected. This refresh itself never resumes pi.
-          await refreshSessions(hostId);
-          openNative(tool, arg);
-        });
+        await routeSessionCommand(
+          service,
+          row,
+          line,
+          async (tool, arg, extra) => {
+            // Publish the new row before opening a sheet/screen: it must use the resumed PID,
+            // never the closed row the user selected. This refresh itself never resumes pi.
+            await refreshSessions(hostId);
+            openNative(tool, arg, extra);
+          },
+          remoteFor(service).send,
+        );
         channel.boost();
         void refreshSessions(hostId);
         feed.boost();
@@ -646,9 +671,15 @@ function ChatPaneBody({
     }, [sessionId]),
   );
   const askingGlyph = useMemo(() => <SessionGlyph kind="needs" />, []);
+  const sideNavigationError = useSideNavigationError(hostId, row);
+  const clearSideError = sideNavigationError.clearError;
+  const dismissSendError = useCallback(() => {
+    dismissError();
+    clearSideError();
+  }, [clearSideError, dismissError]);
   const errorMessage = sendError
     ? [t(sendError.key), sendError.detail].filter(Boolean).join(" ")
-    : "";
+    : sideNavigationError.error;
   const working = workingRowVisible(row.state, connection.status, held);
   const activity = useMemo(
     () => (working ? <WorkingRow hostId={hostId} since={row.since} /> : null),
@@ -680,12 +711,12 @@ function ChatPaneBody({
             testID={notice.testID}
           />
         ) : null}
-        {sendError ? (
+        {errorMessage ? (
           <InlineBanner
             tone="danger"
             message={errorMessage}
             dismissLabel={t("pi.session.dismiss")}
-            onDismiss={dismissError}
+            onDismiss={dismissSendError}
             testID="chat-send-error"
           />
         ) : null}

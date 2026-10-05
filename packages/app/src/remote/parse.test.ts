@@ -124,6 +124,26 @@ describe("parseRemoteState: the contract's state.json", () => {
       expect(parseRemoteState({ ...base, input })?.input).toBeUndefined();
   });
 
+  it("keeps side ownership during startup without a session file", () => {
+    expect(
+      parseRemoteState({
+        ...base,
+        side: { id: "startup", gen: 1, open: true, working: true, sessionFile: null },
+      })?.side,
+    ).toEqual({ id: "startup", gen: 1, open: true, working: true, sessionFile: null });
+  });
+  it("keeps legacy sides without inventing ownership", () => {
+    const side = { open: false, working: false, sessionFile: "/legacy" };
+    expect(parseRemoteState({ ...base, side })?.side).toEqual(side);
+  });
+  it("drops malformed ownership fields", () => {
+    for (const gen of [-1, 1.5, "1", Infinity]) {
+      const side = parseRemoteState({ ...base, side: { id: "", gen } })?.side;
+      expect(side).not.toHaveProperty("id");
+      expect(side).not.toHaveProperty("gen");
+    }
+  });
+
   it("rejects malformed, partial, other-version and other-process files", () => {
     expect(parseRemoteState('{"v":1,"pid":12')).toBeUndefined();
     expect(parseRemoteState("[]")).toBeUndefined();

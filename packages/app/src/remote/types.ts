@@ -91,6 +91,11 @@ export interface RemoteWake {
 }
 
 export interface RemoteSide {
+  /** Stable from creation, including before sessionFile; absent on older Forge. */
+  id?: string;
+  /** Visibility generation, changed by every show/hide path. */
+  gen?: number;
+  /** Terminal visibility, not existence: a non-null side survives Back to main. */
   open: boolean;
   working: boolean;
   sessionFile: string | null;
@@ -177,6 +182,7 @@ export type RemoteAction =
   | "agent.send"
   | "agent.resume"
   | "side.open"
+  | "side.view"
   | "side.send"
   | "side.close"
   | "btw.ask"
@@ -209,6 +215,8 @@ export interface AskAnswer {
 /** Typed args for the actions this wave uses; the rest take a plain object. */
 export interface RemoteActionArgs {
   "input.submit": { text: string };
+  /** Non-destructive visibility; mismatched ownership/generation or no side is stale. */
+  "side.view": { open: boolean; id?: string; gen?: number };
   "prompt.respond": { id: string; value?: string; cancel?: boolean };
   "ask.answer": { id: string; answers: (AskAnswer | null)[] };
   "ask.dismiss": { id: string };

@@ -38,6 +38,8 @@ export interface RemoteChannel {
     args: ArgsOf<A>,
     expect?: RemoteExpect,
   ): Promise<RemoteResult>;
+  /** Fresh identity-bound state for navigation actions that must not affect a replacement side. */
+  read(): Promise<RemoteState | undefined>;
   /** Read again now and keep polling fast for a few seconds. */
   boost(): void;
 }
@@ -121,6 +123,12 @@ export function useRemoteChannel(
     [boost, hostId],
   );
 
+  const read = useCallback(async () => {
+    const service = connectionStore.getState().getService(hostId);
+    if (!service) throw new RemoteError("transport", "Not connected");
+    return remoteFor(service).readState(rowRef.current);
+  }, [hostId]);
+
   const liveCommands = available ? state?.commands : undefined;
   return {
     available,
@@ -128,6 +136,7 @@ export function useRemoteChannel(
     state: available ? state : undefined,
     loaded: available && loadedPid === pid,
     send,
+    read,
     boost,
   };
 }

@@ -22,6 +22,7 @@ import type { ArgsOf, RemoteAction } from "@/remote/types";
 import { remoteMessage } from "@/screens/session/use-answers";
 import type { RemoteChannel } from "@/screens/session/use-remote-channel";
 import { MIN_TOUCH } from "@/styles/touch";
+import { returnToSideRoute, sideRouteIntent } from "./side-route";
 
 /** Screens under /h/[hostId]/f/[sessionId]/[tool]: the CLI's views plus a checkpoint's diff and a task. */
 export type ForgeTool =
@@ -38,8 +39,16 @@ export function openForge(
 ) {
   const href = {
     pathname: "/h/[hostId]/f/[sessionId]/[tool]",
-    params: { hostId, sessionId, tool, ...extra },
+    params: {
+      hostId,
+      sessionId,
+      tool,
+      ...(tool === "side" ? sideRouteIntent(extra) : extra),
+    },
   } as const;
+  // Reuse a retained side route rather than piling up copies with competing blur cleanups,
+  // including /btw forks that otherwise replace the current route with another copy.
+  if (tool === "side" && returnToSideRoute(href.params)) return;
   if (replace) router.replace(href as never);
   else router.push(href as never);
 }

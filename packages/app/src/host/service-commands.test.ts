@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandUnavailableError, RemoteError } from "@/remote/errors";
 import type { RemoteState } from "@/remote/types";
 import type { SshConnection } from "@/ssh/types";
+import { routeSessionCommand } from "@/screens/session/route-command";
 import { HostOutcomeUnknownError } from "./errors";
 import { createHostService, type HostEnvironmentDetails } from "./service";
 import type { SessionRow } from "./types";
@@ -43,6 +44,27 @@ beforeEach(() => {
   native.send.mockReset().mockResolvedValue({ ok: true });
 });
 describe("native commands", () => {
+  it.each(["/side", "/side more words"])(
+    "explicit %s sends side.open despite the side-view menu",
+    async (line) => {
+      native.readState.mockResolvedValue({
+        ...state,
+        view: "side",
+        commands: [{ name: "clear", description: "Clear side" }],
+        side: { open: true, working: false, sessionFile: "/side" },
+      });
+      const { svc } = service();
+      const open = vi.fn();
+      await routeSessionCommand(svc, row, line, open, native.send);
+      expect(open).toHaveBeenCalledExactlyOnceWith("side", "", {});
+      expect(native.send).toHaveBeenCalledExactlyOnceWith(
+        row,
+        "side.open",
+        line === "/side" ? {} : { text: "more words" },
+        { rev: 5, sessionId: "s" },
+      );
+    },
+  );
   it("finds the new live PID, validates fresh commands and binds the action identity", async () => {
     const { svc, exec } = service();
     await svc.runCommand({ ...row, live: false, pid: 10 }, "/compact");

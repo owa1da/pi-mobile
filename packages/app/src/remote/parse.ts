@@ -217,6 +217,10 @@ function parseWake(value: unknown): RemoteWake | null {
 function parseSide(value: unknown): RemoteSide | null {
   if (!isObj(value)) return null;
   return {
+    ...(typeof value.id === "string" && value.id ? { id: value.id } : {}),
+    ...(typeof value.gen === "number" && Number.isSafeInteger(value.gen) && value.gen >= 0
+      ? { gen: value.gen }
+      : {}),
     open: value.open === true,
     working: value.working === true,
     sessionFile:

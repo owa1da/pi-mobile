@@ -131,6 +131,7 @@ export const en = {
       goneTitle: "This session is gone",
       goneBody: "It no longer appears on the host.",
       backToSessions: "Back to sessions",
+      openSide: "Open side conversation",
       thinking: "Thinking",
       compacted: "Compacted",
       jumpToLatest: "Latest",

@@ -425,7 +425,15 @@ function forgeAreas() {
   if (AREAS_CORE) return {};
   return {
     wake,
-    side: side ? { open: true, working: side.working, sessionFile: side.file } : null,
+    side: side
+      ? {
+          id: side.id,
+          gen: side.gen,
+          open: side.open,
+          working: side.working,
+          sessionFile: side.file,
+        }
+      : null,
     tasks: seedTasks(),
     checkpoints: checkpoints(),
     pins,
@@ -498,7 +506,8 @@ function openSide(seed) {
     content: "Copied main context (hidden in the side)",
     display: false,
   };
-  side = { file: sessionFileFor(`side-${id}.jsonl`, id, [...branch, boundary]), working: false };
+  side = { id, gen: 1, file: null, open: true, working: false };
+  side.file = sessionFileFor(`side-${id}.jsonl`, id, [...branch, boundary]);
   if (seed) sideTurn(seed);
 }
 function sideTurn(question) {
@@ -680,12 +689,31 @@ function runTasks(action, args) {
   }
 }
 
+function sideView(args) {
+  if (typeof args.open !== "boolean") return bad("open must be boolean");
+  if (!side || (args.id !== undefined && args.id !== side.id))
+    return { code: "stale", message: "the side changed" };
+  if (args.gen !== undefined && args.gen !== side.gen)
+    return { code: "stale", message: "side visibility changed" };
+  if (side.open !== args.open) {
+    side.open = args.open;
+    side.gen++;
+  }
+  return ok({ id: side.id, gen: side.gen });
+}
+
 function runSide(action, args) {
+  if (action === "side.view") return sideView(args);
+  if (action.startsWith("side.") && (openDialog || btw?.open))
+    return { code: "refused", message: "a dialog or panel has input", data: { reason: "busy" } };
   switch (action) {
     case "side.open":
-      if (side) return { code: "refused", message: "the side is open", data: { reason: "gate" } };
+      if (side?.open)
+        return { code: "refused", message: "the side has input", data: { reason: "gate" } };
+      // Desktop /side replaces even a hidden existing side; openSide's fresh identity also
+      // retires the old turn (sideTurn's completion checks its captured conversation).
       openSide(argText(args.text));
-      return ok();
+      return ok({ id: side.id, gen: side.gen });
     case "side.send":
       if (!side) return { code: "stale", message: "the side is closed" };
       if (!argText(args.text)) return bad("text");
@@ -695,6 +723,13 @@ function runSide(action, args) {
       if (!side) return { code: "stale", message: "the side is closed" };
       side = null;
       return ok();
+    default:
+      return runBtw(action, args);
+  }
+}
+
+function runBtw(action, args) {
+  switch (action) {
     case "btw.ask": {
       const question = argText(args.text);
       if (!question) return bad("text");
@@ -725,11 +760,12 @@ function runSide(action, args) {
     case "btw.fork":
       if (!btwLast) return bad("nothing to fork");
       btw = null;
-      if (side) return { code: "refused", message: "the side is open", data: { reason: "gate" } };
+      if (side?.open)
+        return { code: "refused", message: "the side is open", data: { reason: "gate" } };
       openSide("");
       appendTo(side.file, "user", btwLast.question);
       appendTo(side.file, "assistant", btwLast.answer);
-      return ok();
+      return ok({ id: side.id, gen: side.gen });
     case "btw.clear":
       append({ type: "custom", customType: "forge-btw-clear", data: {} });
       btwLast = null;
@@ -1004,6 +1040,13 @@ function footerState() {
   };
 }
 
+function remoteView() {
+  if (openDialog) return "dialog";
+  if (btw?.open) return "panel:btw";
+  if (side?.open) return "side";
+  return "main";
+}
+
 function writeRemoteState() {
   if (!REMOTE || !remoteReady) return;
   rev++;
@@ -1013,13 +1056,14 @@ function writeRemoteState() {
     sessionId,
     rev,
     updatedAt: Date.now(),
-    view: openDialog ? "dialog" : "main",
+    view: remoteView(),
     draft: draftLine.trim() !== "",
     input: { submit: true, maxBytes: 60 * 1024 },
     prompt: openDialog,
     questions: asks,
     footer: footerState(),
-    commands: COMMANDS,
+    // The side's menu does not advertise /side: native routing must not validate against it.
+    commands: side?.open ? COMMANDS.filter((command) => command.name !== "side") : COMMANDS,
     ...forgeAreas(),
   };
   const file = path.join(remoteRoot, "state.json");
@@ -1217,6 +1261,8 @@ function submitInput(args) {
     return { code: "invalid", message: "nonempty text up to 61440 bytes required" };
   if (openDialog || asks.some((q) => q.blocking))
     return { code: "refused", message: "answer the dialog first", data: { reason: "busy" } };
+  if (side?.open)
+    return { code: "refused", message: "main is not visible", data: { reason: "not-main" } };
   log({ kind: "remote", action: "input.submit", by: "app", text: args.text });
   if (args.text === "/quit") setTimeout(quit, 1800);
   else submit(args.text, false);
@@ -1235,6 +1281,8 @@ function act(message) {
     message.action !== "input.submit"
   )
     return { code: "stale", message: "the state changed" };
+  if (message.expect?.sessionId !== undefined && message.expect.sessionId !== sessionId)
+    return { code: "stale", message: "the session changed" };
   const args = isObject(message.args) ? message.args : {};
   switch (message.action) {
     case "prompt.respond":
