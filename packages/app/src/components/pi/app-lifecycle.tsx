@@ -10,10 +10,12 @@ import {
   useHostKeyPrompt,
 } from "@/stores/app";
 import { useAppActive } from "@/stores/use-polling";
+import { startNotifications } from "@/notifications/runtime";
 import { HostKeyTrustSheet } from "./host-key-sheet";
 
 export function AppLifecycle() {
   const active = useAppActive();
+  useEffect(startNotifications, []);
   useEffect(() => {
     void hostsStore.getState().load();
     void hostKeyAlgorithms.load();

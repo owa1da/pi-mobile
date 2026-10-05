@@ -87,7 +87,7 @@ export function HostsScreen() {
   );
   const cancelDelete = useCallback(() => setDeleteTarget(null), []);
   const confirmDelete = useCallback(() => {
-    if (deleteTarget) deleteHostEverywhere(deleteTarget.id);
+    if (deleteTarget) void deleteHostEverywhere(deleteTarget.id).catch(() => undefined);
     setDeleteTarget(null);
   }, [deleteTarget]);
 

@@ -21,6 +21,7 @@ import { SessionGlyph } from "@/components/pi/session-glyph";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { useToast } from "@/contexts/toast-context";
 import type { SessionRow } from "@/host/types";
+import { useNow } from "@/hooks/use-now";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
 import { useReportPlace } from "@/navigation/place-restorer";
 import { restoredSessionOutcome } from "@/navigation/restore-place";
@@ -442,25 +443,15 @@ function SessionFooter({
   );
 }
 
-/** Ticks once a second while `on` (the working row's clock). */
-function useSecondTick(on: boolean): void {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!on) return undefined;
-    const timer = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(timer);
-  }, [on]);
-}
-
 /**
  * pi's working row at the newest transcript edge: spinner and verb in the working colour,
  * the run's clock muted. The app cannot see forge's per-run verb or token count, so it shows
  * pi's own verb and the clock only.
  */
-function WorkingRow({ hostId, since }: { hostId: string; since: number }) {
+function WorkingRow({ hostId, since, active }: { hostId: string; since: number; active: boolean }) {
   const { t } = useTranslation();
-  useSecondTick(true);
-  const clock = workingClock(since, hostNow(connectionStore.getState().getService(hostId)));
+  const now = useNow(1000, active);
+  const clock = workingClock(since, hostNow(connectionStore.getState().getService(hostId), now));
   return (
     <View
       style={styles.workingRow}
@@ -682,8 +673,8 @@ function ChatPaneBody({
     : sideNavigationError.error;
   const working = workingRowVisible(row.state, connection.status, held);
   const activity = useMemo(
-    () => (working ? <WorkingRow hostId={hostId} since={row.since} /> : null),
-    [working, hostId, row.since],
+    () => (working ? <WorkingRow hostId={hostId} since={row.since} active={active} /> : null),
+    [working, hostId, row.since, active],
   );
 
   return (

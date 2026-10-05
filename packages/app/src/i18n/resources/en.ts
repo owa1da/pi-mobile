@@ -12,6 +12,13 @@ export const en = {
       connecting: "Connecting…",
       keyChanged: "Host key changed",
     },
+    notifications: {
+      title: "Notifications",
+      hint: "When a session finishes or needs input.",
+      denied: "Notifications are off in Settings.",
+      settings: "Open Settings",
+      error: "Could not update notifications. Try again.",
+    },
     hostForm: {
       addTitle: "Add host",
       editTitle: "Edit host",
@@ -42,7 +49,8 @@ export const en = {
       save: "Save",
       delete: "Delete host",
       deleteTitle: "Delete {{label}}?",
-      deleteBody: "Its saved key or password is removed from this phone. The host is not touched.",
+      deleteBody:
+        "Its saved key or password is removed from this phone. Sessions stay on the host.",
       deleteConfirm: "Delete",
       cancel: "Cancel",
       errors: {

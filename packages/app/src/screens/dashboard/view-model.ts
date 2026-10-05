@@ -48,6 +48,23 @@ export function countParts(counts: Record<SessionSection, number>): CountPart[] 
   );
 }
 
+const hostClocks = new Map<string, number>();
+/**
+ * Host seconds that never step back for a late listing (sampled before a slow reply), so ages only
+ * count up. A backward jump of 30 s or more is a real clock change and is taken as is.
+ */
+export function steadyHostNow(hostId: string, hostNowSec: number): number {
+  const last = hostClocks.get(hostId);
+  const next =
+    last !== undefined && hostNowSec < last && last - hostNowSec < 30 ? last : hostNowSec;
+  hostClocks.set(hostId, next);
+  return next;
+}
+/** Tests: forget every host's clock. */
+export function resetHostClocks(): void {
+  hostClocks.clear();
+}
+
 /** Compact age against the host clock: 41s, 5m, 3h, 2d. */
 export function formatAge(sinceMs: number, hostNowSec: number): string {
   const seconds = Math.max(0, Math.floor(hostNowSec - sinceMs / 1000));

@@ -11,6 +11,7 @@ import {
   View,
   type SectionListData,
   type SectionListRenderItem,
+  type ViewToken,
 } from "react-native";
 import Animated from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
@@ -23,6 +24,7 @@ import { MutedSpinner } from "@/components/pi/icons";
 import { SessionRow } from "@/components/pi/session-row";
 import { useToast } from "@/contexts/toast-context";
 import type { SessionRow as SessionRowData, SessionSection, SessionsSnapshot } from "@/host/types";
+import { useNow } from "@/hooks/use-now";
 import { useKeyboardShiftStyle } from "@/keyboard/shift";
 import { useReportPlace } from "@/navigation/place-restorer";
 import { friendlyHostError } from "@/screens/session/send-errors";
@@ -37,7 +39,13 @@ import {
 } from "@/stores/app";
 import { startAndLocate } from "@/stores/start-session";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
-import { buildSections, countParts, type DashboardSection } from "./view-model";
+import {
+  buildSections,
+  countParts,
+  formatAge,
+  steadyHostNow,
+  type DashboardSection,
+} from "./view-model";
 import { MIN_TOUCH } from "@/styles/touch";
 
 const POLL_MS = 2000;
@@ -89,11 +97,20 @@ interface SessionsListProps {
   hostId: string;
   hostLabel: string;
   snapshot: SessionsSnapshot;
+  fetchedAt: number;
+  active: boolean;
   /** The counts line; scrolls with the list, as on forge's page. */
   summary: string;
 }
 
-function SessionsList({ hostId, hostLabel, snapshot, summary }: SessionsListProps) {
+function SessionsList({
+  hostId,
+  hostLabel,
+  snapshot,
+  fetchedAt,
+  active,
+  summary,
+}: SessionsListProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -111,10 +128,27 @@ function SessionsList({ hostId, hostLabel, snapshot, summary }: SessionsListProp
     [hostId],
   );
   const showMore = useCallback(() => setExpanded(true), []);
-  const hostNow = snapshot.hostNow;
+  const [visibleKeys, setVisibleKeys] = useState<Set<string> | null>(null);
+  const onViewableItemsChanged = useCallback(
+    ({ viewableItems }: { viewableItems: ViewToken<SessionRowData>[] }) => {
+      setVisibleKeys(new Set(viewableItems.map(({ item }) => item.key)));
+    },
+    [],
+  );
+  const listedRows = sections.flatMap((section) => section.data);
+  const visibleRows = listedRows.filter((row) => visibleKeys === null || visibleKeys.has(row.key));
+  const ticking = active && visibleRows.length > 0;
+  const slowNow = useNow(15_000, ticking);
+  const slowHostNow = snapshot.hostNow + (slowNow - fetchedAt) / 1000;
+  const young = visibleRows.some((row) => slowHostNow - row.since / 1000 < 60);
+  const secondNow = useNow(1000, ticking && young);
+  const now = young ? secondNow : slowNow;
+  const hostNow = steadyHostNow(hostId, snapshot.hostNow + (now - fetchedAt) / 1000);
 
   const renderItem = useCallback<SectionListRenderItem<SessionRowData, DashboardSection>>(
-    ({ item }) => <SessionRow row={item} hostNow={hostNow} onPress={onPressRow} />,
+    ({ item }) => (
+      <SessionRow row={item} age={formatAge(item.since, hostNow)} onPress={onPressRow} />
+    ),
     [hostNow, onPressRow],
   );
   const renderSectionHeader = useCallback(
@@ -162,6 +196,8 @@ function SessionsList({ hostId, hostLabel, snapshot, summary }: SessionsListProp
   return (
     <SectionList
       sections={sections}
+      extraData={hostNow}
+      onViewableItemsChanged={onViewableItemsChanged}
       ListHeaderComponent={listHeader}
       keyExtractor={keyOf}
       renderItem={renderItem}
@@ -221,6 +257,8 @@ export function DashboardScreen() {
         hostId={hostId}
         hostLabel={host?.label ?? ""}
         snapshot={snapshot}
+        fetchedAt={entry?.fetchedAt ?? Date.now()}
+        active={focused && appActive}
         summary={summary}
       />
     );

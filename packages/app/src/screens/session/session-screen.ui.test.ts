@@ -284,7 +284,7 @@ describe("session activity UI wiring", () => {
     expect(ts.isCallExpression(activity)).toBe(true);
     const memo = activity as ts.CallExpression;
     expect(memo.expression.getText(source)).toBe("useMemo");
-    expect(memo.arguments[1].getText(source)).toBe("[working, hostId, row.since]");
+    expect(memo.arguments[1].getText(source)).toBe("[working, hostId, row.since, active]");
     const render = memo.arguments[0] as ts.ArrowFunction;
     expect(ts.isArrowFunction(render)).toBe(true);
     const body = render.body as ts.ParenthesizedExpression;
@@ -294,6 +294,7 @@ describe("session activity UI wiring", () => {
     expect(conditional.condition.getText(source)).toBe("working");
     expect(conditional.whenFalse.kind).toBe(ts.SyntaxKind.NullKeyword);
     expect(conditional.whenTrue).toBe(tag("WorkingRow"));
+    expect(tag("WorkingRow").getText(source)).toContain("active={active}");
     const chat = tag("ChatView");
     const prop = chat.attributes.properties.find(
       (node) => ts.isJsxAttribute(node) && node.name.getText(source) === "activity",
@@ -320,6 +321,7 @@ describe("session activity UI wiring", () => {
       (node) => ts.isFunctionDeclaration(node) && node.name?.text === "WorkingRow",
     )[0];
     expect(workingFunction.getText(source)).not.toContain("numberOfLines");
+    expect(workingFunction.getText(source)).toContain("useNow(1000, active)");
     expect(workingFunction.getText(source)).toContain("workingClock(since, hostNow(");
     expect(workingFunction.getText(source)).toContain('testID="chat-working"');
   });

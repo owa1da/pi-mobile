@@ -17,6 +17,7 @@ import { ToastProvider } from "@/contexts/toast-context";
 import { KeyboardShiftProvider } from "@/keyboard/shift";
 import { PlaceRestorer, savePlaceForReload } from "@/navigation/place-restorer";
 import { ThemedStack } from "@/navigation/themed-stack";
+import { NotificationNavigation } from "@/notifications/components";
 import { fontScaleChanged } from "@/utils/font-scale";
 import { reloadForFontScale } from "../../modules/pi-font-scale";
 
@@ -93,6 +94,7 @@ export default function RootLayout() {
             </ThemedStack>
           </SideInsets>
           <AppLifecycle />
+          <NotificationNavigation />
           <PlaceRestorer />
           <HostKeyPromptHost />
         </RootProviders>

@@ -12,16 +12,16 @@ import {
 import { StyleSheet } from "react-native-unistyles";
 import type { SessionRow as SessionRowData } from "@/host/types";
 import { rowAccessibilityLabel, rowStateWord } from "@/screens/dashboard/glyphs";
-import { formatAge, rowGlyph, shortModel } from "@/screens/dashboard/view-model";
+import { rowGlyph, shortModel } from "@/screens/dashboard/view-model";
 import { SessionGlyph } from "./session-glyph";
 
 interface SessionRowProps {
   row: SessionRowData;
-  hostNow: number;
+  age: string;
   onPress: (row: SessionRowData) => void;
 }
 
-export const SessionRow = memo(function SessionRow({ row, hostNow, onPress }: SessionRowProps) {
+export const SessionRow = memo(function SessionRow({ row, age, onPress }: SessionRowProps) {
   const { t } = useTranslation();
   const handlePress = useCallback(() => onPress(row), [onPress, row]);
   const rowStyle = useCallback(
@@ -30,7 +30,6 @@ export const SessionRow = memo(function SessionRow({ row, hostNow, onPress }: Se
   );
   const title = row.title || t("pi.session.title");
   const model = shortModel(row.model);
-  const age = formatAge(row.since, hostNow);
   // At a large system font the row has two lines: the title alone on the first, `model · age` in
   // muted small text under it, so the model stays on every row and nothing wraps.
   const { fontScale } = useWindowDimensions();

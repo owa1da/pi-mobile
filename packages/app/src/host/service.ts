@@ -75,6 +75,11 @@ export interface HostEnvironmentDetails extends HostEnvironment {
   procsDir: string;
 }
 
+/** The already-trusted SSH exec channel, reused for push device registration. */
+export function trustedHostConnection(service: PiHostService): SshConnection {
+  return (service as HostServiceImpl).connection;
+}
+
 export interface PiHostService extends HostService {
   probe(): Promise<HostEnvironmentDetails>;
   /** The probed environment (probing once if needed); never re-probes a cached host. */

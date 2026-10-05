@@ -61,6 +61,7 @@ export default ({ config }) => ({
   },
   plugins: [
     "expo-router",
+    ["expo-notifications", { enableBackgroundRemoteNotifications: false }],
     ["./plugins/with-android-async-storage-size", 64],
     [
       "expo-splash-screen",

@@ -5,6 +5,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useRootNavigationState } from "expo-router";
 import { useEffect } from "react";
 import { hostsStore, useHostsLoaded } from "@/stores/app";
+import { notificationNavigation, notificationStartup } from "@/notifications/runtime";
 import {
   currentPlace,
   reportPlace,
@@ -42,9 +43,14 @@ export function PlaceRestorer() {
     if (!hostsLoaded || !navigationReady || restoreStarted) return;
     restoreStarted = true;
     void (async () => {
+      await notificationStartup;
       const place = await takeSavedPlace(AsyncStorage, Date.now()).catch(() => null);
+      if (!notificationNavigation.canRestore()) return;
       const steps = restoreSteps(place, (id) => hostsStore.getState().getHost(id));
-      for (const step of steps) router.push(step);
+      for (const step of steps) {
+        if (!notificationNavigation.canRestore()) return;
+        router.push(step);
+      }
     })();
   }, [hostsLoaded, navigationReady]);
   return null;

@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import type { SavedHost } from "@/host/types";
+import { NotificationsToggle } from "@/notifications/components";
 import type { AuthMode } from "@/screens/hosts/host-form-logic";
 import { useHostForm, type HostForm } from "@/screens/hosts/use-host-form";
 import { MutedSpinner, ThemedCheck, ThemedCopy, foregroundColor } from "./icons";
@@ -85,6 +86,7 @@ export function HostFormSheet({
       <View style={styles.body}>
         <AddressFields form={form} />
         <AuthSection form={form} />
+        {host ? <NotificationsToggle hostId={host.id} /> : null}
         {form.saveError ? (
           <Text style={styles.error} testID="host-save-error">
             {form.saveError}

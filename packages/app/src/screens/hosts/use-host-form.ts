@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "@/contexts/toast-context";
 import type { SavedHost } from "@/host/types";
+import { forgetHostNotifications } from "@/notifications/runtime";
 import { getSshClient } from "@/ssh";
 import { connectionStore, hostsStore, sessionsStore } from "@/stores/app";
 import {
@@ -53,10 +54,11 @@ async function persistHost(
 }
 
 /** Forget a host on this phone: drop its connection, cached sessions, record and secret. */
-export function deleteHostEverywhere(hostId: string): void {
+export async function deleteHostEverywhere(hostId: string): Promise<void> {
+  await forgetHostNotifications(hostId);
   connectionStore.getState().disconnect(hostId);
   sessionsStore.getState().clear(hostId);
-  void hostsStore.getState().removeHost(hostId);
+  await hostsStore.getState().removeHost(hostId);
 }
 
 export function useHostForm(
