@@ -31,21 +31,12 @@ export class ChatFeedCache {
 
 export const chatFeedCache = new ChatFeedCache();
 
-function itemSignature(item: ChatItem): string {
-  switch (item.kind) {
-    case "tool":
-      return `${item.id}:${item.status}:${item.result?.length ?? 0}`;
-    case "divider":
-      return `${item.id}:${item.label}`;
-    default:
-      return `${item.id}:${item.text.length}`;
-  }
-}
-
 export function sameItems(a: readonly ChatItem[], b: readonly ChatItem[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (itemSignature(a[i]) !== itemSignature(b[i])) return false;
+    // Host items are JSON data. Compare all content, including tool arguments and metadata:
+    // lengths alone miss replacements and leave useChatFeed's memoized rows stale.
+    if (a[i] !== b[i] && JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false;
   }
   return true;
 }

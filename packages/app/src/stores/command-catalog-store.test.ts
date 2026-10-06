@@ -4,6 +4,7 @@ import {
   catalogStorageKey,
   refreshCommandCatalog,
   completedCommands,
+  latestCommands,
 } from "./command-catalog-store";
 import { createHostsStore } from "./hosts-store";
 import { createMemorySecretStore } from "./secret-store";
@@ -37,6 +38,20 @@ const memory = () => {
 };
 
 describe("phone command discovery", () => {
+  it("dashboard latest uses entry freshness, phone/offline and memory fallbacks, including an empty list", () => {
+    const host = catalog(200);
+    const phone = catalog(300);
+    phone.latest.commands = [{ name: "phone-new", description: null }];
+    const state = { remote: { h: host }, phone: { h: phone } };
+    expect(latestCommands(state, "h")).toBe(phone.latest.commands);
+    host.latest.at = 400;
+    expect(latestCommands(state, "h")).toBe(host.latest.commands);
+    host.latest.commands = [];
+    expect(latestCommands(state, "h")).toEqual([]);
+    expect(latestCommands({ remote: {}, phone: { h: phone } }, "h")).toBe(phone.latest.commands);
+    const remembered = [{ name: "remembered", description: null }];
+    expect(latestCommands(state, "missing", remembered)).toBe(remembered);
+  });
   it("persists across a fresh store/relaunch and isolates saved hosts", async () => {
     const storage = memory();
     const first = createCommandCatalogStore(storage);

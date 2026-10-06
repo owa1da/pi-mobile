@@ -38,6 +38,8 @@ interface ToolCallDetailsContentProps {
   maxHeight?: number;
   fillAvailableHeight?: boolean;
   showLoadingSkeleton?: boolean;
+  // The drawer owns vertical scrolling; standalone/inline previews keep their existing caps.
+  scrollManagedBySheet?: boolean;
 }
 
 interface DetailStyles {
@@ -53,6 +55,7 @@ interface DetailStyles {
   resolvedMaxHeight: number | undefined;
   shouldFill: boolean;
   isFullBleed: boolean;
+  scrollManagedBySheet: boolean;
 }
 
 function resolveIsFullBleed(detail: ToolCallDetail | undefined): boolean {
@@ -72,6 +75,7 @@ function useDetailStyles(
   detail: ToolCallDetail | undefined,
   resolvedMaxHeight: number | undefined,
   fillAvailableHeight: boolean,
+  scrollManagedBySheet: boolean,
 ): DetailStyles {
   const isFullBleed = resolveIsFullBleed(detail);
   const shouldFill = resolveShouldFill(detail, fillAvailableHeight);
@@ -135,7 +139,29 @@ function useDetailStyles(
     resolvedMaxHeight,
     shouldFill,
     isFullBleed,
+    scrollManagedBySheet,
   };
+}
+
+function DetailVerticalScroll({
+  scrollManagedBySheet,
+  children,
+  style,
+  contentContainerStyle,
+  ...props
+}: React.ComponentProps<typeof RNScrollView> & { scrollManagedBySheet: boolean }) {
+  if (scrollManagedBySheet) {
+    return (
+      <View style={style}>
+        <View style={contentContainerStyle}>{children}</View>
+      </View>
+    );
+  }
+  return (
+    <ScrollView {...props} style={style} contentContainerStyle={contentContainerStyle}>
+      {children}
+    </ScrollView>
+  );
 }
 
 function useDiffLines(detail: ToolCallDetail | undefined): DiffLine[] | undefined {
@@ -161,7 +187,8 @@ function ShellDetailSection({ command, output, ds }: ShellDetailProps) {
   return (
     <View style={ds.sectionFillStyle}>
       <View style={ds.codeBlockFillStyle}>
-        <ScrollView
+        <DetailVerticalScroll
+          scrollManagedBySheet={ds.scrollManagedBySheet}
           style={ds.codeVerticalScrollStyle}
           contentContainerStyle={styles.codeVerticalContent}
           nestedScrollEnabled
@@ -181,7 +208,7 @@ function ShellDetailSection({ command, output, ds }: ShellDetailProps) {
               </Text>
             </View>
           </ScrollView>
-        </ScrollView>
+        </DetailVerticalScroll>
       </View>
     </View>
   );
@@ -205,7 +232,8 @@ function WorktreeSetupDetailSection({
   return (
     <View style={ds.sectionFillStyle}>
       <View style={ds.codeBlockFillStyle}>
-        <ScrollView
+        <DetailVerticalScroll
+          scrollManagedBySheet={ds.scrollManagedBySheet}
           style={ds.codeVerticalScrollStyle}
           contentContainerStyle={styles.codeVerticalContent}
           nestedScrollEnabled
@@ -223,7 +251,7 @@ function WorktreeSetupDetailSection({
               </Text>
             </View>
           </ScrollView>
-        </ScrollView>
+        </DetailVerticalScroll>
       </View>
     </View>
   );
@@ -369,7 +397,8 @@ function SubAgentDetailSection({
   return (
     <View style={ds.sectionFillStyle}>
       <View style={ds.codeBlockFillStyle}>
-        <ScrollView
+        <DetailVerticalScroll
+          scrollManagedBySheet={ds.scrollManagedBySheet}
           style={ds.codeVerticalScrollStyle}
           contentContainerStyle={styles.codeVerticalContent}
           nestedScrollEnabled
@@ -401,7 +430,7 @@ function SubAgentDetailSection({
               />
             </View>
           </ScrollView>
-        </ScrollView>
+        </DetailVerticalScroll>
       </View>
     </View>
   );
@@ -435,6 +464,7 @@ interface ScrollableContentProps {
   // Drives syntax highlighting (extension only) and, with startLine, a gutter.
   filePath?: string | null;
   startLine?: number;
+  wrapLines?: boolean;
 }
 
 function ScrollableTextSection({
@@ -443,28 +473,39 @@ function ScrollableTextSection({
   wrapInSectionFill = true,
   filePath,
   startLine,
+  wrapLines = false,
 }: ScrollableContentProps) {
   const keyedLines = useMemo(
     () => (filePath ? highlightToKeyedLines(content, extensionFromPath(filePath)) : null),
     [content, filePath],
   );
+  const text = keyedLines ? (
+    <HighlightedLines lines={keyedLines} startLine={startLine} wrapLines={wrapLines} />
+  ) : (
+    <Text
+      selectable
+      style={[styles.scrollText, wrapLines && styles.wrappedText]}
+      dataSet={CODE_SURFACE_DATASET}
+    >
+      {content}
+    </Text>
+  );
   const body = (
-    <ScrollView
+    <DetailVerticalScroll
+      scrollManagedBySheet={ds.scrollManagedBySheet}
       style={ds.scrollAreaFillStyle}
       contentContainerStyle={styles.scrollContent}
       nestedScrollEnabled
       showsVerticalScrollIndicator={true}
     >
-      <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator={true}>
-        {keyedLines ? (
-          <HighlightedLines lines={keyedLines} startLine={startLine} />
-        ) : (
-          <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
-            {content}
-          </Text>
-        )}
-      </ScrollView>
-    </ScrollView>
+      {wrapLines ? (
+        <View style={styles.wrappedContent}>{text}</View>
+      ) : (
+        <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator={true}>
+          {text}
+        </ScrollView>
+      )}
+    </DetailVerticalScroll>
   );
   if (!wrapInSectionFill) return body;
   return <View style={ds.sectionFillStyle}>{body}</View>;
@@ -479,7 +520,8 @@ interface FetchDetailProps {
 function FetchDetailSection({ url, result, ds }: FetchDetailProps) {
   return (
     <View style={ds.sectionFillStyle}>
-      <ScrollView
+      <DetailVerticalScroll
+        scrollManagedBySheet={ds.scrollManagedBySheet}
         style={ds.scrollAreaFillStyle}
         contentContainerStyle={styles.scrollContent}
         nestedScrollEnabled
@@ -490,7 +532,7 @@ function FetchDetailSection({ url, result, ds }: FetchDetailProps) {
             {result ? `${url}\n\n${result}` : url}
           </Text>
         </ScrollView>
-      </ScrollView>
+      </DetailVerticalScroll>
     </View>
   );
 }
@@ -498,7 +540,8 @@ function FetchDetailSection({ url, result, ds }: FetchDetailProps) {
 function ScrollablePlainTextSection({ text, ds }: { text: string; ds: DetailStyles }) {
   return (
     <View style={styles.section}>
-      <ScrollView
+      <DetailVerticalScroll
+        scrollManagedBySheet={ds.scrollManagedBySheet}
         style={ds.scrollAreaStyle}
         contentContainerStyle={styles.scrollContent}
         nestedScrollEnabled
@@ -507,7 +550,7 @@ function ScrollablePlainTextSection({ text, ds }: { text: string; ds: DetailStyl
         <Text selectable style={styles.plainText}>
           {text}
         </Text>
-      </ScrollView>
+      </DetailVerticalScroll>
     </View>
   );
 }
@@ -525,7 +568,8 @@ function buildSearchSections(detail: SearchDetail, ds: DetailStyles): ReactNode[
   if (detail.content) {
     out.push(
       <View key="search-content" style={styles.section}>
-        <ScrollView
+        <DetailVerticalScroll
+          scrollManagedBySheet={ds.scrollManagedBySheet}
           style={ds.scrollAreaStyle}
           contentContainerStyle={styles.scrollContent}
           nestedScrollEnabled
@@ -536,7 +580,7 @@ function buildSearchSections(detail: SearchDetail, ds: DetailStyles): ReactNode[
               {detail.content}
             </Text>
           </ScrollView>
-        </ScrollView>
+        </DetailVerticalScroll>
       </View>,
     );
   }
@@ -728,6 +772,7 @@ function buildDetailSections(
         ds={ds}
         filePath={detail.filePath}
         startLine={detail.offset ?? 1}
+        wrapLines
       />,
     ];
   }
@@ -789,10 +834,12 @@ export function ToolCallDetailsContent({
   maxHeight,
   fillAvailableHeight = false,
   showLoadingSkeleton = false,
+  scrollManagedBySheet = false,
 }: ToolCallDetailsContentProps) {
   const { t } = useTranslation();
-  const resolvedMaxHeight = fillAvailableHeight ? undefined : (maxHeight ?? 300);
-  const ds = useDetailStyles(detail, resolvedMaxHeight, fillAvailableHeight);
+  const resolvedMaxHeight =
+    scrollManagedBySheet || fillAvailableHeight ? undefined : (maxHeight ?? 300);
+  const ds = useDetailStyles(detail, resolvedMaxHeight, fillAvailableHeight, scrollManagedBySheet);
   const diffLines = useDiffLines(detail);
 
   const sections: ReactNode[] = buildDetailSections(toolName, detail, diffLines, ds, t);
@@ -952,6 +999,15 @@ const styles = StyleSheet.create((theme) => {
             overflowWrap: "normal",
           }
         : null),
+    },
+    wrappedContent: {
+      width: "100%",
+      minWidth: 0,
+    },
+    wrappedText: {
+      flexShrink: 1,
+      minWidth: 0,
+      ...(isWeb ? { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } : null),
     },
     shellPrompt: {
       color: theme.colors.foregroundMuted,

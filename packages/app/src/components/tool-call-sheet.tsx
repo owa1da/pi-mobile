@@ -1,9 +1,16 @@
 import React, { createContext, useContext, useCallback, useMemo } from "react";
 import type { ReactNode } from "react";
-import { View, Text, Pressable, useWindowDimensions } from "react-native";
+import { View, Text, Pressable, Keyboard, useWindowDimensions } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
+import {
+  BottomSheetScrollView,
+  KEYBOARD_STATUS,
+  useBottomSheetInternal,
+} from "@gorhom/bottom-sheet";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { getBottomSheetVisibleContentHeight } from "./adaptive-modal-sheet-layout";
 import { X } from "lucide-react-native";
 import type { ToolCallDetail } from "@/types/protocol/agent-types";
 import {
@@ -91,11 +98,13 @@ export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) 
   const [sheetData, setSheetData] = React.useState<ToolCallSheetData | null>(null);
   const [isSheetOpen, setIsSheetOpen] = React.useState(false);
 
-  // Fitted to its content like every other sheet, never above 90% of the screen.
-  const { height: windowHeight } = useWindowDimensions();
-  const maxSheet = Math.floor(windowHeight * 0.9);
+  // Reading needs room even for short output: 60% minimum, 92% expanded.
+  // Landscape starts expanded so the fixed header doesn't crowd the preview.
+  const { width, height } = useWindowDimensions();
+  const snapPoints = useMemo(() => (width > height ? ["92%"] : ["60%", "92%"]), [width, height]);
 
   const openToolCall = useCallback((data: ToolCallSheetData) => {
+    Keyboard.dismiss();
     setSheetData(data);
     setIsSheetOpen(true);
   }, []);
@@ -130,8 +139,8 @@ export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) 
         ref={bottomSheetRef}
         contextBridge={null}
         index={0}
-        enableDynamicSizing
-        maxDynamicContentSize={maxSheet}
+        snapPoints={snapPoints}
+        enableDynamicSizing={false}
         onChange={handleSheetChange}
         onDismiss={handleToolCallSheetDismiss}
         backdropOpacity={0.5}
@@ -150,11 +159,40 @@ interface ToolCallSheetContentProps {
   onClose: () => void;
 }
 
+// Gorhom sizes its content to the largest detent, not the currently visible one.
+// Bound the whole flex layout to the live position so the tail is reachable at both snaps.
+// Keep Reanimated geometry on a plain style, outside Unistyles' native tracking path.
+const VISIBLE_CONTENT_STYLE = { minHeight: 0, overflow: "hidden" as const };
+const SCROLL_VIEW_STYLE = { flex: 1, minHeight: 0 };
+
+function ToolCallSheetViewport({ children }: { children: ReactNode }) {
+  const { animatedDetentsState, animatedKeyboardState, animatedLayoutState, animatedPosition } =
+    useBottomSheetInternal();
+  const visibleStyle = useAnimatedStyle(() => {
+    const { containerHeight, handleHeight } = animatedLayoutState.get();
+    if (containerHeight < 0 || handleHeight < 0) return { height: 0 };
+    const initialPosition = animatedDetentsState.get().detents?.[0];
+    const position = animatedPosition.get();
+    const keyboard = animatedKeyboardState.get();
+    return {
+      height: getBottomSheetVisibleContentHeight({
+        containerHeight,
+        contentPosition: initialPosition == null ? position : Math.min(position, initialPosition),
+        handleHeight,
+        keyboardHeight: keyboard.heightWithinContainer,
+        isKeyboardVisible: keyboard.status === KEYBOARD_STATUS.SHOWN,
+      }),
+    };
+  }, [animatedDetentsState, animatedKeyboardState, animatedLayoutState, animatedPosition]);
+  return <Animated.View style={[VISIBLE_CONTENT_STYLE, visibleStyle]}>{children}</Animated.View>;
+}
+
 function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
   const { t } = useTranslation();
-  // A long output scrolls inside its own block, so the sheet rests at its content's height.
-  const { height: windowHeight } = useWindowDimensions();
-  const blockMax = Math.floor(windowHeight * 0.55);
+  const insets = useSafeAreaInsets();
+  // The sheet has no bottomInset: reserve the home indicator exactly once in scroll content.
+  // Third-party scrollers get plain layout; themed spacing belongs on our own View.
+  const scrollContentInsets = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
   const {
     toolName,
     displayName,
@@ -165,37 +203,44 @@ function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
   } = data;
 
   return (
-    <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <ThemedToolCallHeaderIcon icon={IconComponent} size={20} />
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {displayName}
-          </Text>
+    <ToolCallSheetViewport>
+      <View style={styles.container}>
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <ThemedToolCallHeaderIcon icon={IconComponent} size={20} />
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {displayName}
+            </Text>
+          </View>
+          <Pressable
+            onPress={onClose}
+            style={styles.closeButton}
+            accessibilityRole="button"
+            accessibilityLabel={t("common.actions.close")}
+            testID="tool-call-sheet-close"
+          >
+            <ThemedCloseIcon size={20} />
+          </Pressable>
         </View>
-        <Pressable
-          onPress={onClose}
-          style={styles.closeButton}
-          accessibilityRole="button"
-          accessibilityLabel={t("common.actions.close")}
-          testID="tool-call-sheet-close"
-        >
-          <ThemedCloseIcon size={20} />
-        </Pressable>
-      </View>
 
-      {/* Content */}
-      <BottomSheetScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        <ToolCallDetailsContent
-          toolName={toolName}
-          detail={detail}
-          errorText={errorText}
-          maxHeight={blockMax}
-          showLoadingSkeleton={showLoadingSkeleton}
-        />
-      </BottomSheetScrollView>
-    </View>
+        {/* Content */}
+        <BottomSheetScrollView
+          style={SCROLL_VIEW_STYLE}
+          contentContainerStyle={scrollContentInsets}
+        >
+          <View style={styles.contentContainer}>
+            <ToolCallDetailsContent
+              toolName={toolName}
+              detail={detail}
+              errorText={errorText}
+              scrollManagedBySheet
+              showLoadingSkeleton={showLoadingSkeleton}
+            />
+          </View>
+        </BottomSheetScrollView>
+      </View>
+    </ToolCallSheetViewport>
   );
 }
 
@@ -203,9 +248,12 @@ function ToolCallSheetContent({ data, onClose }: ToolCallSheetContentProps) {
 
 const styles = StyleSheet.create((theme) => ({
   container: {
+    flex: 1,
+    minHeight: 0,
     backgroundColor: theme.colors.surface2,
   },
   header: {
+    flexShrink: 0,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -233,9 +281,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     marginRight: -theme.spacing[1.5],
-  },
-  content: {
-    backgroundColor: theme.colors.surface2,
   },
   contentContainer: {
     padding: 0,

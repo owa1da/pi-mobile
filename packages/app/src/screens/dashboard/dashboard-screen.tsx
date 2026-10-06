@@ -2,7 +2,15 @@
 // line, pull to refresh, and a composer that starts a new session.
 
 import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useStore } from "zustand";
+import { cachedCommands, subscribeCommands } from "@/screens/session/command-cache";
+import {
+  latestCommands,
+  refreshCommandCatalog,
+  CATALOG_POLL_MS,
+} from "@/stores/command-catalog-store";
+import type { RemoteCommand } from "@/remote/types";
 import { useTranslation } from "react-i18next";
 import {
   Pressable,
@@ -29,6 +37,7 @@ import { useKeyboardShiftStyle } from "@/keyboard/shift";
 import { useReportPlace } from "@/navigation/place-restorer";
 import { friendlyHostError } from "@/screens/session/send-errors";
 import {
+  commandCatalogStore,
   connectionStore,
   refreshSessions,
   sessionsStore,
@@ -37,7 +46,7 @@ import {
   useHostsLoaded,
   useSessionsEntry,
 } from "@/stores/app";
-import { startAndLocate } from "@/stores/start-session";
+import { startDashboardSession } from "@/stores/start-session";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
 import {
   buildSections,
@@ -65,18 +74,31 @@ function useStartSession(hostId: string) {
   const { t } = useTranslation();
   const toast = useToast();
   const [starting, setStarting] = useState(false);
+  const startingRef = useRef(false);
   const start = useCallback(
     async (prompt: string): Promise<boolean> => {
+      if (startingRef.current) return false;
       const service = connectionStore.getState().getService(hostId);
       if (!service) {
         toast.error(t("pi.session.errors.connection"));
         return false;
       }
+      startingRef.current = true;
       setStarting(true);
       try {
-        const found = await startAndLocate(service, { prompt });
-        if (found.snapshot)
-          sessionsStore.getState().setSnapshot(hostId, found.snapshot, Date.now());
+        const found = await startDashboardSession(
+          {
+            startSession: (input) => service.startSession(input),
+            listSessions: async () => {
+              const generation = sessionsStore.getState().beginListing(hostId);
+              const snapshot = await service.listSessions();
+              sessionsStore.getState().setSnapshot(hostId, snapshot, Date.now(), generation);
+              return snapshot;
+            },
+          },
+          hostId,
+          prompt,
+        );
         if (found.row) openSession(hostId, found.row.sessionId);
         else toast.show(t("pi.dashboard.startedNotFound"), { variant: "info" });
         return true;
@@ -85,6 +107,7 @@ function useStartSession(hostId: string) {
         toast.error(friendly.detail ?? t(friendly.key));
         return false;
       } finally {
+        startingRef.current = false;
         setStarting(false);
       }
     },
@@ -233,8 +256,25 @@ export function DashboardScreen() {
     if (hostsLoaded && host) void connectionStore.getState().ensureConnected(hostId);
   }, [host, hostId, hostsLoaded]);
 
+  const polling = focused && appActive && connected;
   const poll = useCallback(() => refreshSessions(hostId).then(() => undefined), [hostId]);
-  usePoller(poll, POLL_MS, focused && appActive && connected);
+  usePoller(poll, POLL_MS, polling);
+  const catalogPoll = useCallback(
+    () =>
+      refreshCommandCatalog(
+        commandCatalogStore,
+        hostId,
+        connectionStore.getState().getService(hostId),
+      ),
+    [hostId],
+  );
+  usePoller(catalogPoll, CATALOG_POLL_MS, polling);
+  const getCommands = useCallback(() => cachedCommands(hostId), [hostId]);
+  const remembered = useSyncExternalStore(subscribeCommands, getCommands, getCommands);
+  const commands = useStore(commandCatalogStore, (state) =>
+    latestCommands(state, hostId, remembered),
+  );
+  const pickCommand = useCallback((command: RemoteCommand) => start(`/${command.name}`), [start]);
 
   const snapshot = entry?.snapshot;
   const summary = useMemo(() => {
@@ -288,6 +328,8 @@ export function DashboardScreen() {
         <View style={FILL}>{body}</View>
         {host ? (
           <Composer
+            commands={commands}
+            onPickNative={pickCommand}
             placeholder={t("pi.dashboard.composerPlaceholder")}
             onSubmit={start}
             busy={starting}

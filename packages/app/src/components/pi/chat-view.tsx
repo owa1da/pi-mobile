@@ -18,6 +18,7 @@ import {
   Text,
   View,
   type ListRenderItem,
+  type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
@@ -38,13 +39,30 @@ interface ChatViewProps {
   loading: boolean;
   /** Inverted-list header: beneath the newest output, inside the scrollable transcript. */
   activity?: ReactElement | null;
+  /** Local optimistic echoes only; incoming output and history never advance this. */
+  localSendCount?: number;
+  /** Owned with the send counter so replacing this list cannot replay a handled send. */
+  localSendScroll?: RefObject<number>;
 }
 
-export function ChatView({ rows, loading, activity }: ChatViewProps) {
+export function ChatView({
+  rows,
+  loading,
+  activity,
+  localSendCount = 0,
+  localSendScroll,
+}: ChatViewProps) {
   const { t } = useTranslation();
   const listRef = useRef<FlatList<ChatRow>>(null);
   const data = useMemo(() => newestFirst(rows), [rows]);
   const { away, onScroll, jump } = useJumpToLatest(listRef);
+  // Read-only transcripts have no owner/counter. Never infer a new send from a pending row.
+  const fallbackScroll = useRef(localSendCount);
+  const { onLayout, onContentSizeChange } = useLocalSendScroll(
+    listRef,
+    localSendCount,
+    localSendScroll ?? fallbackScroll,
+  );
   const history = getChatHistory(rows);
   const historyScroll = useRef(false);
   const requestedHistory = useRef<typeof history>(undefined);
@@ -113,6 +131,8 @@ export function ChatView({ rows, loading, activity }: ChatViewProps) {
           contentContainerStyle={styles.content}
           maintainVisibleContentPosition={MAINTAIN_POSITION}
           onScroll={scroll}
+          onLayout={onLayout}
+          onContentSizeChange={onContentSizeChange}
           onScrollEndDrag={oldestEdge}
           onMomentumScrollEnd={oldestEdge}
           onEndReached={endReached}
@@ -142,6 +162,46 @@ export function ChatView({ rows, loading, activity }: ChatViewProps) {
       ) : null}
     </View>
   );
+}
+
+/** Effects run after the optimistic echo commits. An unmeasured list gets one content retry. */
+function useLocalSendScroll(
+  listRef: RefObject<FlatList<ChatRow> | null>,
+  count: number,
+  handled: RefObject<number>,
+) {
+  const laidOut = useRef(false);
+  const pending = useRef<number | null>(null);
+  const attempts = useRef(0);
+  const attempt = useCallback(() => {
+    // Only real scroll calls count; an unmeasured list waits for its layout.
+    if (pending.current === null || !laidOut.current || !listRef.current) return;
+    attempts.current += 1;
+    try {
+      listRef.current.scrollToOffset({ offset: 0, animated: true });
+      pending.current = null;
+    } catch {
+      // RN may reject a scroll before its native list has committed content. Never loop.
+    } finally {
+      if (attempts.current >= 2) pending.current = null;
+    }
+  }, [listRef]);
+  useEffect(() => {
+    if (count <= handled.current) return;
+    handled.current = count;
+    pending.current = count;
+    attempts.current = 0;
+    attempt();
+  }, [attempt, count, handled]);
+  const onLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      laidOut.current = event.nativeEvent.layout.height > 0;
+      attempt();
+    },
+    [attempt],
+  );
+  const onContentSizeChange = useCallback(() => attempt(), [attempt]);
+  return { onLayout, onContentSizeChange };
 }
 
 /** Latest overlays the transcript; visibility never changes its viewport or scroll offset. */

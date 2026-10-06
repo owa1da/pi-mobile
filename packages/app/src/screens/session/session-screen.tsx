@@ -29,11 +29,20 @@ import { shortModel } from "@/screens/dashboard/view-model";
 import {
   connectionStore,
   refreshSessions,
+  sessionsStore,
   useHostConnection,
   useHostsLoaded,
   useSessionsEntry,
 } from "@/stores/app";
-import { findRow, type SessionsEntry } from "@/stores/sessions-store";
+import {
+  findRow,
+  settleSessionPresence,
+  sessionIsGone,
+  type SessionPresence,
+  type SessionsEntry,
+} from "@/stores/sessions-store";
+import { takeDashboardCommand } from "@/stores/start-session";
+import { HostError } from "@/host/types";
 import type { HostConnectionState } from "@/stores/connection-store";
 import { useAppActive, usePoller, useScreenFocused } from "@/stores/use-polling";
 import { hostNow, remoteFor } from "@/remote/for-service";
@@ -117,16 +126,27 @@ function useSessionPlace(
   params: SessionParams,
   entry: SessionsEntry | undefined,
   focused: boolean,
+  pending: boolean,
 ) {
   const { hostId, sessionId } = params;
-  const row = findRow(entry, sessionId);
+  const identity = JSON.stringify([hostId, sessionId]);
+  const [settled, setSettled] = useState<{ identity: string; presence: SessionPresence }>(() => ({
+    identity,
+    presence: { misses: 0 },
+  }));
+  const previous = settled.identity === identity ? settled.presence : { misses: 0 };
+  const presence = settleSessionPresence(previous, entry, sessionId);
+  if (presence !== settled.presence || identity !== settled.identity)
+    setSettled({ identity, presence });
+  const gone = sessionIsGone(presence, pending);
+  const row = gone ? undefined : presence.row;
   useReportPlace({ kind: "session", hostId, sessionId }, focused);
   const leaving = useLeaveIfRestoredSessionGone(
     params.restored === "1",
-    row !== undefined,
-    Boolean(entry?.snapshot),
+    findRow(entry, sessionId) !== undefined,
+    presence.generation !== undefined && (findRow(entry, sessionId) !== undefined || gone),
   );
-  return { row, leaving };
+  return { row, leaving, gone };
 }
 
 export function SessionScreen() {
@@ -140,11 +160,34 @@ export function SessionScreen() {
   const focused = useScreenFocused();
   const appActive = useAppActive();
   const connected = connection.status === "connected";
-  const { row, leaving } = useSessionPlace(params, entry, focused);
+  const following = useFollowPid(hostId, params.sessionId, entry);
+  const [pendingCount, setPendingCount] = useState(0);
+  const beginPending = useCallback(() => {
+    setPendingCount((count) => count + 1);
+    return () => setPendingCount((count) => count - 1);
+  }, []);
+  const { row, leaving, gone } = useSessionPlace(
+    params,
+    entry,
+    focused,
+    pendingCount > 0 || following.active || !focused,
+  );
+  // Leaving the route or a confirmed disappearance cancels an unconsumed handoff.
+  const wasFocused = useRef(focused);
+  useEffect(() => {
+    if ((wasFocused.current && !focused) || gone || leaving)
+      takeDashboardCommand(hostId, params.sessionId);
+    wasFocused.current = focused;
+  }, [focused, gone, leaving, hostId, params.sessionId]);
+  useEffect(
+    () => () => {
+      takeDashboardCommand(hostId, params.sessionId);
+    },
+    [hostId, params.sessionId],
+  );
   const seen = useRef(false);
   if (row) seen.current = true;
   const { style: keyboardStyle } = useKeyboardShiftStyle({ mode: "padding" });
-  const following = useFollowPid(hostId, params.sessionId, entry);
 
   useEffect(() => {
     if (hostsLoaded) void connectionStore.getState().ensureConnected(hostId);
@@ -160,6 +203,8 @@ export function SessionScreen() {
   if (row) {
     body = (
       <SessionBody
+        key={`${hostId}:${params.sessionId}`}
+        beginPending={beginPending}
         hostId={hostId}
         row={row}
         entry={entry}
@@ -170,7 +215,7 @@ export function SessionScreen() {
         keyboardStyle={keyboardStyle}
       />
     );
-  } else if (entry?.snapshot && !leaving && !following.active) {
+  } else if (gone && !leaving) {
     body = (
       <EmptyState
         title={seen.current ? t("pi.session.goneTitle") : t("pi.session.notFoundTitle")}
@@ -252,7 +297,14 @@ function useFollowPid(hostId: string, sessionId: string, entry: SessionsEntry | 
   return { active: pid !== null, follow };
 }
 
+function actionRow(hostId: string, sessionId: string): SessionRow {
+  const row = findRow(sessionsStore.getState().entries[hostId], sessionId);
+  if (!row) throw new HostError("session-closed", "The session is not in the current listing.");
+  return row;
+}
+
 interface SessionBodyProps {
+  beginPending: () => () => void;
   hostId: string;
   row: SessionRow;
   entry: SessionsEntry | undefined;
@@ -265,9 +317,22 @@ interface SessionBodyProps {
 
 /** The session with its remote channel: the chat, the composer with forge's line under it, the sheets. */
 function SessionBody(props: SessionBodyProps) {
-  const { hostId, row, entry, connection, focused, active, keyboardStyle } = props;
+  const { beginPending, hostId, row, entry, connection, focused, active, keyboardStyle } = props;
   const { t } = useTranslation();
-  const channel = useRemoteChannel(hostId, row, entry, active);
+  const rawChannel = useRemoteChannel(hostId, row, entry, active);
+  const guardedSend = useCallback<RemoteChannel["send"]>(
+    async (action, args, expect) => {
+      const finish = beginPending();
+      try {
+        actionRow(hostId, row.sessionId);
+        return await rawChannel.send(action, args, expect);
+      } finally {
+        finish();
+      }
+    },
+    [hostId, beginPending, rawChannel, row.sessionId],
+  );
+  const channel = useMemo(() => ({ ...rawChannel, send: guardedSend }), [rawChannel, guardedSend]);
   const [sheet, setSheet] = useState<OpenSheet | null>(null);
   const openNative = useCallback(
     (tool: NativeTool, arg: string, extra: Record<string, string> = {}) => {
@@ -289,6 +354,7 @@ function SessionBody(props: SessionBodyProps) {
       <Animated.View style={[FILL, keyboardStyle]}>
         <ConnectionBanner hostId={hostId} connection={connection} announceEnabled={focused} />
         <ChatPane
+          beginPending={beginPending}
           hostId={hostId}
           row={row}
           entry={entry}
@@ -469,6 +535,7 @@ function WorkingRow({ hostId, since, active }: { hostId: string; since: number; 
 }
 
 interface ChatPaneProps {
+  beginPending: () => () => void;
   hostId: string;
   row: SessionRow;
   entry: SessionsEntry | undefined;
@@ -498,8 +565,10 @@ function composerPlaceholderKey(row: SessionRow): string {
 }
 
 function ChatPaneBody({
+  beginPending,
   hostId,
   row,
+  entry,
   active,
   connection,
   held,
@@ -520,6 +589,9 @@ function ChatPaneBody({
     active,
   );
   const [sending, setSending] = useState(false);
+  const [localSendCount, setLocalSendCount] = useState(0);
+  // Owned alongside the counter, not by the conditionally mounted transcript.
+  const localSendScroll = useRef(0);
   const [sendError, setSendError] = useState<FriendlyError | null>(null);
   const sendingRef = useRef(false);
 
@@ -533,6 +605,7 @@ function ChatPaneBody({
       sendingRef.current = true;
       setSending(true);
       setSendError(null);
+      const finish = beginPending();
       try {
         const service = connectionStore.getState().getService(hostId);
         if (!service) {
@@ -541,7 +614,7 @@ function ChatPaneBody({
         }
         await routeSessionCommand(
           service,
-          row,
+          actionRow(hostId, row.sessionId),
           line,
           async (tool, arg, extra) => {
             // Publish the new row before opening a sheet/screen: it must use the resumed PID,
@@ -577,9 +650,10 @@ function ChatPaneBody({
       } finally {
         sendingRef.current = false;
         setSending(false);
+        finish();
       }
     },
-    [channel, feed, hostId, openNative, row, showNotice, t],
+    [beginPending, channel, feed, hostId, openNative, row, showNotice, t],
   );
 
   const send = useCallback(
@@ -602,8 +676,10 @@ function ChatPaneBody({
       const pendingId = feed.addPending(text);
       sendingRef.current = true;
       setSending(true);
+      setLocalSendCount((count) => count + 1);
+      const finish = beginPending();
       try {
-        await service.sendPrompt(row, text);
+        await service.sendPrompt(actionRow(hostId, row.sessionId), text);
         feed.boost();
         void refreshSessions(hostId);
         return true;
@@ -622,15 +698,36 @@ function ChatPaneBody({
       } finally {
         sendingRef.current = false;
         setSending(false);
+        finish();
       }
     },
-    [channel.commands, feed, hostId, row, runCommand],
+    [beginPending, channel.commands, feed, hostId, row, runCommand],
+  );
+
+  // Wait for dispatch readiness, then take BEFORE dispatch: even uncertain outcomes never replay.
+  useEffect(() => {
+    if (!active || sending || sendingRef.current) return;
+    if (!findRow(sessionsStore.getState().entries[hostId], row.sessionId)) return;
+    if (!connectionStore.getState().getService(hostId)) return;
+    const command = takeDashboardCommand(hostId, row.sessionId);
+    if (command) void send(command);
+  }, [active, connection, entry, hostId, row.sessionId, send, sending]);
+
+  // Typing a newer prompt supersedes a dashboard command still waiting for its row.
+  const submitFromComposer = useCallback(
+    (...args: Parameters<typeof send>) => {
+      takeDashboardCommand(hostId, row.sessionId);
+      return send(...args);
+    },
+    [hostId, row.sessionId, send],
   );
 
   const stop = useCallback(() => {
     const service = connectionStore.getState().getService(hostId);
     if (!service) return;
-    service.abort(row).then(
+    const current = findRow(sessionsStore.getState().entries[hostId], row.sessionId);
+    if (!current) return;
+    service.abort(current).then(
       () => {
         feed.boost();
         return undefined;
@@ -679,8 +776,14 @@ function ChatPaneBody({
 
   return (
     <View style={FILL}>
-      {feed.hasFile || working ? (
-        <ChatView rows={feed.rows} loading={feed.loading} activity={activity} />
+      {feed.hasFile || working || feed.rows.length > 0 ? (
+        <ChatView
+          rows={feed.rows}
+          loading={feed.loading}
+          activity={activity}
+          localSendCount={localSendCount}
+          localSendScroll={localSendScroll}
+        />
       ) : (
         <View style={FILL} testID="chat-no-file" />
       )}
@@ -719,7 +822,7 @@ function ChatPaneBody({
           prefill={prefill}
           onPrefillApplied={prefillApplied}
           placeholder={t(composerPlaceholderKey(row))}
-          onSubmit={send}
+          onSubmit={submitFromComposer}
           busy={sending}
           canStop={row.live && row.state === "working"}
           onStop={stop}

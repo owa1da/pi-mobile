@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChatReader, type ChatUpdateEx } from "@/host/chat";
-import { HostError } from "@/host/types";
-import { ChatFeed, ChatFeedCache } from "./chat-feed";
+import { HostError, type ChatItem } from "@/host/types";
+import { ChatFeed, ChatFeedCache, sameItems } from "./chat-feed";
 
 const update = (ids: string[], hasOlder = true): ChatUpdateEx => ({
   cursor: { sessionFile: "/session", offset: 100 },
@@ -10,6 +10,84 @@ const update = (ids: string[], hasOlder = true): ChatUpdateEx => ({
   reset: false,
   truncated: hasOlder,
   hasOlder,
+});
+
+describe("chat feed render equality", () => {
+  const assistant: ChatItem = { kind: "assistant", id: "a", text: "left", timestamp: 0 };
+  const user: ChatItem = { kind: "user", id: "u", text: "left", images: 0, timestamp: 0 };
+  const tool: ChatItem = {
+    kind: "tool",
+    id: "t",
+    name: "read",
+    args: { path: "/old", options: { limit: 1 } },
+    status: "completed",
+    result: "left",
+    timestamp: 0,
+  };
+  const notice: ChatItem = {
+    kind: "notice",
+    id: "n",
+    text: "left",
+    level: "info",
+    timestamp: 0,
+  };
+  const divider: ChatItem = { kind: "divider", id: "d", label: "Branch", timestamp: 0 };
+
+  it.each<{ label: string; before: ChatItem; after: ChatItem }>([
+    { label: "assistant text", before: assistant, after: { ...assistant, text: "wide" } },
+    { label: "user text", before: user, after: { ...user, text: "wide" } },
+    {
+      label: "thinking text",
+      before: { ...assistant, kind: "thinking" },
+      after: { ...assistant, kind: "thinking", text: "wide" },
+    },
+    { label: "notice text", before: notice, after: { ...notice, text: "wide" } },
+    { label: "tool result", before: tool, after: { ...tool, result: "wide" } },
+    { label: "tool name", before: tool, after: { ...tool, name: "write" } },
+    { label: "tool arguments", before: tool, after: { ...tool, args: { path: "/new" } } },
+    {
+      label: "nested tool arguments",
+      before: tool,
+      after: { ...tool, args: { path: "/old", options: { limit: 2 } } },
+    },
+    { label: "tool error", before: tool, after: { ...tool, isError: true } },
+    { label: "tool status", before: tool, after: { ...tool, status: "running" } },
+    { label: "notice level", before: notice, after: { ...notice, level: "warning" } },
+    { label: "divider summary", before: divider, after: { ...divider, summary: "Summary" } },
+    { label: "divider label", before: divider, after: { ...divider, label: "Switch" } },
+    { label: "user images", before: user, after: { ...user, images: 1 } },
+    { label: "timestamp", before: assistant, after: { ...assistant, timestamp: 1 } },
+    { label: "kind", before: assistant, after: { ...assistant, kind: "thinking" } },
+    { label: "id", before: assistant, after: { ...assistant, id: "b" } },
+  ])("detects changes to $label", ({ before, after }) => {
+    expect(sameItems([before], [after])).toBe(false);
+  });
+
+  it("keeps equal reconstructed items unchanged", () => {
+    const items = [assistant, user, tool, notice, divider];
+    expect(sameItems(items, JSON.parse(JSON.stringify(items)))).toBe(true);
+    expect(sameItems(items, items)).toBe(true);
+    expect(sameItems(items, items.slice(1))).toBe(false);
+    expect(sameItems(items, items.toReversed())).toBe(false);
+  });
+
+  it("bumps the row change signal for a same-length replacement without a reset", async () => {
+    const first = { ...update([], false), items: [assistant] };
+    const replacement = { ...assistant, text: "wide" };
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce({ ...first, items: [replacement] })
+      .mockResolvedValueOnce({ ...first, items: [{ ...replacement }] });
+    const feed = new ChatFeed(read);
+    await feed.poll();
+    const version = feed.version;
+    expect(await feed.poll()).toEqual({ changed: true, more: false });
+    expect(feed.version).toBe(version + 1);
+    expect(feed.items).toEqual([replacement]);
+    expect(await feed.poll()).toEqual({ changed: false, more: false });
+    expect(feed.version).toBe(version + 1);
+  });
 });
 
 describe("chat pagination and remount cache", () => {

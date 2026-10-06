@@ -148,6 +148,16 @@ export function createCommandCatalogStore(
   });
 }
 export type CommandCatalogStore = ReturnType<typeof createCommandCatalogStore>;
+export function latestCommands(
+  state: Pick<CatalogState, "remote" | "phone">,
+  hostId: string,
+  remembered?: readonly RemoteCommand[],
+) {
+  return (
+    freshest(state.remote[hostId]?.latest, state.phone[hostId]?.latest)?.commands ?? remembered
+  );
+}
+
 export function completedCommands(
   state: Pick<CatalogState, "remote" | "phone">,
   hostId: string,
@@ -157,8 +167,7 @@ export function completedCommands(
   const remote = state.remote[hostId];
   const phone = state.phone[hostId];
   const exact = freshest(cwdEntry(remote, cwd), cwdEntry(phone, cwd));
-  const latest = freshest(remote?.latest, phone?.latest);
-  return exact?.commands ?? latest?.commands ?? remembered;
+  return exact?.commands ?? latestCommands(state, hostId, remembered);
 }
 
 /** Called on connection and by the slow focused-completed-screen poll, not the live state poll. */

@@ -51,6 +51,7 @@ vi.mock("react-native", async () => {
       ),
     FlatList: (props: FlatListProps<ChatRow> & { ref: React.Ref<unknown> }) => {
       probe.list = props;
+      if (props.onLayout) probe.layouts.push(props.onLayout);
       useImperativeHandle(props.ref, () => ({ scrollToOffset: probe.scrollToOffset }));
       return createElement(
         "div",
@@ -94,7 +95,9 @@ describe("ChatView transcript ownership", () => {
   let root: Root;
   let container: HTMLElement;
   let dom: JSDOM;
+  let localSendScroll: React.RefObject<number>;
   beforeEach(() => {
+    localSendScroll = { current: 0 };
     vi.useFakeTimers();
     dom = new JSDOM("<!doctype html><html><body></body></html>");
     vi.stubGlobal("React", React);
@@ -103,7 +106,7 @@ describe("ChatView transcript ownership", () => {
     vi.stubGlobal("document", dom.window.document);
     probe.list = null;
     probe.layouts = [];
-    probe.scrollToOffset.mockClear();
+    probe.scrollToOffset.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -114,8 +117,116 @@ describe("ChatView transcript ownership", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
-  const render = (activity: React.ReactElement | null = null, loading = false, data = rows) =>
-    act(() => root.render(<ChatView rows={data} loading={loading} activity={activity} />));
+  const render = (
+    activity: React.ReactElement | null = null,
+    loading = false,
+    data = rows,
+    localSendCount = 0,
+  ) =>
+    act(() =>
+      root.render(
+        <ChatView
+          rows={data}
+          loading={loading}
+          activity={activity}
+          localSendCount={localSendCount}
+          localSendScroll={localSendScroll}
+        />,
+      ),
+    );
+  const commitContent = () => act(() => probe.list!.onContentSizeChange?.(320, 1200));
+
+  it("scrolls to newest once per local send from beyond 400pt, never incoming output or history", () => {
+    render();
+    layout(600);
+    scroll(800);
+    const echo: ChatRow = { kind: "user", key: "echo", text: "sent", timestamp: 2, pending: true };
+    render(null, false, [...rows, echo], 1);
+    commitContent();
+    commitContent();
+    expect(probe.scrollToOffset).toHaveBeenCalledExactlyOnceWith({ offset: 0, animated: true });
+    render(
+      null,
+      false,
+      [
+        ...rows,
+        echo,
+        { kind: "assistant", key: "reply", text: "incoming", timestamp: 3, phase: "complete" },
+      ],
+      1,
+    );
+    commitContent();
+    render(null, false, [{ ...echo, key: "history", pending: false }, ...rows, echo], 1);
+    commitContent();
+    expect(probe.scrollToOffset).toHaveBeenCalledTimes(1);
+    render(null, false, [...rows, echo, { ...echo, key: "echo2" }], 2);
+    commitContent();
+    expect(probe.scrollToOffset).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an unlaid-out list once on the next content commit", () => {
+    render();
+    layout(600);
+    probe.scrollToOffset.mockImplementationOnce(() => {
+      throw new Error("not laid out");
+    });
+    render(
+      null,
+      false,
+      [...rows, { kind: "user", key: "echo", text: "sent", timestamp: 2, pending: true }],
+      1,
+    );
+    commitContent();
+    commitContent();
+    commitContent();
+    expect(probe.scrollToOffset).toHaveBeenCalledTimes(2);
+  });
+
+  it("scrolls once when content commits before the first layout", () => {
+    render(
+      null,
+      false,
+      [...rows, { kind: "user", key: "echo", text: "sent", timestamp: 2, pending: true }],
+      1,
+    );
+    commitContent();
+    layout(600);
+    commitContent();
+    expect(probe.scrollToOffset).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a handled send with a pending echo across remount", () => {
+    const data: ChatRow[] = [
+      ...rows,
+      { kind: "user", key: "echo", text: "sent", timestamp: 2, pending: true },
+    ];
+    const mount = () =>
+      act(() =>
+        root.render(
+          <ChatView
+            rows={data}
+            loading={false}
+            localSendCount={1}
+            localSendScroll={localSendScroll}
+          />,
+        ),
+      );
+    mount();
+    layout(600);
+    commitContent();
+    expect(probe.scrollToOffset).toHaveBeenCalledTimes(1);
+    act(() => root.render(null));
+    mount();
+    layout(600);
+    commitContent();
+    expect(probe.scrollToOffset).toHaveBeenCalledTimes(1);
+  });
+  it("does not replay an old send counter when remounted", () => {
+    localSendScroll.current = 3;
+    render(null, false, rows, 3);
+    commitContent();
+    expect(probe.scrollToOffset).not.toHaveBeenCalled();
+  });
   const scroll = (offset: number) =>
     act(() => {
       probe.list!.onScroll!({ nativeEvent: { contentOffset: { y: offset } } } as Parameters<
