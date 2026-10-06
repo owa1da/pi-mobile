@@ -9,6 +9,7 @@ import {
 import { createHostsStore } from "./hosts-store";
 import { createMemorySecretStore } from "./secret-store";
 import { parseCommandCatalog, CATALOG_MAX_BYTES } from "@/remote/command-catalog";
+import { dashboardCommands } from "@/remote/menu";
 
 const catalog = (updatedAt = 100) =>
   parseCommandCatalog(
@@ -38,6 +39,70 @@ const memory = () => {
 };
 
 describe("phone command discovery", () => {
+  it("keeps catalog provenance in the dashboard after newer source-less live discovery", async () => {
+    const store = createCommandCatalogStore(memory());
+    const host = catalog(100);
+    host.latest = {
+      cwd: "/work",
+      at: 100,
+      commands: [{ name: "template", description: null, source: "prompt" }],
+    };
+    host.byCwd["/work"].commands = host.latest.commands;
+    await store.getState().accept("h", host);
+    await store.getState().rememberLive("h", "/work", {
+      view: "main",
+      updatedAt: 200,
+      commands: [{ name: "template", description: "Live description" }],
+    });
+    expect(dashboardCommands(latestCommands(store.getState(), "h"), false)).toEqual([
+      { name: "template", description: "Live description", source: "prompt" },
+    ]);
+    expect(store.getState().phone.h.byCwd["/work"].at).toBe(200);
+  });
+  it("prefers same-cwd provenance, then newest catalog entries, and leaves unknown sources absent", async () => {
+    const storage = memory();
+    const store = createCommandCatalogStore(storage);
+    const phone = catalog(100);
+    phone.byCwd["/work"].commands = [{ name: "shared", description: null, source: "skill" }];
+    phone.latest.commands = [{ name: "shared", description: null, source: "prompt" }];
+    await store.getState().accept("h", phone);
+    const remote = catalog(300);
+    remote.byCwd = {
+      "/elsewhere": {
+        at: 250,
+        commands: [{ name: "elsewhere", description: null, source: "skill" }],
+      },
+    };
+    remote.latest.commands = [
+      { name: "shared", description: null, source: "prompt" },
+      { name: "latest", description: null, source: "prompt" },
+    ];
+    await store.getState().accept("h", remote);
+    await store.getState().rememberLive("h", "/work", {
+      view: "main",
+      updatedAt: 400,
+      commands: ["shared", "latest", "elsewhere", "unknown"].map((name) => ({
+        name,
+        description: null,
+      })),
+    });
+    const commands = completedCommands(store.getState(), "h", "/work");
+    expect(commands?.map((command) => command.source)).toEqual([
+      "skill",
+      "prompt",
+      "skill",
+      undefined,
+    ]);
+    expect(commands?.[3]).not.toHaveProperty("source");
+    expect(store.getState().phone.h.byCwd["/work"].at).toBe(400);
+    await store
+      .getState()
+      .rememberLive("h", "/work", { view: "main", updatedAt: 350, commands: [] });
+    expect(completedCommands(store.getState(), "h", "/work")).toBe(commands);
+    const relaunched = createCommandCatalogStore(storage);
+    await relaunched.getState().load("h");
+    expect(completedCommands(relaunched.getState(), "h", "/work")).toEqual(commands);
+  });
   it("dashboard latest uses entry freshness, phone/offline and memory fallbacks, including an empty list", () => {
     const host = catalog(200);
     const phone = catalog(300);

@@ -21,6 +21,9 @@ import {
   type UsageAccount,
 } from "@/remote/views";
 import type { ForgeViewProps } from "./forge-screen";
+import type { PanelSnapshot } from "@/remote/panel-snapshot";
+import type { RemoteChannel } from "@/screens/session/use-remote-channel";
+import { EmptyState } from "@/components/pi/empty-state";
 import {
   ErrorLine,
   ForgeFrame,
@@ -31,32 +34,91 @@ import {
   useForgeAction,
 } from "./parts";
 
-export function UsageView({ channel }: ForgeViewProps) {
+interface InfoViewProps {
+  channel?: RemoteChannel;
+  snapshot?: PanelSnapshot;
+  /** Initial live read failed; host panels can try another display-only source. */
+  onUnavailable?: () => void;
+}
+// An absent session is display-only. Even an accidental call cannot dispatch any action.
+const DISPLAY_ONLY_CHANNEL: RemoteChannel = {
+  available: false,
+  loaded: false,
+  state: undefined,
+  send: async () => {
+    throw new Error("Display-only panel");
+  },
+  read: async () => undefined,
+  boost: () => {},
+};
+function snapshotData<T>(
+  snapshot: PanelSnapshot | undefined,
+  parse: (data: unknown) => T,
+): T | null {
+  return snapshot ? parse(snapshot.data) : null;
+}
+function panelNow(clock: { at: number; got: number } | null, snapshot?: PanelSnapshot): number {
+  if (snapshot) return snapshot.at;
+  return clock ? clock.at + (Date.now() - clock.got) : Date.now();
+}
+function SnapshotNote({ snapshot }: { snapshot?: PanelSnapshot }) {
   const { t } = useTranslation();
-  const action = useForgeAction(channel);
+  return (
+    <View>
+      {snapshot ? (
+        <Text style={forgeStyles.intro} testID="host-panel-as-of">
+          {t("pi.forge.panel.asOf", { time: new Date(snapshot.at).toLocaleString() })}
+        </Text>
+      ) : null}
+      <Text style={forgeStyles.intro}>{t("pi.forge.panel.readOnly")}</Text>
+    </View>
+  );
+}
+
+export function UsageView({ channel: liveChannel, snapshot, onUnavailable }: InfoViewProps) {
+  const channel = liveChannel ?? DISPLAY_ONLY_CHANNEL;
+  const readOnly = !liveChannel;
+  const { t } = useTranslation();
+  const action = useForgeAction(channel, onUnavailable !== undefined);
   const run = action.run;
-  const [accounts, setAccounts] = useState<UsageAccount[] | null>(null);
+  const [liveAccounts, setAccounts] = useState<UsageAccount[] | null>(null);
+  const accounts = readOnly ? snapshotData(snapshot, parseUsage) : liveAccounts;
   /** forge's snapshot time (host clock) and when the phone got it: "Resets in" counts from the host. */
   const [clock, setClock] = useState<{ at: number; got: number } | null>(null);
   const ready = channel.available && channel.loaded;
   const refresh = useCallback(
     async (force: boolean) => {
       const out = await run("usage.refresh", force ? { force: true } : {});
-      if (!out.ok) return;
+      if (!out.ok) return false;
       setAccounts(parseUsage(out.data));
       const at = usageAt(out.data);
       setClock(at === null ? null : { at, got: Date.now() });
+      return true;
     },
     [run],
   );
   useEffect(() => {
-    if (ready) void refresh(false);
-  }, [ready, refresh]);
+    if (!channel.available) {
+      onUnavailable?.();
+      return;
+    }
+    if (!ready) return;
+    let cancelled = false;
+    void refresh(false).then((ok) => {
+      if (!cancelled && !ok) onUnavailable?.();
+      return undefined;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [channel.available, ready, refresh, onUnavailable]);
   const pressRefresh = useCallback(() => void refresh(true), [refresh]);
 
-  const now = clock ? clock.at + (Date.now() - clock.got) : Date.now();
+  const now = panelNow(clock, readOnly ? snapshot : undefined);
   let body;
-  if (!channel.available || action.unsupported) body = <UpdateForge />;
+  if (readOnly && !snapshot)
+    body = <EmptyState title={t("pi.forge.panel.empty")} testID="host-panel-empty" />;
+  else if (!readOnly && (!channel.available || action.unsupported)) body = <UpdateForge />;
   else if (accounts === null) body = action.error ? null : <Loading />;
   else if (accounts.length === 0)
     body = (
@@ -110,14 +172,16 @@ export function UsageView({ channel }: ForgeViewProps) {
     );
   return (
     <ForgeFrame title={t("pi.forge.titles.usage")}>
+      {readOnly ? <SnapshotNote snapshot={snapshot} /> : null}
       {/* The body takes the room in every state (data, empty, error), so Refresh stays at the bottom. */}
       <View style={styles.fill}>{body}</View>
       <ErrorLine message={action.error} onDismiss={action.clearError} />
-      {channel.available && !action.unsupported ? (
+      {readOnly || (channel.available && !action.unsupported) ? (
         <ActionBar>
           <Button
             variant="ghost"
-            onPress={pressRefresh}
+            onPress={readOnly ? undefined : pressRefresh}
+            disabled={readOnly}
             loading={action.busy === "usage.refresh"}
             style={[sheetActionStyles.button, styles.quiet]}
             testID="usage-refresh"
@@ -197,25 +261,36 @@ export function CostView({ channel }: ForgeViewProps) {
   );
 }
 
-export function ChangelogView({ channel }: ForgeViewProps) {
+export function ChangelogView({ channel: liveChannel, snapshot, onUnavailable }: InfoViewProps) {
+  const channel = liveChannel ?? DISPLAY_ONLY_CHANNEL;
+  const readOnly = !liveChannel;
   const { t } = useTranslation();
-  const action = useForgeAction(channel);
+  const action = useForgeAction(channel, onUnavailable !== undefined);
   const run = action.run;
-  const [log, setLog] = useState<{ markdown: string; truncated: boolean } | null>(null);
+  const [liveLog, setLog] = useState<{ markdown: string; truncated: boolean } | null>(null);
+  const log = readOnly ? snapshotData(snapshot, parseChangelog) : liveLog;
   const ready = channel.available && channel.loaded;
   useEffect(() => {
+    if (!channel.available) {
+      onUnavailable?.();
+      return;
+    }
     if (!ready) return;
     let cancelled = false;
     void run("changelog.read", {}).then((out) => {
-      if (!cancelled && out.ok) setLog(parseChangelog(out.data));
+      if (cancelled) return undefined;
+      if (out.ok) setLog(parseChangelog(out.data));
+      else onUnavailable?.();
       return undefined;
     });
     return () => {
       cancelled = true;
     };
-  }, [ready, run]);
+  }, [channel.available, ready, run, onUnavailable]);
   let body;
-  if (!channel.available || action.unsupported) body = <UpdateForge />;
+  if (readOnly && !snapshot)
+    body = <EmptyState title={t("pi.forge.panel.empty")} testID="host-panel-empty" />;
+  else if (!readOnly && (!channel.available || action.unsupported)) body = <UpdateForge />;
   else if (log === null) body = action.error ? null : <Loading />;
   else
     body = (
@@ -232,6 +307,7 @@ export function ChangelogView({ channel }: ForgeViewProps) {
     );
   return (
     <ForgeFrame title={t("pi.forge.titles.changelog")}>
+      {readOnly ? <SnapshotNote snapshot={snapshot} /> : null}
       {body}
       <ErrorLine message={action.error} onDismiss={action.clearError} />
     </ForgeFrame>

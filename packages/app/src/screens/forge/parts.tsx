@@ -214,7 +214,7 @@ export type ActionOutcome =
   | { ok: false; error: unknown };
 
 /** Runs remote actions for a screen: one busy flag, an inline error, and \"Update forge\" on unknown-action. */
-export function useForgeAction(channel: RemoteChannel) {
+export function useForgeAction(channel: RemoteChannel, unknownActionIsError = false) {
   const { t } = useTranslation();
   const send = channel.send;
   const [busy, setBusy] = useState<RemoteAction | null>(null);
@@ -232,14 +232,14 @@ export function useForgeAction(channel: RemoteChannel) {
         const result = await send(action, args);
         return { ok: true, data: result.data, message: result.message };
       } catch (err) {
-        if (isRemoteError(err, "unknown-action")) setUnsupported(true);
+        if (isRemoteError(err, "unknown-action") && !unknownActionIsError) setUnsupported(true);
         else if (!(isRemoteError(err) && quiet.includes(err.code))) setError(remoteMessage(t, err));
         return { ok: false, error: err };
       } finally {
         setBusy(null);
       }
     },
-    [send, t],
+    [send, t, unknownActionIsError],
   );
   const clearError = useCallback(() => setError(null), []);
   return { busy, error, unsupported, run, clearError };

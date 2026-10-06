@@ -11,6 +11,8 @@ import {
   CATALOG_POLL_MS,
 } from "@/stores/command-catalog-store";
 import type { RemoteCommand } from "@/remote/types";
+import { dashboardCommands } from "@/remote/menu";
+import { isHostPanel } from "@/remote/panel-snapshot";
 import { useTranslation } from "react-i18next";
 import {
   Pressable,
@@ -274,7 +276,33 @@ export function DashboardScreen() {
   const commands = useStore(commandCatalogStore, (state) =>
     latestCommands(state, hostId, remembered),
   );
-  const pickCommand = useCallback((command: RemoteCommand) => start(`/${command.name}`), [start]);
+  // A successful host probe requires Forge. Keep the panels discoverable even with no catalog.
+  const menuCommands = useMemo(
+    () => dashboardCommands(commands, Boolean(connection.env) || connected),
+    [commands, connection.env, connected],
+  );
+  const pickCommand = useCallback(
+    (command: RemoteCommand) => {
+      if (isHostPanel(command.name)) {
+        router.push({
+          pathname: "/h/[hostId]/panel/[name]",
+          params: { hostId, name: command.name },
+        });
+        return true;
+      }
+      return start(`/${command.name}`);
+    },
+    [hostId, start],
+  );
+  const submit = useCallback(
+    async (text: string) => {
+      const panel = menuCommands.find(
+        (command) => isHostPanel(command.name) && text.trim() === `/${command.name}`,
+      );
+      return panel ? pickCommand(panel) : start(text);
+    },
+    [menuCommands, pickCommand, start],
+  );
 
   const snapshot = entry?.snapshot;
   const summary = useMemo(() => {
@@ -328,10 +356,10 @@ export function DashboardScreen() {
         <View style={FILL}>{body}</View>
         {host ? (
           <Composer
-            commands={commands}
+            commands={menuCommands}
             onPickNative={pickCommand}
             placeholder={t("pi.dashboard.composerPlaceholder")}
-            onSubmit={start}
+            onSubmit={submit}
             busy={starting}
             hint={starting ? t("pi.dashboard.starting") : undefined}
             testID="dashboard-composer"

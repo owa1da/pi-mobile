@@ -280,7 +280,14 @@ export function parseCommand(value: unknown): RemoteCommand | null {
   // A row may name itself "/x" or "x"; the app keeps the bare name.
   const raw = typeof value.name === "string" ? value.name.trim().replace(/^\//, "") : "";
   if (!COMMAND_NAME.test(raw) || raw.length > 64) return null;
-  return { name: raw, description: lineOrNull(value.description, CAPS.option) };
+  const source = value.source;
+  const known =
+    source === "prompt" || source === "skill" || source === "extension" || source === "builtin";
+  return {
+    name: raw,
+    description: lineOrNull(value.description, CAPS.option),
+    ...(known ? { source } : {}),
+  };
 }
 
 function list<T>(value: unknown, max: number, parse: (item: unknown) => T | null): T[] | undefined {

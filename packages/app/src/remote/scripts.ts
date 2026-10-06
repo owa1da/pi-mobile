@@ -4,6 +4,20 @@
 
 import { shQuote } from "@/host/commands";
 import { CATALOG_MAX_BYTES } from "./command-catalog";
+import { isHostPanel, PANEL_MAX_BYTES, type HostPanel } from "./panel-snapshot";
+
+/** Display-only files, read with the same bounded trusted exec as host command discovery. */
+export function readPanelSnapshotScript(agentDir: string, name: HostPanel, tag: string): string {
+  assertNonce(tag);
+  if (!isHostPanel(name)) throw new Error("bad host panel");
+  const file = shQuote(`${agentDir.replace(/\/+$/, "")}/forge/remote/${name}.json`);
+  return [
+    `f=${file}`,
+    `if [ -f "$f" ]; then printf '%s SNAPSHOT\\n' ${tag}; head -c ${PANEL_MAX_BYTES[name] + 1} "$f" 2>/dev/null; printf '\\n%s END\\n' ${tag};`,
+    `else printf '%s NONE\\n' ${tag}; fi`,
+    "",
+  ].join("\n");
+}
 
 /** Bounded even if the file grows mid-read; cap + 1 lets the parser reject oversized files. */
 export function readCommandCatalogScript(agentDir: string, tag: string): string {

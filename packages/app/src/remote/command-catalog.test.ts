@@ -19,6 +19,26 @@ describe("command catalog discovery", () => {
       { name: "new-command", description: "New command" },
     ]);
   });
+  it("accepts known source values, tolerating missing and unknown sources", () => {
+    const input = catalog();
+    const sources = ["prompt", "skill", "extension", "builtin", "future", undefined, 42];
+    const text = JSON.stringify({
+      ...input,
+      latest: {
+        ...input.latest,
+        commands: sources.map((source, i) => ({ name: `c${i}`, source })),
+      },
+    });
+    expect(parseCommandCatalog(text)?.latest.commands.map((row) => row.source)).toEqual([
+      "prompt",
+      "skill",
+      "extension",
+      "builtin",
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
   it.each([
     "{",
     "null",

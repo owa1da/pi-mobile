@@ -1,6 +1,27 @@
 // The composer's `/` menu: forge's own rows (state.commands), filtered as the name is typed.
 
 import type { RefusalReason, RemoteCommand } from "./types";
+import { isHostPanel } from "./panel-snapshot";
+
+/** Dashboard discovery: host panels and commands that begin a conversation, never session actions. */
+export function dashboardCommands(
+  commands: readonly RemoteCommand[] | undefined,
+  hasForge: boolean,
+): RemoteCommand[] {
+  const rows = (commands ?? []).filter(
+    (row) =>
+      isHostPanel(row.name) ||
+      row.source === "prompt" ||
+      row.source === "skill" ||
+      (row.source === undefined && row.name.startsWith("skill:")),
+  );
+  if (hasForge) {
+    for (const name of ["usage", "changelog"] as const) {
+      if (!rows.some((row) => row.name === name)) rows.push({ name, description: null });
+    }
+  }
+  return rows;
+}
 
 /** Where a `/` name opens in the app: a full screen, or a sheet over the session. */
 export type NativeTool =

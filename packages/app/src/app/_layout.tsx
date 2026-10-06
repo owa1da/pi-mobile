@@ -91,6 +91,7 @@ export default function RootLayout() {
               <Stack.Screen name="h/[hostId]/index" />
               <Stack.Screen name="h/[hostId]/s/[sessionId]" />
               <Stack.Screen name="h/[hostId]/f/[sessionId]/[tool]" />
+              <Stack.Screen name="h/[hostId]/panel/[name]" />
             </ThemedStack>
           </SideInsets>
           <AppLifecycle />

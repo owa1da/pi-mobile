@@ -132,6 +132,8 @@ export interface RemoteCheckpoint {
 export interface RemoteCommand {
   name: string;
   description: string | null;
+  /** Discovery provenance only; never an authorization signal. */
+  source?: "prompt" | "skill" | "extension" | "builtin";
 }
 
 export interface RemotePins {

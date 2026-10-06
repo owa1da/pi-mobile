@@ -68,6 +68,30 @@ function mergeCatalog(phone: CommandCatalog | undefined, remote: CommandCatalog)
   };
 }
 
+/** Live state has no provenance; prefer sourced rows for this cwd, then the newest elsewhere. */
+function commandSources(
+  phone: CommandCatalog | undefined,
+  remote: CommandCatalog | undefined,
+  cwd: string,
+) {
+  const candidates: CommandCatalog["latest"][] = [];
+  for (const catalog of [phone, remote]) {
+    if (!catalog) continue;
+    candidates.push(catalog.latest);
+    for (const [entryCwd, entry] of Object.entries(catalog.byCwd))
+      candidates.push({ cwd: entryCwd, ...entry });
+  }
+  candidates.sort((a, b) => Number(b.cwd === cwd) - Number(a.cwd === cwd) || b.at - a.at);
+  const sources = new Map<string, NonNullable<RemoteCommand["source"]>>();
+  for (const entry of candidates) {
+    for (const command of entry.commands) {
+      if (command.source !== undefined && !sources.has(command.name))
+        sources.set(command.name, command.source);
+    }
+  }
+  return sources;
+}
+
 export function createCommandCatalogStore(
   storage: KeyValueStore & { removeItem(key: string): Promise<void> },
 ) {
@@ -113,11 +137,17 @@ export function createCommandCatalogStore(
       },
       async rememberLive(hostId, cwd, state) {
         if (removed.has(hostId) || !state?.commands || state.view !== "main") return;
+        const previous = get().phone[hostId];
+        const sources = commandSources(previous, get().remote[hostId], cwd);
         const commands = state.commands
           .slice(0, CATALOG_MAX_COMMANDS)
           .map(parseCommand)
-          .filter((command): command is RemoteCommand => command !== null);
-        const previous = get().phone[hostId];
+          .filter((command): command is RemoteCommand => command !== null)
+          .map((command) => {
+            const source = command.source ?? sources.get(command.name);
+            if (source !== undefined) command.source = source;
+            return command;
+          });
         if (previous?.byCwd[cwd]?.at > state.updatedAt) return;
         if (previous?.latest.cwd === cwd && previous.latest.at > state.updatedAt) return;
         if (

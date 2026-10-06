@@ -3,7 +3,8 @@
 
 import { hasRemote } from "@/remote/client";
 import { parseCommandCatalog, type CommandCatalog } from "@/remote/command-catalog";
-import { framed, readCommandCatalogScript } from "@/remote/scripts";
+import { framed, readCommandCatalogScript, readPanelSnapshotScript } from "@/remote/scripts";
+import { parsePanelSnapshot, type HostPanel, type PanelSnapshot } from "@/remote/panel-snapshot";
 import { CommandUnavailableError, RemoteError } from "@/remote/errors";
 import { remoteFor } from "@/remote/for-service";
 import { matchCommand } from "@/remote/menu";
@@ -86,6 +87,8 @@ export interface PiHostService extends HostService {
   environment(): Promise<HostEnvironmentDetails>;
   /** Host-wide discovery only, independent of process state. Absent on older Forge. */
   readCommandCatalog(): Promise<CommandCatalog | undefined>;
+  /** Display only; never starts a process or sends a remote action. */
+  readPanelSnapshot(name: HostPanel): Promise<PanelSnapshot | undefined>;
   readChat(row: Pick<SessionRow, "sessionFile">, cursor?: SessionCursor): Promise<ChatUpdateEx>;
 }
 
@@ -302,6 +305,15 @@ class HostServiceImpl implements PiHostService {
       timeoutMs: 10_000,
     });
     return parseCommandCatalog(framed(out, nonce, "CATALOG"));
+  }
+
+  async readPanelSnapshot(name: HostPanel): Promise<PanelSnapshot | undefined> {
+    const env = await this.ensureProbe();
+    const nonce = makeNonce();
+    const out = await this.run(readPanelSnapshotScript(env.agentDir, name, nonce), {
+      timeoutMs: 10_000,
+    });
+    return parsePanelSnapshot(framed(out, nonce, "SNAPSHOT"), name);
   }
 
   async listSessions(): Promise<SessionsSnapshot> {

@@ -307,6 +307,11 @@ export const en = {
         pin: "Pin {{name}}",
         unpin: "Unpin {{name}}",
       },
+      panel: {
+        asOf: "as of {{time}}",
+        readOnly: "Refresh is available when a session is running",
+        empty: "Nothing to show yet",
+      },
       usage: {
         empty: "No plan to show.",
         left: "{{percent}}% left",

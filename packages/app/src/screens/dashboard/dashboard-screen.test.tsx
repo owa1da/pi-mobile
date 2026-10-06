@@ -125,7 +125,7 @@ describe("dashboard slash handoff", () => {
   let container: HTMLElement;
   let dom: JSDOM;
   beforeEach(async () => {
-    dom = new JSDOM("<!doctype html><html><body></body></html>");
+    dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost" });
     vi.stubGlobal("React", React);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", dom.window);
@@ -136,10 +136,19 @@ describe("dashboard slash handoff", () => {
     probe.startSession.mockReset().mockResolvedValue({ pid: 42 });
     probe.listSessions.mockReset().mockResolvedValue({ rows: [row] } as SessionsSnapshot);
     probe.push.mockClear();
+    commandCatalogStore.setState({ phone: {}, remote: {} });
+    starters.takeDashboardCommand("h", "new");
     await commandCatalogStore.getState().rememberLive("h", "/work", {
       view: "main",
       updatedAt: 100,
-      commands: [{ name: "model", description: "Models" }],
+      commands: [
+        { name: "model", description: "Models", source: "builtin" },
+        { name: "template", description: "Template", source: "prompt" },
+        { name: "skill:review", description: "Review", source: "skill" },
+        { name: "compact", description: null, source: "extension" },
+        { name: "usage", description: null },
+        { name: "changelog", description: null },
+      ],
     });
   });
   afterEach(() => {
@@ -153,33 +162,106 @@ describe("dashboard slash handoff", () => {
   it("dashboard / shows the menu from the latest host catalog", async () => {
     await mount();
     await act(async () => input.change("/"));
-    expect(container.querySelector('[data-testid="slash-row-model"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-model"]')).toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-compact"]')).toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-template"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-skill:review"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-usage"]')).not.toBeNull();
   });
-  it("a picked command starts one empty session and is consumed exactly once including remount", async () => {
+  it.each(["template", "skill:review"])(
+    "picked %s starts one empty session and is consumed exactly once including remount",
+    async (name) => {
+      await mount();
+      await act(async () => input.change("/"));
+      const button = container.querySelector(
+        `[data-testid="slash-row-${name}"]`,
+      ) as HTMLButtonElement;
+      expect(button).not.toBeNull();
+      await act(async () => {
+        button.click();
+        button.click();
+      });
+      expect(probe.startSession).toHaveBeenCalledExactlyOnceWith({ prompt: "" });
+      expect(probe.push).toHaveBeenCalledTimes(1);
+      expect(starters.takeDashboardCommand("h", "new")).toBe(`/${name}`);
+      act(() => root.render(null));
+      await mount();
+      expect(starters.takeDashboardCommand("h", "new")).toBeUndefined();
+      expect(probe.startSession).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each(["usage", "changelog"])(
+    "picked /%s opens a host panel without starting",
+    async (name) => {
+      await mount();
+      await act(async () => input.change("/"));
+      await act(async () =>
+        (container.querySelector(`[data-testid="slash-row-${name}"]`) as HTMLButtonElement).click(),
+      );
+      expect(probe.startSession).not.toHaveBeenCalled();
+      expect(probe.listSessions).not.toHaveBeenCalled();
+      expect(probe.push).toHaveBeenCalledExactlyOnceWith({
+        pathname: "/h/[hostId]/panel/[name]",
+        params: { hostId: "h", name },
+      });
+    },
+  );
+  it.each(["usage", "changelog"])(
+    "typed /%s opens the shown host panel without starting",
+    async (name) => {
+      await mount();
+      await act(async () => input.change(`/${name}`));
+      await act(async () =>
+        (container.querySelector('[data-testid="dashboard-send"]') as HTMLButtonElement).click(),
+      );
+      expect(probe.startSession).not.toHaveBeenCalled();
+      expect(probe.push).toHaveBeenCalledExactlyOnceWith({
+        pathname: "/h/[hostId]/panel/[name]",
+        params: { hostId: "h", name },
+      });
+    },
+  );
+  it("old catalogs show only panels and skill: names", async () => {
+    // A legacy-only host has never supplied sourced catalog rows.
+    commandCatalogStore.setState({ phone: {}, remote: {} });
+    await commandCatalogStore.getState().rememberLive("h", "/work", {
+      view: "main",
+      updatedAt: 200,
+      commands: ["model", "template", "skill:review", "usage", "changelog"].map((name) => ({
+        name,
+        description: null,
+      })),
+    });
     await mount();
     await act(async () => input.change("/"));
-    const button = container.querySelector('[data-testid="slash-row-model"]') as HTMLButtonElement;
-    expect(button).not.toBeNull();
-    await act(async () => {
-      button.click();
-      button.click();
-    });
-    expect(probe.startSession).toHaveBeenCalledExactlyOnceWith({ prompt: "" });
-    expect(probe.push).toHaveBeenCalledTimes(1);
-    expect(starters.takeDashboardCommand("h", "new")).toBe("/model");
-    act(() => root.render(null));
-    await mount();
-    expect(starters.takeDashboardCommand("h", "new")).toBeUndefined();
-    expect(probe.startSession).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="slash-row-model"]')).toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-template"]')).toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-skill:review"]')).not.toBeNull();
   });
-  it("ordinary dashboard text is passed to startSession unchanged, without a handoff", async () => {
+  it("a Forge host offers both panels even with an empty catalog", async () => {
+    await commandCatalogStore
+      .getState()
+      .rememberLive("h", "/work", { view: "main", updatedAt: 300, commands: [] });
     await mount();
-    await act(async () => input.change("hello world"));
-    await act(async () =>
-      (container.querySelector('[data-testid="dashboard-send"]') as HTMLButtonElement).click(),
-    );
-    expect(probe.startSession).toHaveBeenCalledExactlyOnceWith({ prompt: "hello world" });
-    expect(starters.takeDashboardCommand).toBeTypeOf("function");
-    expect(starters.takeDashboardCommand("h", "new")).toBeUndefined();
+    await act(async () => input.change("/"));
+    expect(container.querySelectorAll('[data-testid^="slash-row-"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="slash-row-usage"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="slash-row-changelog"]')).not.toBeNull();
   });
+  it.each(["hello world", "/compact", "/unknown"])(
+    "typed text %s keeps today's start and handoff behaviour",
+    async (text) => {
+      await mount();
+      await act(async () => input.change(text));
+      await act(async () =>
+        (container.querySelector('[data-testid="dashboard-send"]') as HTMLButtonElement).click(),
+      );
+      expect(probe.startSession).toHaveBeenCalledExactlyOnceWith({
+        prompt: text.startsWith("/") ? "" : text,
+      });
+      expect(starters.takeDashboardCommand("h", "new")).toBe(
+        text.startsWith("/") ? text : undefined,
+      );
+    },
+  );
 });
